@@ -13,6 +13,12 @@ Guidelines:
 - just works (tm)
 - secure and private
 
+Migrations
+- All database changes live under the `migrations/` directory. Each file is a plain `.sql` file named with a sequential number (e.g. `000_create_users.sql`, `001_add_index.sql`).
+- At startup, `app.py` automatically scans the `migrations/` folder, executes any SQL files that have not yet been applied, and records the execution in the `migrations` table.
+- To add a new migration, create a new sequential SQL file and restart the application (or trigger `init_database()`), and it will be applied automatically.
+- No external migration tool or script is required.
+
 Quickstart
 1. source .venv/bin/activate
 2. pip install -r requirements.txt

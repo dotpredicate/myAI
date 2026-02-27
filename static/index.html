@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>myAI Mock UI</title>
+</head>
+<body>
+  <h1>myAI – Mock Interface</h1>
+
+  <div>
+    <label for="modelSelect">Select Model:</label>
+    <select id="modelSelect"></select>
+  </div>
+
+  <div>
+    <textarea id="prompt" rows="4" cols="50" placeholder="Enter prompt here"></textarea>
+  </div>
+
+  <button id="sendBtn">Send Prompt</button>
+
+  <h2>Response</h2>
+  <pre id="response"></pre>
+
+  <script>
+    async function loadModels() {
+      const res = await fetch('/api/models');
+      const data = await res.json();
+      const select = document.getElementById('modelSelect');
+      data.models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.name;
+        select.appendChild(opt);
+      });
+    }
+
+    async function sendPrompt() {
+      const modelId = document.getElementById('modelSelect').value;
+      const promptText = document.getElementById('prompt').value;
+      const res = await fetch('/api/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model_id: modelId, prompt: promptText })
+      });
+      const data = await res.json();
+      document.getElementById('response').textContent = data.reply;
+    }
+
+    document.getElementById('sendBtn').addEventListener('click', sendPrompt);
+    loadModels();
+  </script>
+</body>
+</html>
