@@ -1,40 +1,60 @@
 <!DOCTYPE html>
 <html>
-
 <head>
   <meta charset="utf-8">
   <title>myAI Mock UI</title>
+  <style>
+    html, body { margin: 0; font-family: Arial, sans-serif; }
+    #controls { padding: 10px; background: #f0f0f0; }
+    #controls > div { margin-bottom: 8px; }
+    #prompt { width: 100%; }
+    pre#response { padding:10px; background:#eee; white-space: pre-wrap; word-wrap: break-word; max-height:50vh; overflow-y:auto; }
+  </style>
 </head>
-
 <body>
   <h1>myAI – Mock Interface</h1>
 
-  <div>
-    <label for="modelSelect">Select Model:</label>
-    <select id="modelSelect"></select>
+  <pre id="response"></pre>
+
+  <div id="controls">
+    <div>
+      <label for="modelSelect">Select Model:</label>
+      <select id="modelSelect"></select>
+    </div>
+    <div>
+      <textarea id="prompt" rows="4" placeholder="Enter prompt here"></textarea>
+    </div>
+    <button id="sendBtn">Send Prompt</button>
   </div>
-
-  <div>
-    <textarea id="prompt" rows="4" cols="50" placeholder="Enter prompt here"></textarea>
-  </div>
-
-  <button id="sendBtn">Send Prompt</button>
-
-  <h2>Response</h2>
-  <pre id="response" style="white-space: pre-wrap; word-wrap: break-word;" id="response"></pre>
 
   <script>
     async function loadModels() {
       const res = await fetch('/api/models');
       const data = await res.json();
       const select = document.getElementById('modelSelect');
-      data.models.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m.id;
-        opt.textContent = m.name;
-        select.appendChild(opt);
-      });
-    }
+        data.models.forEach(m => {
+          const opt = document.createElement('option');
+          opt.value = m.id;
+          opt.textContent = m.name;
+          select.appendChild(opt);
+        });
+        // Restore and persist selected model after options added
+        const savedModel = localStorage.getItem('selectedModel');
+        if (savedModel) {
+          document.getElementById('modelSelect').value = savedModel;
+        }
+        document.getElementById('modelSelect').addEventListener('change', () => {
+          localStorage.setItem('selectedModel', document.getElementById('modelSelect').value);
+        });
+
+
+      }
+
+
+
+
+
+
 
     async function sendPrompt() {
       const res = await fetch('/api/prompt', {
@@ -48,83 +68,58 @@
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      const resposneContainer = document.getElementById('response');
+      const responseContainer = document.getElementById('response');
       let buffer = '';
-      
-      var currentMode = null;
-      var currentWriteElem = null;
+      let currentWriteElem = null;
 
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-
-        // 1. Dekoduj i dodaj do bufora (stream: true obsługuje ucięte znaki multi-byte)
         buffer += decoder.decode(value, { stream: true });
-
-        // 2. Wyciągaj kompletne obiekty JSON z bufora
-        // Szukamy granic między obiektami: }{
         while (true) {
-          let startIdx = buffer.indexOf('{');
+          const startIdx = buffer.indexOf('{');
           if (startIdx === -1) break;
-
-          // Szukamy domykającego nawiasu, który balansuje otwierający
           let depth = 0;
           let endIdx = -1;
           for (let i = startIdx; i < buffer.length; i++) {
             if (buffer[i] === '{') depth++;
             else if (buffer[i] === '}') depth--;
-
             if (depth === 0) {
               endIdx = i;
               break;
             }
           }
-
-          // Jeśli nie znaleźliśmy domknięcia, czekamy na kolejny chunk
           if (endIdx === -1) break;
-
-          // Wycinamy poprawny JSON i aktualizujemy bufor
           const jsonStr = buffer.slice(startIdx, endIdx + 1);
           buffer = buffer.slice(endIdx + 1);
-
           try {
             const val = JSON.parse(jsonStr);
-            console.log(val);
             const msg = val['message'];
             const mode = 'thinking' in msg ? 'thinking' : 'response';
-
-            if (mode !== currentMode) {
-              currentMode = mode;
+            if (!currentWriteElem || mode !== currentWriteElem.dataset.mode) {
+              const container = mode === 'thinking' ? document.createElement('details') : document.createElement('p');
               if (mode === 'thinking') {
-                const thinkingContainer = document.createElement('details');
-                const thinkingContainerTitle = document.createElement('summary');
-                thinkingContainerTitle.textContent = 'Thinking';
-                thinkingContainer.appendChild(thinkingContainerTitle);
-                resposneContainer.appendChild(thinkingContainer);
-                currentWriteElem = thinkingContainer;
-              } else {
-                const textContainer = document.createElement('p');
-                resposneContainer.appendChild(textContainer);
-                currentWriteElem = textContainer;
+                const summary = document.createElement('summary');
+                summary.textContent = 'Thinking';
+                container.appendChild(summary);
               }
+              container.dataset.mode = mode;
+              responseContainer.appendChild(container);
+              currentWriteElem = container;
             }
-
-            
-            const token = mode === 'thinking' ? msg['thinking'] :msg['content'];
-            console.log(token);
-            if (token) {
-              currentWriteElem.append(token);
-            }
+            const token = mode === 'thinking' ? msg['thinking'] : msg['content'];
+            if (token) currentWriteElem.append(token);
           } catch (e) {
-            console.error("Błąd parsowania fragmentu:", jsonStr, e);
+            console.error('JSON parse error', e);
           }
         }
       }
+      // scroll to bottom
+      responseContainer.scrollTop = responseContainer.scrollHeight;
     }
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
     loadModels();
   </script>
 </body>
-
 </html>
