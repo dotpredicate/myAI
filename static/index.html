@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html>
+
 <head>
   <meta charset="utf-8">
   <title>myAI Mock UI</title>
 </head>
+
 <body>
   <h1>myAI – Mock Interface</h1>
 
@@ -19,7 +21,7 @@
   <button id="sendBtn">Send Prompt</button>
 
   <h2>Response</h2>
-  <pre id="response"></pre>
+  <pre id="response" style="white-space: pre-wrap; word-wrap: break-word;" id="response"></pre>
 
   <script>
     async function loadModels() {
@@ -35,19 +37,94 @@
     }
 
     async function sendPrompt() {
-      const modelId = document.getElementById('modelSelect').value;
-      const promptText = document.getElementById('prompt').value;
       const res = await fetch('/api/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model_id: modelId, prompt: promptText })
+        body: JSON.stringify({
+          model_id: document.getElementById('modelSelect').value,
+          prompt: document.getElementById('prompt').value
+        })
       });
-      const data = await res.json();
-      document.getElementById('response').textContent = data.reply;
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      const resposneContainer = document.getElementById('response');
+      let buffer = '';
+      
+      var currentMode = null;
+      var currentWriteElem = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        // 1. Dekoduj i dodaj do bufora (stream: true obsługuje ucięte znaki multi-byte)
+        buffer += decoder.decode(value, { stream: true });
+
+        // 2. Wyciągaj kompletne obiekty JSON z bufora
+        // Szukamy granic między obiektami: }{
+        while (true) {
+          let startIdx = buffer.indexOf('{');
+          if (startIdx === -1) break;
+
+          // Szukamy domykającego nawiasu, który balansuje otwierający
+          let depth = 0;
+          let endIdx = -1;
+          for (let i = startIdx; i < buffer.length; i++) {
+            if (buffer[i] === '{') depth++;
+            else if (buffer[i] === '}') depth--;
+
+            if (depth === 0) {
+              endIdx = i;
+              break;
+            }
+          }
+
+          // Jeśli nie znaleźliśmy domknięcia, czekamy na kolejny chunk
+          if (endIdx === -1) break;
+
+          // Wycinamy poprawny JSON i aktualizujemy bufor
+          const jsonStr = buffer.slice(startIdx, endIdx + 1);
+          buffer = buffer.slice(endIdx + 1);
+
+          try {
+            const val = JSON.parse(jsonStr);
+            console.log(val);
+            const msg = val['message'];
+            const mode = 'thinking' in msg ? 'thinking' : 'response';
+
+            if (mode !== currentMode) {
+              currentMode = mode;
+              if (mode === 'thinking') {
+                const thinkingContainer = document.createElement('details');
+                const thinkingContainerTitle = document.createElement('summary');
+                thinkingContainerTitle.textContent = 'Thinking';
+                thinkingContainer.appendChild(thinkingContainerTitle);
+                resposneContainer.appendChild(thinkingContainer);
+                currentWriteElem = thinkingContainer;
+              } else {
+                const textContainer = document.createElement('p');
+                resposneContainer.appendChild(textContainer);
+                currentWriteElem = textContainer;
+              }
+            }
+
+            
+            const token = mode === 'thinking' ? msg['thinking'] :msg['content'];
+            console.log(token);
+            if (token) {
+              currentWriteElem.append(token);
+            }
+          } catch (e) {
+            console.error("Błąd parsowania fragmentu:", jsonStr, e);
+          }
+        }
+      }
     }
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
     loadModels();
   </script>
 </body>
+
 </html>

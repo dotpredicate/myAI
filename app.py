@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, Response
 import psycopg2
 import os
 import glob
@@ -22,22 +22,24 @@ def get_ollama_models():
         return []
 
 
-def ask_model(model_id, prompt_text):
-    """Send a chat prompt to Ollama and return the response string."""
+def ask_model_stream(model_id, prompt_text):
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": prompt_text}],
-        "stream": False
+        "stream": True
     }
     try:
-        res = requests.post(f"{OLLAMA_ENDPOINT}/chat", json=payload)
+        res = requests.post(f"{OLLAMA_ENDPOINT}/chat", json=payload, stream=True)
         res.raise_for_status()
-        data = res.json()
-        return data.get('message', {}).get('content', '') or data.get('response', '')
+        for line in res.iter_lines():
+            if not line:
+                continue
+            yield line
     except Exception as e:
-        return f"Error: {e}"
+        yield f"Error: {e}"
 
 
+import json
 import hashlib
 import binascii
 
@@ -103,12 +105,13 @@ def prompt_model():
     data = request.get_json() or {}
     prompt = data.get('prompt', '')
     model_id = data.get('model_id', '0')
-    reply = ask_model(model_id, prompt)
-    return jsonify({"reply": reply})
+    reply = ask_model_stream(model_id, prompt)
+    return Response((chunk for chunk in reply), mimetype='text/event-stream')
 
 @app.route('/')
 def index():
     return app.send_static_file('index.html')
+
 if __name__ == '__main__':
     init_database()
     app.run(debug=True)
