@@ -1,0 +1,1 @@
+You are assumed to be a thinking and smart being, like a human. You are expected to read README.md and keep up. No additional instructions for you there.
