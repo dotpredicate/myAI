@@ -14,8 +14,9 @@ Guidelines:
 - secure and private
 
 Simplifactions for now:
+- web and desktop UI only, no mobile, minimal styling
 - just use postgres
-- single user
+- single user, no log-in
 - no cloud integrations
 - no caching, etc. use in-memory structures
 

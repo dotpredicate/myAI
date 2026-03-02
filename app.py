@@ -7,15 +7,11 @@ from datetime import datetime
 import json
 import hashlib
 import binascii
-from typing import List, Dict, Optional, Any, Generator
+from typing import List, Dict, Optional, Any
 
-# ------------------------------------------------------------
-# Configuration & app init
-# ------------------------------------------------------------
 app = Flask(__name__)
 OLLAMA_ENDPOINT = os.getenv('OLLAMA_ENDPOINT', 'http://localhost:11434/api')
 
-# Database connection (assumes PostgreSQL running locally)
 conn = psycopg2.connect(
     dbname='myai',
     user='myai',
@@ -24,14 +20,10 @@ conn = psycopg2.connect(
     port='5432'
 )
 
-# ------------------------------------------------------------
-# Helper functions for database operations
-# ------------------------------------------------------------
-
-def create_conversation(conn: psycopg2.extensions.connection) -> int:
-    """Insert a new conversation row and return its id."""
+def create_conversation(conn: psycopg2.extensions.connection, title: str) -> int:
+    """Insert a new conversation row with title and return its id."""
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO conversations (created_at) VALUES (NOW()) RETURNING id")
+        cur.execute("INSERT INTO conversations (title) VALUES (%s) RETURNING id", (title,))
         row = cur.fetchone()
         if not row:
             raise RuntimeError("Failed to create conversation")
@@ -40,12 +32,7 @@ def create_conversation(conn: psycopg2.extensions.connection) -> int:
         return conv_id
 
 
-def insert_message(
-    conn: psycopg2.extensions.connection,
-    conv_id: int,
-    role: str,
-    elements: List[Dict[str, str]],
-) -> None:
+def insert_message(conn: psycopg2.extensions.connection, conv_id: int, role: str, elements: List[Dict[str, str]]) -> None:
     """Persist a full array of elements for a message."""
     with conn.cursor() as cur:
         cur.execute(
@@ -53,20 +40,16 @@ def insert_message(
             INSERT INTO messages (conversation_id, role, elements, created_at)
             VALUES (%s, %s, %s, NOW())
             """,
-            (conv_id, role, json.dumps(elements)),
+            (conv_id, role, json.dumps(elements))
         )
         conn.commit()
-
-# ------------------------------------------------------------
-# Ollama interaction
-# ------------------------------------------------------------
 
 def ask_model_stream(model_id: str, prompt_text: str):
     """Return a generator yielding raw bytes from Ollama streaming API."""
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": prompt_text}],
-        "stream": True,
+        "stream": True
     }
     try:
         res = requests.post(f"{OLLAMA_ENDPOINT}/chat", json=payload, stream=True)
@@ -77,10 +60,6 @@ def ask_model_stream(model_id: str, prompt_text: str):
             yield line
     except Exception as e:
         yield f"Error: {e}".encode()
-
-# ------------------------------------------------------------
-# Migration runner (kept from original)
-# ------------------------------------------------------------
 
 def init_database():
     with conn.cursor() as cur:
@@ -117,15 +96,14 @@ def init_database():
         end_time = datetime.now()
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO migrations (name, hash, start_time, end_time) VALUES (%s, %s, %s, %s)",
-                (migration_name, hash_str, start_time, end_time),
+                """
+                INSERT INTO migrations (name, hash, start_time, end_time)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (migration_name, hash_str, start_time, end_time)
             )
         conn.commit()
         print(f'Applied migration: {migration_file}')
-
-# ------------------------------------------------------------
-# API endpoints
-# ------------------------------------------------------------
 
 @app.route('/api/models')
 def get_models():
@@ -141,61 +119,66 @@ def get_models():
 @app.route('/api/prompt', methods=['POST'])
 def prompt_model():
     payload: dict[str, Any] = request.get_json()
-    prompt: str = payload.get('prompt')
-    model_id: str = payload.get('model_id')
+    prompt: str = payload.get('prompt', '')
+    model_id: str = payload.get('model_id', '')
 
-    conv_id = create_conversation(conn)
+    conv_id = create_conversation(conn, prompt)
     insert_message(conn, conv_id, 'user', [{'type': 'message', 'content': prompt}])
 
     chat_gen = ask_model_stream(model_id, prompt)
 
-    def stream_with_buffer(
-        chat_gen: Generator[bytes, None, None],
-        conv_id: int,
-    ) -> Generator[bytes, None, None]:
-    
+    def generate_stream():
         elems: List[Dict[str, Any]] = []
-
         buffered_element_type: Optional[str] = None
         buffered_element_content: Optional[str] = None
-
         for chunk in chat_gen:
             data: Dict[str, Any] = json.loads(chunk.decode())
-            print('Stream item:', data)
-            
-            message = data['message']
-            
+            message = data.get('message', {})
             if 'thinking' in message:
                 elem_type = 'thinking'
-                content = message['thinking']
+                content = message.get('thinking', '')
             else:
                 elem_type = 'message'
-                content = message['content']
-            
+                content = message.get('content', '')
             if buffered_element_type is None:
                 buffered_element_type = elem_type
                 buffered_element_content = ''
             if elem_type != buffered_element_type:
-                # Finish previous element
-                elems.append({'type': buffered_element_type, 'content': buffered_element_content})
-                print(f'{conv_id} finished streaming {buffered_element_type}: {content}')
+                elems.append({
+                    'type': buffered_element_type,
+                    'content': buffered_element_content
+                })
                 buffered_element_content = ''
                 buffered_element_type = elem_type
-            else:
-                assert buffered_element_content is not None
-                assert content is not None
-                buffered_element_content += content
-            # Emit original raw chunk to front‑end
+            buffered_element_content += content
             yield chunk
-        
-        # Save last element
         if buffered_element_content is not None:
-            elems.append({'type': buffered_element_type, 'content': buffered_element_content})
-            print(f'{conv_id} - finished streaming {buffered_element_type}: {content}')
+            elems.append({
+                'type': buffered_element_type,
+                'content': buffered_element_content
+            })
+        insert_message(conn, conv_id, 'assistant', elems)
 
-            insert_message(conn, conv_id, 'assistant', elems)
+    return Response(generate_stream(), mimetype='text/plain')
 
-    return Response((chunk for chunk in stream_with_buffer(chat_gen, conv_id)), mimetype='text/event-stream')
+@app.route('/api/conversations')
+def get_conversations():
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")
+        rows = cur.fetchall()
+    conversations = [{'id': r[0], 'title': r[1], 'created_at': r[2]} for r in rows]
+    return jsonify(conversations)
+
+@app.route('/api/conversation/<int:conv_id>')
+def get_conversation(conv_id):
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, title, created_at FROM conversations WHERE id = %s", (conv_id,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({'error': 'Not found'}), 404
+        cur.execute("SELECT id, role, elements, created_at FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
+        messages = [{'id': r[0], 'role': r[1], 'elements': r[2], 'created_at': r[3]} for r in cur.fetchall()]
+    return jsonify({'id': row[0], 'title': row[1], 'created_at': row[2], 'messages': messages})
 
 @app.route('/')
 def index():
