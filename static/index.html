@@ -3,7 +3,7 @@
 
 <head>
   <meta charset="utf-8">
-  <title>myAI Mock UI</title>
+  <title>myAI</title>
   <style>
     body {
       display: grid;
@@ -72,11 +72,20 @@
       background: #fff;
       border-color: #444;
     }
+
+    .msg-label {
+      font-weight: bold;
+      margin-top: 1em;
+    }
+
+    .msg-body {
+      margin-top: .5em;
+    }
   </style>
 </head>
 
 <body>
-  <h1 style="text-align:center;">myAI – Mock Interface</h1>
+  <h1 style="text-align:center;">myAI</h1>
   <div id="sidebar">
     <h2>Conversations</h2>
     <button id="newBtnSide" class="menu-item">+ New</button>
@@ -84,7 +93,7 @@
   </div>
   <div id="main">
     <div id="chatHistory">
-      <pre id="response"></pre>
+      <div id="response"></div>
     </div>
     <div id="inputArea">
       <textarea id="prompt" rows="5" placeholder="Enter prompt here"></textarea>
@@ -138,6 +147,31 @@
       });
     }
 
+    function renderMessage(container, role, label, element) {
+      const labelEl = document.createElement('div');
+      labelEl.textContent = label + ':';
+      labelEl.classList.add('msg-label');
+      container.appendChild(labelEl);
+      if (element.type === 'thinking') {
+
+        const details = document.createElement('details');
+        details.className = 'msg-body';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Thinking';
+        details.appendChild(summary);
+        const content = document.createElement('div');
+        content.textContent = element.content;
+        content.className = 'msg-body';
+        details.appendChild(content);
+        container.appendChild(details);
+      } else {
+        const p = document.createElement('p');
+        p.textContent = element.content;
+        p.className = 'msg-body';
+        container.appendChild(p);
+      }
+    }
+
     async function loadConversation(conv_id) {
       const res = await fetch(`/api/conversation/${conv_id}`);
       const data = await res.json();
@@ -147,16 +181,8 @@
       title.textContent = data.title + ' (' + new Date(data.created_at).toLocaleString() + ')';
       responseContainer.appendChild(title);
       for (const msg of data.messages) {
-        const isAssistant = msg.role === 'assistant';
         for (const elem of msg.elements) {
-          const container = elem.type === 'thinking' ? document.createElement('details') : document.createElement('p');
-          if (elem.type === 'thinking') {
-            const summary = document.createElement('summary');
-            summary.textContent = 'Thinking';
-            container.appendChild(summary);
-          }
-          container.textContent = elem.content;
-          responseContainer.appendChild(container);
+          renderMessage(responseContainer, msg.role, msg.role, elem);
         }
       }
       responseContainer.scrollTop = responseContainer.scrollHeight;
@@ -164,57 +190,69 @@
 
     async function sendPrompt() {
       const sendBtn = document.getElementById('sendBtn');
+      const promptText = document.getElementById('prompt').value;
       sendBtn.disabled = true;
       const res = await fetch('/api/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model_id: document.getElementById('modelSelect').value,
-          prompt: document.getElementById('prompt').value
+          prompt: promptText
         })
       });
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       const responseContainer = document.getElementById('response');
+
+      responseContainer.innerHTML = '';
+      const title = document.createElement('h2');
+      title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
+      responseContainer.appendChild(title);
+
+      renderMessage(responseContainer, 'user', 'User', { type: 'message', content: promptText });
+      
+      const assistantLabel = document.createElement('div');
+      assistantLabel.textContent = 'Assistant:';
+      assistantLabel.classList.add('msg-label');
+      responseContainer.appendChild(assistantLabel);
+
       let buffer = '';
       let currentWriteElem = null;
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        while (true) {
-          const startIdx = buffer.indexOf('{');
-          if (startIdx === -1) break;
-          let depth = 0;
-          let endIdx = -1;
-          for (let i = startIdx; i < buffer.length; i++) {
-            if (buffer[i] === '{') depth++;
-            else if (buffer[i] === '}') depth--;
-            if (depth === 0) { endIdx = i; break; }
-          }
-          if (endIdx === -1) break;
-          const jsonStr = buffer.slice(startIdx, endIdx + 1);
-          buffer = buffer.slice(endIdx + 1);
-          try {
-            const val = JSON.parse(jsonStr);
-            const msg = val['message'];
-            const mode = 'thinking' in msg ? 'thinking' : 'response';
-            if (!currentWriteElem || mode !== currentWriteElem.dataset.mode) {
-              const container = mode === 'thinking' ? document.createElement('details') : document.createElement('p');
-              if (mode === 'thinking') {
-                const summary = document.createElement('summary');
-                summary.textContent = 'Thinking';
-                container.appendChild(summary);
-              }
-              container.dataset.mode = mode;
-              responseContainer.appendChild(container);
-              currentWriteElem = container;
+        const startIdx = buffer.indexOf('{');
+        if (startIdx === -1) break;
+        let depth = 0;
+        let endIdx = -1;
+        for (let i = startIdx; i < buffer.length; i++) {
+          if (buffer[i] === '{') depth++;
+          else if (buffer[i] === '}') depth--;
+          if (depth === 0) { endIdx = i; break; }
+        }
+        if (endIdx === -1) break;
+        const jsonStr = buffer.slice(startIdx, endIdx + 1);
+        buffer = buffer.slice(endIdx + 1);
+        try {
+          const val = JSON.parse(jsonStr);
+          const msg = val['message'];
+          const mode = 'thinking' in msg ? 'thinking' : 'response';
+          if (!currentWriteElem || currentWriteElem.dataset.mode !== mode) {
+            const container = mode === 'thinking' ? document.createElement('details') : document.createElement('p');
+            if (mode === 'thinking') {
+              const summary = document.createElement('summary');
+              summary.textContent = 'Thinking';
+              container.appendChild(summary);
             }
-            const token = mode === 'thinking' ? msg['thinking'] : msg['content'];
-            if (token) currentWriteElem.append(token);
-          } catch (e) {
-            console.error('JSON parse error', e);
+            container.dataset.mode = mode;
+            responseContainer.appendChild(container);
+            currentWriteElem = container;
           }
+          const token = mode === 'thinking' ? msg['thinking'] : msg['content'];
+          if (token) currentWriteElem.append(token);
+        } catch (e) {
+          console.error('JSON parse error', e);
         }
       }
       responseContainer.scrollTop = responseContainer.scrollHeight;
