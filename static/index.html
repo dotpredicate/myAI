@@ -26,13 +26,15 @@
       grid-area: main;
       display: flex;
       flex-direction: column;
+      min-height: 0;
     }
 
     #chatHistory {
       flex: 1;
       padding: 10px;
-      overflow-y: auto;
+      overflow-y: scroll;
       background: #fff;
+      min-height: 0;
     }
 
     #inputArea {
@@ -140,7 +142,6 @@
           document.querySelectorAll('.menu-item').forEach(t => t.classList.remove('selected'));
           div.classList.add('selected');
           selectedConversationId = conv.id;
-          document.getElementById('sendBtn').disabled = true;
           loadConversation(conv.id);
         });
         list.appendChild(div);
@@ -189,28 +190,33 @@
     }
 
     async function sendPrompt() {
-      const sendBtn = document.getElementById('sendBtn');
       const promptText = document.getElementById('prompt').value;
-      sendBtn.disabled = true;
       const res = await fetch('/api/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model_id: document.getElementById('modelSelect').value,
-          prompt: promptText
+          prompt: promptText,
+          conversation_id: selectedConversationId
         })
       });
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       const responseContainer = document.getElementById('response');
 
-      responseContainer.innerHTML = '';
-      const title = document.createElement('h2');
-      title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
-      responseContainer.appendChild(title);
+      if (!selectedConversationId) {
+        const newConvId = res.headers.get('X-Conversation-ID');
+        if (newConvId) {
+          selectedConversationId = newConvId;
+        }
+        responseContainer.innerHTML = '';
+        const title = document.createElement('h2');
+        title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
+        responseContainer.appendChild(title);
+      }
 
       renderMessage(responseContainer, 'user', 'User', { type: 'message', content: promptText });
-      
+
       const assistantLabel = document.createElement('div');
       assistantLabel.textContent = 'Assistant:';
       assistantLabel.classList.add('msg-label');
@@ -263,7 +269,6 @@
       document.getElementById('prompt').value = '';
       document.getElementById('response').innerHTML = '';
       selectedConversationId = null;
-      document.getElementById('sendBtn').disabled = false;
       loadConversations();
     });
 

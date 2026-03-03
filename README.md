@@ -8,26 +8,26 @@ Goals
 - define agent workflows
 - add secure permissions and policy model
 
-Guidelines:
+Guidelines
 - keep it simple
 - just works (tm)
 - secure and private
-
-Simplifactions for now:
-- web and desktop UI only, no mobile, minimal styling
 - just use postgres
+
+
+Simplifications for now
+- web UI only, no mobile, minimal styling
 - single user, no log-in
 - no cloud integrations
-- no caching, etc. use in-memory structures
+- monolithic back-end, single instance
+- no caching like Redis, prefer in-memory structures
+- Ollama's /api/chat requires aggregating thinking, content, and tool_calls into a single message, which prevents interleaving of reasoning and actions
 
-Code style:
-- use python types
+Code style
+- use Python types
 
 Migrations
-- All database changes live under the `migrations/` directory. Each file is a plain `.sql` file named with a sequential number (e.g. `000_create_users.sql`, `001_add_index.sql`).
-- At startup, `app.py` automatically scans the `migrations/` folder, executes any SQL files that have not yet been applied, and records the execution in the `migrations` table.
-- To add a new migration, create a new sequential SQL file and restart the application (or trigger `init_database()`), and it will be applied automatically.
-- No external migration tool or script is required.
+- at startup, the module scans the `migrations/` folder for SQL files, sorts them in lexicographic order, executes those that have not yet been applied and records the execution in the `migrations` table.
 
 Quickstart
 1. source .venv/bin/activate

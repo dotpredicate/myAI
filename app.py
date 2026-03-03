@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request, Response
 import psycopg2
+from psycopg2.extensions import connection
 import os
 import glob
 import requests
@@ -20,7 +21,7 @@ conn = psycopg2.connect(
     port='5432'
 )
 
-def create_conversation(conn: psycopg2.extensions.connection, title: str) -> int:
+def create_conversation(conn: connection, title: str) -> int:
     """Insert a new conversation row with title and return its id."""
     with conn.cursor() as cur:
         cur.execute("INSERT INTO conversations (title) VALUES (%s) RETURNING id", (title,))
@@ -30,9 +31,9 @@ def create_conversation(conn: psycopg2.extensions.connection, title: str) -> int
         conv_id = row[0]
         conn.commit()
         return conv_id
+    
 
-
-def insert_message(conn: psycopg2.extensions.connection, conv_id: int, role: str, elements: List[Dict[str, str]]) -> None:
+def insert_message(conn: connection, conv_id: int, role: str, elements: List[Dict[str, str]]) -> None:
     """Persist a full array of elements for a message."""
     with conn.cursor() as cur:
         cur.execute(
@@ -44,11 +45,48 @@ def insert_message(conn: psycopg2.extensions.connection, conv_id: int, role: str
         )
         conn.commit()
 
-def ask_model_stream(model_id: str, prompt_text: str):
-    """Return a generator yielding raw bytes from Ollama streaming API."""
+def get_messages_for_continuation(conn: connection, conv_id: int) -> list[dict[str, Any]]:
+    ollama_messages: list[dict[str, Any]] = []
+
+    with conn.cursor() as cur:
+        cur.execute("SELECT role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
+        for row in cur.fetchall():
+            role, elements = row
+            
+            thinking = None
+            message = None
+
+            for element in elements:
+                elem_type = element.get('type') if isinstance(element, dict) else element.type
+                elem_content = element.get('content') if isinstance(element, dict) else element.content
+                if elem_type == 'thinking':
+                    thinking = elem_content
+                elif elem_type == 'message':
+                    message = elem_content
+                else:
+                    raise ValueError(f'Unhandled element type {elem_type}')
+            
+            ollama_msg = {'role': role}
+            if thinking is not None:
+                ollama_msg['thinking'] = thinking
+            if message is not None:
+                ollama_msg['content'] = message 
+            ollama_messages.append(ollama_msg)
+    
+    return ollama_messages
+
+
+def ask_model_stream(model_id: str, prompt_text: str, conversation_context: Optional[list[dict[str, Any]]] = None):
+
+    if conversation_context:
+        ollama_messages = list(conversation_context)
+    else:
+        ollama_messages = []
+    ollama_messages.append({'role': 'user', 'content': prompt_text})
+    
     payload = {
         "model": model_id,
-        "messages": [{"role": "user", "content": prompt_text}],
+        "messages": ollama_messages,
         "stream": True
     }
     try:
@@ -121,18 +159,28 @@ def prompt_model():
     payload: dict[str, Any] = request.get_json()
     prompt: str = payload.get('prompt', '')
     model_id: str = payload.get('model_id', '')
+    conversation_id: Optional[int] = payload.get('conversation_id')
 
-    conv_id = create_conversation(conn, prompt)
+    if conversation_id:
+        messages_context = get_messages_for_continuation(conn, conversation_id)
+        chat_gen = ask_model_stream(model_id, prompt, messages_context)
+        conv_id = conversation_id
+    else:
+        conv_id = create_conversation(conn, prompt)
+        chat_gen = ask_model_stream(model_id, prompt)
+
     insert_message(conn, conv_id, 'user', [{'type': 'message', 'content': prompt}])
-
-    chat_gen = ask_model_stream(model_id, prompt)
 
     def generate_stream():
         elems: List[Dict[str, Any]] = []
         buffered_element_type: Optional[str] = None
         buffered_element_content: Optional[str] = None
         for chunk in chat_gen:
-            data: Dict[str, Any] = json.loads(chunk.decode())
+            try:
+                data: Dict[str, Any] = json.loads(chunk.decode())
+            except json.JSONDecodeError as e:
+                print(f"JSON decode error: {chunk.decode()!r}")
+                continue
             message = data.get('message', {})
             if 'thinking' in message:
                 elem_type = 'thinking'
@@ -159,7 +207,9 @@ def prompt_model():
             })
         insert_message(conn, conv_id, 'assistant', elems)
 
-    return Response(generate_stream(), mimetype='text/plain')
+    response = Response(generate_stream(), mimetype='text/plain')
+    response.headers['X-Conversation-ID'] = str(conv_id)
+    return response
 
 @app.route('/api/conversations')
 def get_conversations():
