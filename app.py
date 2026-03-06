@@ -3,15 +3,18 @@ import psycopg2
 from psycopg2.extensions import connection
 import os
 import glob
-import requests
-from datetime import datetime
 import json
 import hashlib
 import binascii
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Generator
+import openai
+from openai.types.chat.chat_completion_chunk import ChoiceDelta
+from datetime import datetime
+
 
 app = Flask(__name__)
-OLLAMA_ENDPOINT = os.getenv('OLLAMA_ENDPOINT', 'http://localhost:11434/api')
+LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:8080')
+client = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
 conn = psycopg2.connect(
     dbname='myai',
@@ -46,7 +49,7 @@ def insert_message(conn: connection, conv_id: int, role: str, elements: List[Dic
         conn.commit()
 
 def get_messages_for_continuation(conn: connection, conv_id: int) -> list[dict[str, Any]]:
-    ollama_messages: list[dict[str, Any]] = []
+    messages: list[dict[str, Any]] = []
 
     with conn.cursor() as cur:
         cur.execute("SELECT role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
@@ -66,38 +69,30 @@ def get_messages_for_continuation(conn: connection, conv_id: int) -> list[dict[s
                 else:
                     raise ValueError(f'Unhandled element type {elem_type}')
             
-            ollama_msg = {'role': role}
+            msg = {'role': role}
             if thinking is not None:
-                ollama_msg['thinking'] = thinking
+                msg['thinking'] = thinking
             if message is not None:
-                ollama_msg['content'] = message 
-            ollama_messages.append(ollama_msg)
+                msg['content'] = message 
+            messages.append(msg)
     
-    return ollama_messages
+    return messages
 
-
-def ask_model_stream(model_id: str, prompt_text: str, conversation_context: Optional[list[dict[str, Any]]] = None):
+def ask_model_stream(model_id: str, prompt_text: str, conversation_context: Optional[list[dict[str, Any]]] = None) -> Generator[openai.types.Completion, None, None]:
 
     if conversation_context:
-        ollama_messages = list(conversation_context)
+        messages = list(conversation_context)
     else:
-        ollama_messages = []
-    ollama_messages.append({'role': 'user', 'content': prompt_text})
+        messages = []
+    messages.append({'role': 'user', 'content': prompt_text})
     
-    payload = {
-        "model": model_id,
-        "messages": ollama_messages,
-        "stream": True
-    }
-    try:
-        res = requests.post(f"{OLLAMA_ENDPOINT}/chat", json=payload, stream=True)
-        res.raise_for_status()
-        for line in res.iter_lines():
-            if not line:
-                continue
-            yield line
-    except Exception as e:
-        yield f"Error: {e}".encode()
+    res = client.chat.completions.create(
+        model=model_id,
+        messages=messages,
+        stream=True,
+    )
+    for chunk in res:
+        yield chunk
 
 def init_database():
     with conn.cursor() as cur:
@@ -146,13 +141,12 @@ def init_database():
 @app.route('/api/models')
 def get_models():
     try:
-        res = requests.get(f"{OLLAMA_ENDPOINT}/tags")
-        res.raise_for_status()
-        data = res.json()
+        res = client.models.list()
+        models = list(res)
     except Exception as e:
         print(f"Error fetching models: {e}")
-        data = {"models": []}
-    return jsonify({"models": [{'id': m['name'], 'name': m['name']} for m in data.get('models', [])]})
+        models = []
+    return jsonify({"models": [{'id': m.id, 'name': m.id} for m in models]})
 
 @app.route('/api/prompt', methods=['POST'])
 def prompt_model():
@@ -176,18 +170,19 @@ def prompt_model():
         buffered_element_type: Optional[str] = None
         buffered_element_content: Optional[str] = None
         for chunk in chat_gen:
-            try:
-                data: Dict[str, Any] = json.loads(chunk.decode())
-            except json.JSONDecodeError as e:
-                print(f"JSON decode error: {chunk.decode()!r}")
-                continue
-            message = data.get('message', {})
-            if 'thinking' in message:
+            delta: ChoiceDelta = chunk.choices[0].delta
+            delta_dict = delta.model_dump()
+            if 'reasoning_content' in delta_dict:
                 elem_type = 'thinking'
-                content = message.get('thinking', '')
-            else:
+                content = delta.reasoning_content
+            elif delta.content is not None:
                 elem_type = 'message'
-                content = message.get('content', '')
+                content = delta.content
+            else:
+                print('Skipping empty delta', delta)
+                continue
+            print(delta)
+
             if buffered_element_type is None:
                 buffered_element_type = elem_type
                 buffered_element_content = ''
@@ -196,16 +191,24 @@ def prompt_model():
                     'type': buffered_element_type,
                     'content': buffered_element_content
                 })
+                print(f'Finished {buffered_element_type} {buffered_element_content}')
                 buffered_element_content = ''
                 buffered_element_type = elem_type
             buffered_element_content += content
-            yield chunk
+            message = {}
+            if buffered_element_type == 'message':
+                message['content'] = content
+            elif buffered_element_type == 'thinking':
+                message['thinking'] = content
+            yield json.dumps({'message': message})
         if buffered_element_content is not None:
             elems.append({
                 'type': buffered_element_type,
                 'content': buffered_element_content
             })
         insert_message(conn, conv_id, 'assistant', elems)
+
+
 
     response = Response(generate_stream(), mimetype='text/plain')
     response.headers['X-Conversation-ID'] = str(conv_id)
