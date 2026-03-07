@@ -6,14 +6,16 @@ import glob
 import json
 import hashlib
 import binascii
-from typing import List, Dict, Optional, Any, Generator
+import subprocess
+from typing import List, Dict, Optional, Any, Generator, NamedTuple, Union
 import openai
-from openai.types.chat.chat_completion_chunk import ChoiceDelta
+from openai.types.chat.chat_completion_message_param import *
+from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from datetime import datetime
 
 
 app = Flask(__name__)
-LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:8080')
+LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 client = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
 conn = psycopg2.connect(
@@ -23,6 +25,26 @@ conn = psycopg2.connect(
     host='localhost',
     port='5432'
 )
+
+# Define the function schema for OpenAI function calling
+FUNCTIONS = [
+    {
+        "name": "run_shell_command",
+        "description": "Execute a shell command and return the output.",
+        "type": "function",
+        "function": {
+            "name": "run_shell_command",
+            "description": "Execute a shell command and return the output.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Command to execute"},
+                },
+                "required": ["command"],
+            },
+        },
+    }
+]
 
 def create_conversation(conn: connection, title: str) -> int:
     """Insert a new conversation row with title and return its id."""
@@ -48,48 +70,59 @@ def insert_message(conn: connection, conv_id: int, role: str, elements: List[Dic
         )
         conn.commit()
 
-def get_messages_for_continuation(conn: connection, conv_id: int) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
+def get_messages_for_continuation(conn: connection, conv_id: int) -> list[ChatCompletionMessageParam]:
+    messages: list[ChatCompletionMessageParam] = []
 
     with conn.cursor() as cur:
-        cur.execute("SELECT role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
+        cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
         for row in cur.fetchall():
-            role, elements = row
+            message_id, role, elements = row
             
-            thinking = None
-            message = None
-
             for element in elements:
-                elem_type = element.get('type') if isinstance(element, dict) else element.type
-                elem_content = element.get('content') if isinstance(element, dict) else element.content
+                elem_type = element['type']
                 if elem_type == 'thinking':
-                    thinking = elem_content
+                    msg = {'role': role}               
+                    msg['thinking'] = element['content']
+                    messages.append(msg)
                 elif elem_type == 'message':
-                    message = elem_content
+                    msg = {'role': role}               
+                    msg['content'] = element['content'] 
+                    messages.append(msg)
+                elif elem_type == 'tool_call':
+                    tool_call = {'role': 'assistant'}
+                    tool_call['tool_calls'] = [{
+                        'id': str(message_id),
+                        'type': 'function',
+                        'function': {
+                            'name': element['name'],
+                            'arguments': element['parameters'],
+                        },
+                    }]
+                    tool_call_result = {
+                        'role': 'tool',
+                        'tool_call_id': str(message_id),
+                        'content': element['result']
+                    }
+                    messages.append(tool_call)
+                    messages.append(tool_call_result)
+                    print(messages)
                 else:
                     raise ValueError(f'Unhandled element type {elem_type}')
-            
-            msg = {'role': role}
-            if thinking is not None:
-                msg['thinking'] = thinking
-            if message is not None:
-                msg['content'] = message 
-            messages.append(msg)
     
     return messages
 
-def ask_model_stream(model_id: str, prompt_text: str, conversation_context: Optional[list[dict[str, Any]]] = None) -> Generator[openai.types.Completion, None, None]:
+def ask_model_stream(model_id: str, prompt_text: str, conversation_context: Optional[list[dict[str, Any]]] = None) -> Generator[ChatCompletionChunk, None, None]:
 
     if conversation_context:
         messages = list(conversation_context)
     else:
         messages = []
     messages.append({'role': 'user', 'content': prompt_text})
-    
     res = client.chat.completions.create(
         model=model_id,
         messages=messages,
         stream=True,
+        tools=FUNCTIONS,
     )
     for chunk in res:
         yield chunk
@@ -148,6 +181,103 @@ def get_models():
         models = []
     return jsonify({"models": [{'id': m.id, 'name': m.id} for m in models]})
 
+
+
+class ShellResult(NamedTuple):
+    command: str
+    returncode: int
+    stdout: str
+    stderr: str
+
+class Message(NamedTuple):
+    content: str
+class Thinking(NamedTuple):
+    content: str
+class ToolCall(NamedTuple):
+    name: str
+    parameters: str
+StreamingElement = Union[Thinking, Message, ToolCall]
+
+class ToolCallResult(NamedTuple):
+    name: str
+    parameters: str
+    result: str
+FinishedElement = Union[Thinking, Message, ToolCallResult]
+
+def to_json_dict(element: FinishedElement) -> dict[str, Any]:
+    match element:
+        case Message(content=content):
+            return {'type': 'message', 'content': content}
+        case Thinking(content=content):
+            return {'type': 'thinking', 'content': content}
+        case ToolCallResult(name=name, parameters=parameters, result=result):
+            return {'type': 'tool_call', 'name': name, 'parameters': parameters, 'result': result}
+
+class DeltaProcessor:
+    def __init__(self):
+        self.buffered_element: Optional[StreamingElement] = None
+
+    def process(self, chunk: ChatCompletionChunk) -> tuple[Optional[StreamingElement], Optional[StreamingElement]]:
+        delta = chunk.choices[0].delta
+        delta_dict = delta.model_dump()
+        # Determine element type and content
+        new_elem: Optional[StreamingElement]
+        if 'tool_calls' in delta_dict and delta.tool_calls is not None:
+            func = delta.tool_calls[0].function
+            new_elem = ToolCall(func.name, func.arguments)
+        elif 'reasoning_content' in delta_dict:
+            new_elem = Thinking(delta_dict['reasoning_content'])
+        elif delta.content is not None:
+            new_elem = Message(delta.content)
+        else:
+            print(f'Unknown delta {delta}')
+            new_elem = None
+
+        finalized_element: Optional[StreamingElement] = None
+        match (self.buffered_element, new_elem):
+            case (None, elem):
+                self.buffered_element = elem
+            case (Message(content=c1), Message(content=c2)):
+                self.buffered_element = Message(c1 + c2)
+            case (Thinking(content=c1), Thinking(content=c2)):
+                self.buffered_element = Thinking(c1 + c2)
+            case (ToolCall(name=name, parameters=p1), ToolCall(parameters=p2)):
+                self.buffered_element = ToolCall(name, p1 + p2)
+            case _:
+                finalized_element = self.buffered_element
+                self.buffered_element = new_elem
+        return (new_elem, finalized_element)
+
+def run_shell_command(tool_call: ToolCall) -> ShellResult:
+    try:
+        params = json.loads(tool_call.parameters)
+        command: str = params['command']
+        if not isinstance(command, str):
+            raise ValueError('Cannot parse the command field. Double-check if input is valid JSON.')
+        completed = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            executable='/bin/bash',
+        )
+        return ShellResult(
+            command=command,
+            returncode=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
+    except Exception as e:
+        return ShellResult(command=command, returncode=-1, stdout="", stderr=str(e))
+
+
+def run_tool_call(call: ToolCall) -> ToolCallResult:
+    if call.name != 'run_shell_command':
+        raise ValueError('Only shell commands supported for now')
+    shell = run_shell_command(call)
+    output_str = json.dumps({'command': shell.command, 'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
+    return ToolCallResult(call.name, call.parameters, output_str)
+
 @app.route('/api/prompt', methods=['POST'])
 def prompt_model():
     payload: dict[str, Any] = request.get_json()
@@ -166,49 +296,39 @@ def prompt_model():
     insert_message(conn, conv_id, 'user', [{'type': 'message', 'content': prompt}])
 
     def generate_stream():
-        elems: List[Dict[str, Any]] = []
-        buffered_element_type: Optional[str] = None
-        buffered_element_content: Optional[str] = None
+        processor = DeltaProcessor()
+        persisted_elements: List[dict[str, Any]] = []
         for chunk in chat_gen:
-            delta: ChoiceDelta = chunk.choices[0].delta
-            delta_dict = delta.model_dump()
-            if 'reasoning_content' in delta_dict:
-                elem_type = 'thinking'
-                content = delta.reasoning_content
-            elif delta.content is not None:
-                elem_type = 'message'
-                content = delta.content
-            else:
-                print('Skipping empty delta', delta)
-                continue
-            print(delta)
+            (delta, aggregated_element) = processor.process(chunk)
+            if delta is not None:
+                print(f'Processed new delta: {delta}')
+            match delta:
+                case Message(content=content):
+                    yield json.dumps({'message': {'content': content}})
+                case Thinking(content=content):
+                    yield json.dumps({'message': {'thinking': content}})
+                case _:
+                    print(f'Not broadcasting {delta}')
+            if aggregated_element is not None:
+                print(f'Aggregated new element: {aggregated_element}')
+            match aggregated_element:
+                case Message() as message:
+                    result_json = to_json_dict(message)
+                    persisted_elements.append(result_json)
+                case Thinking() as thinking:
+                    result_json = to_json_dict(thinking)
+                    persisted_elements.append(result_json)
+                case ToolCall() as call:
+                    result = run_tool_call(call)
+                    print(f'Tool call finished: {result}')
+                    result_json = to_json_dict(result)
+                    yield json.dumps(result_json)
+                    persisted_elements.append(result_json)
 
-            if buffered_element_type is None:
-                buffered_element_type = elem_type
-                buffered_element_content = ''
-            if elem_type != buffered_element_type:
-                elems.append({
-                    'type': buffered_element_type,
-                    'content': buffered_element_content
-                })
-                print(f'Finished {buffered_element_type} {buffered_element_content}')
-                buffered_element_content = ''
-                buffered_element_type = elem_type
-            buffered_element_content += content
-            message = {}
-            if buffered_element_type == 'message':
-                message['content'] = content
-            elif buffered_element_type == 'thinking':
-                message['thinking'] = content
-            yield json.dumps({'message': message})
-        if buffered_element_content is not None:
-            elems.append({
-                'type': buffered_element_type,
-                'content': buffered_element_content
-            })
-        insert_message(conn, conv_id, 'assistant', elems)
-
-
+        # Flush any remaining buffered content
+        # for e in final_elements:
+        #     aggr_elems.append(e)
+        insert_message(conn, conv_id, 'assistant', persisted_elements)
 
     response = Response(generate_stream(), mimetype='text/plain')
     response.headers['X-Conversation-ID'] = str(conv_id)

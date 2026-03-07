@@ -141,20 +141,19 @@
         div.addEventListener('click', () => {
           document.querySelectorAll('.menu-item').forEach(t => t.classList.remove('selected'));
           div.classList.add('selected');
-          selectedConversationId = conv.id;
+          selectedConversationId = conv.id;          
           loadConversation(conv.id);
         });
         list.appendChild(div);
       });
-    }
-
+    }    
+    
     function renderMessage(container, role, label, element) {
       const labelEl = document.createElement('div');
       labelEl.textContent = label + ':';
       labelEl.classList.add('msg-label');
       container.appendChild(labelEl);
       if (element.type === 'thinking') {
-
         const details = document.createElement('details');
         details.className = 'msg-body';
         const summary = document.createElement('summary');
@@ -165,6 +164,16 @@
         content.className = 'msg-body';
         details.appendChild(content);
         container.appendChild(details);
+      } else if (element.type === 'tool_call') {
+        const containerElem = document.createElement('details');
+        containerElem.dataset.mode = 'function_call';
+        const summary = document.createElement('summary');
+        summary.textContent = `Function Call: ${element.name}`;
+        containerElem.appendChild(summary);
+        const pre = document.createElement('pre');
+        pre.textContent = `Input: ${element.parameters}\n\nOutput:\n${element.result}`;
+        containerElem.appendChild(pre);
+        container.appendChild(containerElem);
       } else {
         const p = document.createElement('p');
         p.textContent = element.content;
@@ -232,7 +241,7 @@
         if (startIdx === -1) break;
         let depth = 0;
         let endIdx = -1;
-        for (let i = startIdx; i < buffer.length; i++) {
+        for (let i = startIdx; i < buffer.length; i++) {          
           if (buffer[i] === '{') depth++;
           else if (buffer[i] === '}') depth--;
           if (depth === 0) { endIdx = i; break; }
@@ -240,23 +249,37 @@
         if (endIdx === -1) break;
         const jsonStr = buffer.slice(startIdx, endIdx + 1);
         buffer = buffer.slice(endIdx + 1);
-        try {
-          const val = JSON.parse(jsonStr);
-          const msg = val['message'];
-          const mode = 'thinking' in msg ? 'thinking' : 'response';
-          if (!currentWriteElem || currentWriteElem.dataset.mode !== mode) {
-            const container = mode === 'thinking' ? document.createElement('details') : document.createElement('p');
-            if (mode === 'thinking') {
+          try {
+            const val = JSON.parse(jsonStr);
+
+            if ('type' in val && val.type === 'tool_call') {
+              const container = document.createElement('details');
+              container.dataset.mode = 'function_call';
               const summary = document.createElement('summary');
-              summary.textContent = 'Thinking';
+              summary.textContent = `Function Call: ${val.name}`;
               container.appendChild(summary);
+              const pre = document.createElement('pre');
+              pre.textContent = `Input: ${val.parameters}\n\nOutput:\n${val.result}`;
+              container.appendChild(pre);
+              responseContainer.appendChild(container);
+              continue;
             }
-            container.dataset.mode = mode;
-            responseContainer.appendChild(container);
-            currentWriteElem = container;
-          }
-          const token = mode === 'thinking' ? msg['thinking'] : msg['content'];
-          if (token) currentWriteElem.append(token);
+
+            const msg = val.message;
+            const mode = 'thinking' in msg ? 'thinking' : 'response';
+            if (!currentWriteElem || currentWriteElem.dataset.mode !== mode) {
+              const container = mode === 'thinking' ? document.createElement('details') : document.createElement('p');
+              if (mode === 'thinking') {
+                const summary = document.createElement('summary');
+                summary.textContent = 'Thinking';
+                container.appendChild(summary);
+              }
+              container.dataset.mode = mode;
+              responseContainer.appendChild(container);
+              currentWriteElem = container;
+            }
+            const token = mode === 'thinking' ? msg['thinking'] : msg['content'];
+            if (token) currentWriteElem.append(token);
         } catch (e) {
           console.error('JSON parse error', e);
         }

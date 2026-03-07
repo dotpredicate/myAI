@@ -23,7 +23,6 @@ Project structure:
 - `./app.py` - entrypoint to the Python web server
 - `./static` - static resources deployed by the server, web front-end
 
-
 ### Quickstart
 1. source .venv/bin/activate
 2. pip install -r requirements.txt
@@ -43,3 +42,4 @@ At startup, the module scans the `migrations` folder for SQL files, sorts them i
 - no cloud integrations
 - monolithic back-end, single instance
 - no caching like Redis, prefer in-memory structures
+- function calls and shell execution aren't secured
