@@ -340,9 +340,9 @@ async def prompt_model(request: Request):
                 # Stream assistant content.
                 match delta:
                     case Message(content=content):
-                        yield json.dumps({'message': {'content': content}})
+                        yield json.dumps({'type': 'response', 'content': content})
                     case Thinking(content=content):
-                        yield json.dumps({'message': {'thinking': content}})
+                        yield json.dumps({'type': 'reasoning', 'content': content})
                     case _:
                         print(f'Not broadcasting {delta}')
 

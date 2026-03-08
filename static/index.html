@@ -160,13 +160,13 @@
         div.addEventListener('click', () => {
           document.querySelectorAll('.menu-item').forEach(t => t.classList.remove('selected'));
           div.classList.add('selected');
-          selectedConversationId = conv.id;          
+          selectedConversationId = conv.id;
           loadConversation(conv.id);
         });
         list.appendChild(div);
       });
-    }    
-    
+    }
+
     function renderMessage(container, role, label, element) {
       const labelEl = document.createElement('div');
       labelEl.textContent = label + ':';
@@ -228,8 +228,7 @@
       responseContainer.scrollTop = responseContainer.scrollHeight;
     }
 
-    async function sendPrompt() {
-      const promptText = document.getElementById('prompt').value;
+    async function* streamPrompt(promptText, responseContainer) {
       const res = await fetch('/api/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -241,8 +240,6 @@
       });
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      const responseContainer = document.getElementById('response');
-
       if (!selectedConversationId) {
         const newConvId = res.headers.get('X-Conversation-ID');
         if (newConvId) {
@@ -254,25 +251,7 @@
         responseContainer.appendChild(title);
       }
 
-      renderMessage(responseContainer, 'user', 'User', { type: 'message', content: promptText });
-
-      const assistantLabel = document.createElement('div');
-      assistantLabel.textContent = 'Assistant:';
-      assistantLabel.classList.add('msg-label');
-      responseContainer.appendChild(assistantLabel);
-
-      // Create a container for the assistant message content and a parser for it.
-      const assistantMsgDiv = document.createElement('div');
-      assistantMsgDiv.className = 'msg-body';
-      const assistantRenderer = smd.default_renderer(assistantMsgDiv);
-      const assistantParser = smd.parser(assistantRenderer);
-      // Keep a reference to the parser on the div for future updates.
-      assistantMsgDiv._smdParser = assistantParser;
-      responseContainer.appendChild(assistantMsgDiv);
-
       let buffer = '';
-      // currentWriteElem will point to the element where we append plain text chunks.
-      let currentWriteElem = assistantMsgDiv;
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -281,7 +260,7 @@
         if (startIdx === -1) break;
         let depth = 0;
         let endIdx = -1;
-        for (let i = startIdx; i < buffer.length; i++) {          
+        for (let i = startIdx; i < buffer.length; i++) {
           if (buffer[i] === '{') depth++;
           else if (buffer[i] === '}') depth--;
           if (depth === 0) { endIdx = i; break; }
@@ -289,47 +268,92 @@
         if (endIdx === -1) break;
         const jsonStr = buffer.slice(startIdx, endIdx + 1);
         buffer = buffer.slice(endIdx + 1);
-          try {
-            const val = JSON.parse(jsonStr);
+        yield JSON.parse(jsonStr);
+      }
+    }
+    async function sendPrompt() {
 
-            if ('type' in val && val.type === 'tool_call') {
-              const container = document.createElement('details');
-              container.dataset.mode = 'function_call';
-              const summary = document.createElement('summary');
-              summary.textContent = `Function Call: ${val.name}`;
-              container.appendChild(summary);
-              const pre = document.createElement('pre');
-              pre.textContent = `Input: ${val.parameters}\n\nOutput:\n${val.result}`;
-              container.appendChild(pre);
-              responseContainer.appendChild(container);
-              continue;
-            }
+      const responseContainer = document.getElementById('response');
+      const promptText = document.getElementById('prompt').value;
 
-            const msg = val.message;
-            const mode = 'thinking' in msg ? 'thinking' : 'response';
-            if (mode === 'thinking') {
-              // For thinking chunks we use the currentWriteElem container
-              if (!currentWriteElem || currentWriteElem.dataset.mode !== mode) {
-                const container = document.createElement('details');
-                const summary = document.createElement('summary');
-                summary.textContent = 'Thinking';
-                container.appendChild(summary);
-                container.dataset.mode = mode;
-                responseContainer.appendChild(container);
-                currentWriteElem = container;
-              }
-              const token = msg['thinking'];
-              if (token) currentWriteElem.append(token);
-            } else {
-              // For assistant response content, feed to markdown parser
-              const token = msg['content'];
-              if (token) {
-                smd.parser_write(assistantParser, token);
-              }
-            }
-        } catch (e) {
-          console.error('JSON parse error', e);
+      renderMessage(responseContainer, 'user', 'User', { type: 'message', content: promptText });
+
+      var streamState = { type: null };
+      
+      const initializeState = (newType) => {
+        console.log('Initializing state for type', newType);
+        const assistantLabel = document.createElement('div');
+        assistantLabel.textContent = 'Assistant:';
+        assistantLabel.classList.add('msg-label');
+        responseContainer.appendChild(assistantLabel);
+        if(newType === 'reasoning') {
+          const container = document.createElement('details');
+          const summary = document.createElement('summary');
+          summary.textContent = 'Reasoning';
+          container.appendChild(summary);
+          container.dataset.mode = 'reasoning';
+          responseContainer.appendChild(container);
+          streamState.type = 'reasoning';
+          streamState.writeElem = container;
+        } else if (newType === 'response') {
+          const msgDiv = document.createElement('div');
+          msgDiv.className = 'msg-body';
+          const renderer = smd.default_renderer(msgDiv);
+          const parser = smd.parser(renderer);
+          responseContainer.appendChild(msgDiv);
+          streamState.type = 'response';
+          streamState.parser = parser;
+        } else if (newType === 'tool_call') {
+          streamState.type = 'tool_call';
+        } else {
+          console.log('Unhandled type', newType);
+          // Unhandled state
         }
+        console.log('Initialized state', streamState);
+      };
+
+      const finalizeState = () => {
+        console.log('Finalizing current state', streamState);
+        if(streamState.type === 'thinking') {
+          // Explicit no-op
+        } else if (streamState.type === 'response') {
+          smd.parser_end(currentState.parser);
+        } else if (streamState.type === 'tool_call') {
+          // Explicit no-op
+        } else {
+          // Unhandled state
+        }
+      };
+
+      const handleStreamChunk = (chunk) => {
+        console.log('Handling stream chunk', chunk)
+        if(streamState.type === 'reasoning') {
+          const token = chunk.content;
+          streamState.writeElem.append(token);
+        } else if (streamState.type === 'response') {
+          const token = chunk.content;
+          smd.parser_write(streamState.parser, token);
+        } else if (streamState.type === 'tool_call') {
+          const container = document.createElement('details');
+          container.dataset.mode = 'function_call';
+          const summary = document.createElement('summary');
+          summary.textContent = `Function Call: ${chunk.name}`;
+          container.appendChild(summary);
+          const pre = document.createElement('pre');
+          pre.textContent = `Input: ${chunk.parameters}\n\nOutput:\n${chunk.result}`;
+          container.appendChild(pre);
+          responseContainer.appendChild(container);
+        } else {
+          // Unhandled state
+        }
+      };
+
+      for await (const val of streamPrompt(promptText, responseContainer)) {
+        if(val.type !== streamState.type) {
+          finalizeState();
+          initializeState(val.type);
+        }
+        handleStreamChunk(val);
       }
       responseContainer.scrollTop = responseContainer.scrollHeight;
     }
