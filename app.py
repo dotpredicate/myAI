@@ -1,4 +1,8 @@
-from flask import Flask, jsonify, request, Response
+# Convert from Flask to FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+import uvicorn
+from fastapi.staticfiles import StaticFiles
 import psycopg2
 from psycopg2.extensions import connection
 import os
@@ -14,7 +18,8 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from datetime import datetime
 
 
-app = Flask(__name__)
+app = FastAPI(title="MyAI FastAPI")
+
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 client = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
@@ -25,6 +30,11 @@ conn = psycopg2.connect(
     host='localhost',
     port='5432'
 )
+
+
+@app.get("/")
+async def read_index():
+    return FileResponse("static/index.html")
 
 # Define the function schema for OpenAI function calling
 FUNCTIONS = [
@@ -58,57 +68,32 @@ def create_conversation(conn: connection, title: str) -> int:
         return conv_id
     
 
-def insert_message(conn: connection, conv_id: int, role: str, elements: List[Dict[str, str]]) -> None:
+def insert_message(conn: connection, conv_id: int, role: str, element: Dict[str, str]) -> int:
     """Persist a full array of elements for a message."""
     with conn.cursor() as cur:
         cur.execute(
             """
             INSERT INTO messages (conversation_id, role, elements, created_at)
             VALUES (%s, %s, %s, NOW())
+            RETURNING id
             """,
-            (conv_id, role, json.dumps(elements))
+            (conv_id, role, json.dumps(element))
         )
+        (id,) = cur.fetchone()
         conn.commit()
+    print(f'Inserted new message {id}')
+    return id
 
-def get_messages_for_continuation(conn: connection, conv_id: int) -> list[ChatCompletionMessageParam]:
-    messages: list[ChatCompletionMessageParam] = []
+def get_messages_for_continuation(conn: connection, conv_id: int) -> list[dict[str, any]]:
+    messages = []
 
     with conn.cursor() as cur:
         cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
         for row in cur.fetchall():
-            message_id, role, elements = row
+            message_id, role, element = row
             
-            for element in elements:
-                elem_type = element['type']
-                if elem_type == 'thinking':
-                    msg = {'role': role}               
-                    msg['thinking'] = element['content']
-                    messages.append(msg)
-                elif elem_type == 'message':
-                    msg = {'role': role}               
-                    msg['content'] = element['content'] 
-                    messages.append(msg)
-                elif elem_type == 'tool_call':
-                    tool_call = {'role': 'assistant'}
-                    tool_call['tool_calls'] = [{
-                        'id': str(message_id),
-                        'type': 'function',
-                        'function': {
-                            'name': element['name'],
-                            'arguments': element['parameters'],
-                        },
-                    }]
-                    tool_call_result = {
-                        'role': 'tool',
-                        'tool_call_id': str(message_id),
-                        'content': element['result']
-                    }
-                    messages.append(tool_call)
-                    messages.append(tool_call_result)
-                    print(messages)
-                else:
-                    raise ValueError(f'Unhandled element type {elem_type}')
-    
+            new_messages = to_oai_completions_elements(message_id, role, element)
+            messages.extend(new_messages)
     return messages
 
 def ask_model_stream(model_id: str, prompt_text: str, conversation_context: Optional[list[dict[str, Any]]] = None) -> Generator[ChatCompletionChunk, None, None]:
@@ -171,17 +156,15 @@ def init_database():
         conn.commit()
         print(f'Applied migration: {migration_file}')
 
-@app.route('/api/models')
-def get_models():
+@app.get('/api/models')
+async def get_models():
     try:
         res = client.models.list()
         models = list(res)
     except Exception as e:
         print(f"Error fetching models: {e}")
         models = []
-    return jsonify({"models": [{'id': m.id, 'name': m.id} for m in models]})
-
-
+    return JSONResponse(content={"models": [{'id': m.id, 'name': m.id} for m in models]})
 
 class ShellResult(NamedTuple):
     command: str
@@ -212,6 +195,41 @@ def to_json_dict(element: FinishedElement) -> dict[str, Any]:
             return {'type': 'thinking', 'content': content}
         case ToolCallResult(name=name, parameters=parameters, result=result):
             return {'type': 'tool_call', 'name': name, 'parameters': parameters, 'result': result}
+
+def to_oai_completions_elements(message_id: int, role: str, myai_dict: dict[str, any]) -> list[dict[str, Any]]:
+    messages = []
+    elem_type = myai_dict['type']
+    if elem_type == 'thinking':
+        # msg = {'role': role}               
+        # msg['thinking'] = element['content']
+        # messages.append(msg)
+        pass
+    elif elem_type == 'message':
+        msg = {'role': role}               
+        msg['content'] = myai_dict['content'] 
+        messages.append(msg)
+    elif elem_type == 'tool_call':
+        tool_call = {'role': 'assistant'}
+        tool_call['content'] = ''
+        tool_call['tool_calls'] = [{
+            'id': str(message_id),
+            'type': 'function',
+            'function': {
+                'name': myai_dict['name'],
+                'arguments': myai_dict['parameters'],
+            },
+        }]
+        tool_call_result = {
+            'role': 'tool',
+            'tool_call_id': str(message_id),
+            'content': myai_dict['result']
+        }
+        messages.append(tool_call)
+        messages.append(tool_call_result)
+        print(messages)
+    else:
+        raise ValueError(f'Unhandled element type {elem_type}')
+    return messages
 
 class DeltaProcessor:
     def __init__(self):
@@ -268,7 +286,9 @@ def run_shell_command(tool_call: ToolCall) -> ShellResult:
             stderr=completed.stderr,
         )
     except Exception as e:
-        return ShellResult(command=command, returncode=-1, stdout="", stderr=str(e))
+        # command may not be defined if JSON parsing failed; default to empty string
+        cmd = command if 'command' in locals() else ''
+        return ShellResult(command=cmd, returncode=-1, stdout="", stderr=str(e))
 
 
 def run_tool_call(call: ToolCall) -> ToolCallResult:
@@ -278,85 +298,106 @@ def run_tool_call(call: ToolCall) -> ToolCallResult:
     output_str = json.dumps({'command': shell.command, 'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
     return ToolCallResult(call.name, call.parameters, output_str)
 
-@app.route('/api/prompt', methods=['POST'])
-def prompt_model():
-    payload: dict[str, Any] = request.get_json()
+@app.post('/api/prompt')
+async def prompt_model(request: Request):
+    payload: dict[str, Any] = await request.json()
     prompt: str = payload.get('prompt', '')
-    model_id: str = payload.get('model_id', '')
+    model_id: Optional[str] = payload.get('model_id')
+    if model_id is None:
+        raise ValueError('Unknown model')
     conversation_id: Optional[int] = payload.get('conversation_id')
 
     if conversation_id:
         messages_context = get_messages_for_continuation(conn, conversation_id)
-        chat_gen = ask_model_stream(model_id, prompt, messages_context)
-        conv_id = conversation_id
     else:
-        conv_id = create_conversation(conn, prompt)
-        chat_gen = ask_model_stream(model_id, prompt)
+        conversation_id = create_conversation(conn, prompt)
+        messages_context = []
 
-    insert_message(conn, conv_id, 'user', [{'type': 'message', 'content': prompt}])
+    user_message = Message(content=prompt)
+    user_message_dict = to_json_dict(user_message)
+    user_message_id = insert_message(conn, conversation_id, 'user', user_message_dict)
+    user_message_oai_dict = to_oai_completions_elements(user_message_id, 'user', user_message_dict)
+
+    messages_context.extend(user_message_oai_dict)
+
 
     def generate_stream():
-        processor = DeltaProcessor()
-        persisted_elements: List[dict[str, Any]] = []
-        for chunk in chat_gen:
-            (delta, aggregated_element) = processor.process(chunk)
-            if delta is not None:
-                print(f'Processed new delta: {delta}')
-            match delta:
-                case Message(content=content):
-                    yield json.dumps({'message': {'content': content}})
-                case Thinking(content=content):
-                    yield json.dumps({'message': {'thinking': content}})
-                case _:
-                    print(f'Not broadcasting {delta}')
-            if aggregated_element is not None:
-                print(f'Aggregated new element: {aggregated_element}')
-            match aggregated_element:
-                case Message() as message:
-                    result_json = to_json_dict(message)
-                    persisted_elements.append(result_json)
-                case Thinking() as thinking:
-                    result_json = to_json_dict(thinking)
-                    persisted_elements.append(result_json)
-                case ToolCall() as call:
-                    result = run_tool_call(call)
-                    print(f'Tool call finished: {result}')
-                    result_json = to_json_dict(result)
-                    yield json.dumps(result_json)
-                    persisted_elements.append(result_json)
+        run_next_loop = True
+        while run_next_loop:
+            processor = DeltaProcessor()
+            print(f'{model_id=}, {messages_context=}')
+            chat_gen_inner = client.chat.completions.create(
+                model=model_id,
+                messages=messages_context,
+                stream=True,
+                tools=FUNCTIONS,
+            )
+            run_next_loop = False
+            for chunk in chat_gen_inner:
+                (delta, aggregated_element) = processor.process(chunk)
+                if delta is not None:
+                    print(f'Processed new delta: {delta}')
+                # Stream assistant content.
+                match delta:
+                    case Message(content=content):
+                        yield json.dumps({'message': {'content': content}})
+                    case Thinking(content=content):
+                        yield json.dumps({'message': {'thinking': content}})
+                    case _:
+                        print(f'Not broadcasting {delta}')
 
-        # Flush any remaining buffered content
-        # for e in final_elements:
-        #     aggr_elems.append(e)
-        insert_message(conn, conv_id, 'assistant', persisted_elements)
+                if aggregated_element is not None:
+                    print(f'Aggregated new element: {aggregated_element}')
+                match aggregated_element:
+                    case Message() as message:
+                        result_json = to_json_dict(message)
+                        msg_id = insert_message(conn, conversation_id, 'assistant', result_json)
+                        oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
+                        messages_context.extend(oai_elems)
+                    case Thinking() as thinking:
+                        result_json = to_json_dict(thinking)
+                        msg_id = insert_message(conn, conversation_id, 'assistant', result_json)
+                        oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
+                        messages_context.extend(oai_elems)
+                    case ToolCall() as call:
+                        result = run_tool_call(call)
+                        print(f'Tool call finished: {result}')
+                        result_json = to_json_dict(result)
+                        yield json.dumps(result_json)
+                        msg_id = insert_message(conn, conversation_id, 'assistant', result_json)
+                        oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
+                        messages_context.extend(oai_elems)
+                        # Loop back for tool call
+                        run_next_loop = True
 
-    response = Response(generate_stream(), mimetype='text/plain')
-    response.headers['X-Conversation-ID'] = str(conv_id)
-    return response
+    stream = StreamingResponse(generate_stream(), media_type='text/plain')
+    stream.headers['X-Conversation-ID'] = str(conversation_id)
+    return stream
 
-@app.route('/api/conversations')
-def get_conversations():
+@app.get('/api/conversations')
+async def get_conversations():
     with conn.cursor() as cur:
         cur.execute("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")
         rows = cur.fetchall()
-    conversations = [{'id': r[0], 'title': r[1], 'created_at': r[2]} for r in rows]
-    return jsonify(conversations)
+    conversations = [{'id': r[0], 'title': r[1], 'created_at': r[2].isoformat()} for r in rows]
+    return JSONResponse(content=conversations)
 
-@app.route('/api/conversation/<int:conv_id>')
-def get_conversation(conv_id):
+@app.get('/api/conversation/{conv_id}')
+async def get_conversation(conv_id: int):
     with conn.cursor() as cur:
         cur.execute("SELECT id, title, created_at FROM conversations WHERE id = %s", (conv_id,))
         row = cur.fetchone()
-        if not row:
-            return jsonify({'error': 'Not found'}), 404
+    if not row:
+        return JSONResponse(status_code=404, content={'error': 'Not found'})
+    # Fetch messages for the conversation
+    with conn.cursor() as cur:
         cur.execute("SELECT id, role, elements, created_at FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
-        messages = [{'id': r[0], 'role': r[1], 'elements': r[2], 'created_at': r[3]} for r in cur.fetchall()]
-    return jsonify({'id': row[0], 'title': row[1], 'created_at': row[2], 'messages': messages})
+        messages = [{'id': r[0], 'role': r[1], 'elements': r[2], 'created_at': r[3].isoformat()} for r in cur.fetchall()]
+    return JSONResponse(content={'id': row[0], 'title': row[1], 'created_at': row[2].isoformat(), 'messages': messages})
 
-@app.route('/')
-def index():
-    return app.send_static_file('index.html')
+# Mount static files
+app.mount("/", StaticFiles(directory="static"), name="static")
 
 if __name__ == '__main__':
     init_database()
-    app.run(debug=True)
+    uvicorn.run(app, host='0.0.0.0', port=8000, log_level='debug')

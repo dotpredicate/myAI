@@ -83,6 +83,19 @@
     .msg-body {
       margin-top: .5em;
     }
+    .msg-body table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 0.5em;
+    }
+    .msg-body th,
+    .msg-body td {
+      border: 1px solid #ddd;
+      padding: 4px;
+    }
+    .msg-body th {
+      background: #f9f9f9;
+    }
   </style>
 </head>
 
@@ -104,6 +117,12 @@
       <button id="sendBtn">Send</button>
     </div>
   </div>
+
+  <script type="module">
+    import * as smdModule from "./smd.js";
+    // Expose smd to the global scope so other scripts can access it
+    window.smd = smdModule;
+  </script>
 
   <script>
     async function loadModels() {
@@ -175,10 +194,23 @@
         containerElem.appendChild(pre);
         container.appendChild(containerElem);
       } else {
-        const p = document.createElement('p');
-        p.textContent = element.content;
-        p.className = 'msg-body';
-        container.appendChild(p);
+        // For regular messages, including assistant responses.
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'msg-body';
+        // If this is an assistant message, render Markdown using smd.
+        if (role === 'assistant') {
+          const renderer = smd.default_renderer(msgDiv);
+          const parser = smd.parser(renderer);
+          // Store parser on element for streaming updates.
+          msgDiv._smdParser = parser;
+          smd.parser_write(parser, element.content);
+          // Since we only have a complete chunk for historical messages, flush.
+          smd.parser_end(parser);
+        } else {
+          // Regular user or tool messages.
+          msgDiv.textContent = element.content;
+        }
+        container.appendChild(msgDiv);
       }
     }
 
@@ -191,9 +223,7 @@
       title.textContent = data.title + ' (' + new Date(data.created_at).toLocaleString() + ')';
       responseContainer.appendChild(title);
       for (const msg of data.messages) {
-        for (const elem of msg.elements) {
-          renderMessage(responseContainer, msg.role, msg.role, elem);
-        }
+        renderMessage(responseContainer, msg.role, msg.role, msg.elements);
       }
       responseContainer.scrollTop = responseContainer.scrollHeight;
     }
@@ -231,8 +261,18 @@
       assistantLabel.classList.add('msg-label');
       responseContainer.appendChild(assistantLabel);
 
+      // Create a container for the assistant message content and a parser for it.
+      const assistantMsgDiv = document.createElement('div');
+      assistantMsgDiv.className = 'msg-body';
+      const assistantRenderer = smd.default_renderer(assistantMsgDiv);
+      const assistantParser = smd.parser(assistantRenderer);
+      // Keep a reference to the parser on the div for future updates.
+      assistantMsgDiv._smdParser = assistantParser;
+      responseContainer.appendChild(assistantMsgDiv);
+
       let buffer = '';
-      let currentWriteElem = null;
+      // currentWriteElem will point to the element where we append plain text chunks.
+      let currentWriteElem = assistantMsgDiv;
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -267,19 +307,26 @@
 
             const msg = val.message;
             const mode = 'thinking' in msg ? 'thinking' : 'response';
-            if (!currentWriteElem || currentWriteElem.dataset.mode !== mode) {
-              const container = mode === 'thinking' ? document.createElement('details') : document.createElement('p');
-              if (mode === 'thinking') {
+            if (mode === 'thinking') {
+              // For thinking chunks we use the currentWriteElem container
+              if (!currentWriteElem || currentWriteElem.dataset.mode !== mode) {
+                const container = document.createElement('details');
                 const summary = document.createElement('summary');
                 summary.textContent = 'Thinking';
                 container.appendChild(summary);
+                container.dataset.mode = mode;
+                responseContainer.appendChild(container);
+                currentWriteElem = container;
               }
-              container.dataset.mode = mode;
-              responseContainer.appendChild(container);
-              currentWriteElem = container;
+              const token = msg['thinking'];
+              if (token) currentWriteElem.append(token);
+            } else {
+              // For assistant response content, feed to markdown parser
+              const token = msg['content'];
+              if (token) {
+                smd.parser_write(assistantParser, token);
+              }
             }
-            const token = mode === 'thinking' ? msg['thinking'] : msg['content'];
-            if (token) currentWriteElem.append(token);
         } catch (e) {
           console.error('JSON parse error', e);
         }
