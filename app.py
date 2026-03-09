@@ -1,5 +1,5 @@
 # Convert from Flask to FastAPI
-from fastapi import FastAPI, Request, UploadFile, File, Body
+from fastapi import BackgroundTasks, FastAPI, Request, UploadFile, File, Body
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 import uvicorn
 import requests
@@ -8,6 +8,7 @@ import psycopg2
 from psycopg2.extensions import connection
 from pgvector.psycopg2 import register_vector
 import os
+import pathlib
 import glob
 import json
 import hashlib
@@ -21,6 +22,9 @@ from datetime import datetime
 
 
 app = FastAPI(title="MyAI FastAPI")
+
+KNOWLEDGE_FOLDER = os.getenv('KNOWLEDGE_FOLDER', './knowledge')
+os.makedirs(KNOWLEDGE_FOLDER, exist_ok=True)
 
 # Endpoint for completions
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
@@ -431,39 +435,6 @@ def get_token_chunks(text, max_tokens=400, overlap=50) -> tuple[list[list[int]],
     assert len(token_ids) == len(text_chunks)
     return token_ids, text_chunks
 
-# Ingestion endpoint – accepts one or more text files
-@app.post('/api/ingest')
-async def ingest(files: List[UploadFile] = File(...)):
-    inserted_ids = []
-    for file in files:
-        content_bytes = await file.read()
-        try:
-            text = content_bytes.decode('utf-8')
-        except Exception:
-            text = content_bytes.decode('latin-1')
-
-        token_ids, text_chunks = get_token_chunks(text)
-
-        embedding_resp = embeddings_endpoint.embeddings.create(
-            model=EMBEDDING_MODEL,
-            input=token_ids
-        )
-        print(f'Got {len(embedding_resp.data)} embeddings created by {embedding_resp.model}')
-        assert len(embedding_resp.data) == len(text_chunks)
-
-        title = file.filename
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM documents WHERE title=%s", (title,))
-            for embedding, embedding_text in zip(embedding_resp.data, text_chunks):
-                cur.execute(
-                    "INSERT INTO documents (title, content, embedding) VALUES (%s, %s, %s) RETURNING id",
-                    (title, embedding_text, embedding.embedding)
-                )
-                (doc_id,) = cur.fetchone()
-                conn.commit()
-                inserted_ids.append(doc_id)
-    return JSONResponse(content={'ids': inserted_ids})
-
 # Search endpoint – returns top_k relevant documents
 @app.post('/api/search')
 async def search(payload: dict = Body(...)):
@@ -479,22 +450,69 @@ async def search(payload: dict = Body(...)):
     query_vec = embedding_resp.data[0].embedding
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT id, title, content, embedding <=> %s::vector AS score FROM documents ORDER BY score ASC LIMIT %s",
+            """SELECT document_id, file_path, chunk_index, chunk_text, embedding <=> %s::vector AS score 
+            FROM document_chunks
+            JOIN documents ON documents.id=document_chunks.document_id
+            ORDER BY score ASC LIMIT %s""",
             (query_vec, top_k)
         )
         rows = cur.fetchall()
         results = []
         for row in rows:
-            doc_id, title, content, score = row
+            doc_id, file_path, chunk_index, content, score = row
             snippet = content[:200] + ('...' if len(content) > 200 else '')
-            results.append({'id': doc_id, 'title': title, 'snippet': snippet, 'score': score})
+            results.append({'id': doc_id, 'title': f"{file_path} ({chunk_index})", 'snippet': snippet, 'score': score})
     return JSONResponse(content={'results': results})
+
+def process_folder():
+    for root, _, files in os.walk(KNOWLEDGE_FOLDER):
+        for fname in files:
+            if pathlib.Path(fname).suffix.lower() not in {
+                ".md", ".txt", ".java", ".py", ".c", ".cpp", ".js", ".ts"
+            }:
+                print(f"Skipping unhandled file type {fname}")
+                continue
+
+            full_path = pathlib.Path(root) / fname
+            try:
+                full_text = full_path.read_text(encoding="utf-8")
+            except Exception as exc:
+                print(f"[WARN] Unreadable file {full_path}: {exc}")
+                continue
+
+            file_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
+            token_ids, chunk_texts = get_token_chunks(full_text)
+            embedding_resp = embeddings_endpoint.embeddings.create(
+                model=EMBEDDING_MODEL,
+                input=token_ids
+            )
+            print(f'{fname} - got {len(embedding_resp.data)} embeddings')
+            assert len(embedding_resp.data) == len(chunk_texts)
+
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM documents WHERE file_path=%s", (fname,))
+                cur.execute(
+                    "INSERT INTO documents (file_path, file_hash, content) VALUES (%s, %s, %s) RETURNING id",
+                    (fname, file_hash, full_text)
+                )
+                (doc_id,) = cur.fetchone()
+                for index, (embedding, chunk_text) in enumerate(zip(embedding_resp.data, chunk_texts)):
+                    cur.execute(
+                        "INSERT INTO document_chunks (document_id, chunk_index, chunk_text, embedding) VALUES (%s, %s, %s, %s)",
+                        (doc_id, index, chunk_text, embedding.embedding)
+                    )
+                conn.commit()
+            print(f"[OK] {full_path}")
+
+@app.post("/api/sync")
+async def sync(background_tasks: BackgroundTasks):
+    background_tasks.add_task(process_folder)
+    return JSONResponse({"status": "sync started"})
+
+@app.on_event("startup")
+async def startup_event():
+    init_database()
+    process_folder()
 
 # Mount static files
 app.mount("/", StaticFiles(directory="static"), name="static")
-
-if __name__ == '__main__':
-    init_database()
-    # Register pgvector type for psycopg2
-    register_vector(conn)
-    uvicorn.run(app, host='0.0.0.0', port=8000, log_level='debug')

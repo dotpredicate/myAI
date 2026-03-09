@@ -397,7 +397,7 @@
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, top_k: 3 })
+        body: JSON.stringify({ query, top_k: 10 })
       });
       const data = await res.json();
       const container = document.getElementById('response');
