@@ -1,3 +1,4 @@
 psycopg2-binary
 fastapi[standard]
 openai
+pgvector==0.4.2

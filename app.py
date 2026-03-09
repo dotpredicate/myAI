@@ -1,17 +1,19 @@
 # Convert from Flask to FastAPI
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File, Body
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 import uvicorn
+import requests
 from fastapi.staticfiles import StaticFiles
 import psycopg2
 from psycopg2.extensions import connection
+from pgvector.psycopg2 import register_vector
 import os
 import glob
 import json
 import hashlib
 import binascii
 import subprocess
-from typing import List, Dict, Optional, Any, Generator, NamedTuple, Union
+from typing import Dict, Optional, Any, Generator, NamedTuple, Union, List
 import openai
 from openai.types.chat.chat_completion_message_param import *
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
@@ -20,8 +22,9 @@ from datetime import datetime
 
 app = FastAPI(title="MyAI FastAPI")
 
+# Endpoint for completions
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
-client = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
+completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
 conn = psycopg2.connect(
     dbname='myai',
@@ -30,7 +33,6 @@ conn = psycopg2.connect(
     host='localhost',
     port='5432'
 )
-
 
 @app.get("/")
 async def read_index():
@@ -103,7 +105,7 @@ def ask_model_stream(model_id: str, prompt_text: str, conversation_context: Opti
     else:
         messages = []
     messages.append({'role': 'user', 'content': prompt_text})
-    res = client.chat.completions.create(
+    res = completions_endpoint.chat.completions.create(
         model=model_id,
         messages=messages,
         stream=True,
@@ -155,11 +157,12 @@ def init_database():
             )
         conn.commit()
         print(f'Applied migration: {migration_file}')
+    print('Migrations completed')
 
 @app.get('/api/models')
 async def get_models():
     try:
-        res = client.models.list()
+        res = completions_endpoint.models.list()
         models = list(res)
     except Exception as e:
         print(f"Error fetching models: {e}")
@@ -200,6 +203,7 @@ def to_oai_completions_elements(message_id: int, role: str, myai_dict: dict[str,
     messages = []
     elem_type = myai_dict['type']
     if elem_type == 'thinking':
+        # TODO: Pass thinking back to the model
         # msg = {'role': role}               
         # msg['thinking'] = element['content']
         # messages.append(msg)
@@ -272,23 +276,21 @@ def run_shell_command(tool_call: ToolCall) -> ShellResult:
         command: str = params['command']
         if not isinstance(command, str):
             raise ValueError('Cannot parse the command field. Double-check if input is valid JSON.')
-        completed = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            executable='/bin/bash',
-        )
-        return ShellResult(
-            command=command,
-            returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
-        )
     except Exception as e:
-        # command may not be defined if JSON parsing failed; default to empty string
-        cmd = command if 'command' in locals() else ''
-        return ShellResult(command=cmd, returncode=-1, stdout="", stderr=str(e))
+        return ShellResult(
+            command='',
+            returncode=-1,
+            stdout='',
+            stderr=str(e),
+        )
+    completed = subprocess.run(
+        command,
+        shell=True,
+        capture_output=True,
+        text=True,
+        executable='/bin/bash',
+    )
+    return ShellResult(command=command, returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
 
 
 def run_tool_call(call: ToolCall) -> ToolCallResult:
@@ -326,7 +328,7 @@ async def prompt_model(request: Request):
         while run_next_loop:
             processor = DeltaProcessor()
             print(f'{model_id=}, {messages_context=}')
-            chat_gen_inner = client.chat.completions.create(
+            chat_gen_inner = completions_endpoint.chat.completions.create(
                 model=model_id,
                 messages=messages_context,
                 stream=True,
@@ -395,9 +397,104 @@ async def get_conversation(conv_id: int):
         messages = [{'id': r[0], 'role': r[1], 'elements': r[2], 'created_at': r[3].isoformat()} for r in cur.fetchall()]
     return JSONResponse(content={'id': row[0], 'title': row[1], 'created_at': row[2].isoformat(), 'messages': messages})
 
+
+EMBEDDING_MODEL = 'unsloth/embeddinggemma-300m-GGUF'
+# Endpoint for completions
+LLAMA_CPP_EMBEDDINGS_URL = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:2345')
+embeddings_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_EMBEDDINGS_URL + '/v1')
+
+def get_token_chunks(text, max_tokens=400, overlap=50) -> tuple[list[list[int]], list[str]]:
+    response = requests.post(
+        f"{LLAMA_CPP_EMBEDDINGS_URL}/tokenize",
+        json={"content": text, "with_pieces": True}
+    ).json()
+
+    all_tokens = response["tokens"]
+
+    token_ids: list[list[int]] = []
+    text_chunks: list[str] = []
+
+    for i in range(0, len(all_tokens), max_tokens - overlap):
+        chunk = all_tokens[i : i + max_tokens]
+        chunk_tokens = []
+        chunk_text = ''
+        for piece in chunk:
+            chunk_tokens.append(piece["id"])
+            piece_content = piece["piece"]
+            if isinstance(piece_content, str):
+                chunk_text += piece_content
+            elif isinstance(piece_content, list):
+                chunk_text += bytes(piece_content).decode('utf-8', errors='replace')
+
+        token_ids.append(chunk_tokens)
+        text_chunks.append(chunk_text)
+    assert len(token_ids) == len(text_chunks)
+    return token_ids, text_chunks
+
+# Ingestion endpoint – accepts one or more text files
+@app.post('/api/ingest')
+async def ingest(files: List[UploadFile] = File(...)):
+    inserted_ids = []
+    for file in files:
+        content_bytes = await file.read()
+        try:
+            text = content_bytes.decode('utf-8')
+        except Exception:
+            text = content_bytes.decode('latin-1')
+
+        token_ids, text_chunks = get_token_chunks(text)
+
+        embedding_resp = embeddings_endpoint.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=token_ids
+        )
+        print(f'Got {len(embedding_resp.data)} embeddings created by {embedding_resp.model}')
+        assert len(embedding_resp.data) == len(text_chunks)
+
+        title = file.filename
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM documents WHERE title=%s", (title,))
+            for embedding, embedding_text in zip(embedding_resp.data, text_chunks):
+                cur.execute(
+                    "INSERT INTO documents (title, content, embedding) VALUES (%s, %s, %s) RETURNING id",
+                    (title, embedding_text, embedding.embedding)
+                )
+                (doc_id,) = cur.fetchone()
+                conn.commit()
+                inserted_ids.append(doc_id)
+    return JSONResponse(content={'ids': inserted_ids})
+
+# Search endpoint – returns top_k relevant documents
+@app.post('/api/search')
+async def search(payload: dict = Body(...)):
+    query_text: str = payload.get('query', '')
+    top_k: int = int(payload.get('top_k', 3))
+    if not query_text:
+        return JSONResponse(status_code=400, content={'error': 'query required'})
+    # Embed query
+    embedding_resp = embeddings_endpoint.embeddings.create(
+        model=EMBEDDING_MODEL,
+        input=query_text
+    )
+    query_vec = embedding_resp.data[0].embedding
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, title, content, embedding <=> %s::vector AS score FROM documents ORDER BY score ASC LIMIT %s",
+            (query_vec, top_k)
+        )
+        rows = cur.fetchall()
+        results = []
+        for row in rows:
+            doc_id, title, content, score = row
+            snippet = content[:200] + ('...' if len(content) > 200 else '')
+            results.append({'id': doc_id, 'title': title, 'snippet': snippet, 'score': score})
+    return JSONResponse(content={'results': results})
+
 # Mount static files
 app.mount("/", StaticFiles(directory="static"), name="static")
 
 if __name__ == '__main__':
     init_database()
+    # Register pgvector type for psycopg2
+    register_vector(conn)
     uvicorn.run(app, host='0.0.0.0', port=8000, log_level='debug')
