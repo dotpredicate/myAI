@@ -26,7 +26,6 @@ app = FastAPI(title="MyAI FastAPI")
 KNOWLEDGE_FOLDER = os.getenv('KNOWLEDGE_FOLDER', './knowledge')
 os.makedirs(KNOWLEDGE_FOLDER, exist_ok=True)
 
-# Endpoint for completions
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
@@ -44,22 +43,53 @@ async def read_index():
 
 # Define the function schema for OpenAI function calling
 FUNCTIONS = [
+    # {
+    #     "name": "run_shell_command",
+    #     "description": "Execute a shell command and return the output.",
+    #     "type": "function",
+    #     "function": {
+    #         "name": "run_shell_command",
+    #         "description": "Execute a shell command and return the output.",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {
+    #                 "command": {"type": "string", "description": "Command to execute"},
+    #             },
+    #             "required": ["command"],
+    #         },
+    #     },
+    # },
     {
-        "name": "run_shell_command",
-        "description": "Execute a shell command and return the output.",
+        "name": "run_semantic_search",
+        "description": (
+            "Search the knowledge base for the most relevant documents "
+            "based on a natural-language prompt."
+        ),
         "type": "function",
         "function": {
-            "name": "run_shell_command",
-            "description": "Execute a shell command and return the output.",
+            "name": "run_semantic_search",
+            "description": (
+                "Search the knowledge base for the most relevant documents "
+                "based on a natural-language prompt."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Command to execute"},
+                    "prompt": {
+                        "type": "string",
+                        "description": "Natural-language query to search for",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Number of documents to return",
+                    },
                 },
-                "required": ["command"],
+                "required": ["prompt"],
             },
         },
-    }
+    },
 ]
 
 def create_conversation(conn: connection, title: str) -> int:
@@ -234,7 +264,6 @@ def to_oai_completions_elements(message_id: int, role: str, myai_dict: dict[str,
         }
         messages.append(tool_call)
         messages.append(tool_call_result)
-        print(messages)
     else:
         raise ValueError(f'Unhandled element type {elem_type}')
     return messages
@@ -296,13 +325,41 @@ def run_shell_command(tool_call: ToolCall) -> ShellResult:
     )
     return ShellResult(command=command, returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
 
+def run_semantic_search(tool_call: ToolCall) -> ToolCallResult:
+    try:
+        params = json.loads(tool_call.parameters)
+        prompt: str = params["prompt"]
+        top_k: int = int(params.get("top_k", 5))
+    except Exception as exc:
+        return ToolCallResult(
+            name=tool_call.name,
+            parameters=tool_call.parameters,
+            result=json.dumps({"error": f"bad parameters: {exc}"})
+        )
+
+    try:
+        results = semantic_search(prompt, top_k)
+    except Exception as exc:
+        return ToolCallResult(
+            name=tool_call.name,
+            parameters=tool_call.parameters,
+            result=json.dumps({"error": f"search failed: {exc}"})
+        )
+    return ToolCallResult(
+        name=tool_call.name,
+        parameters=tool_call.parameters,
+        result=json.dumps({"results": json.dumps(results)})
+    )
 
 def run_tool_call(call: ToolCall) -> ToolCallResult:
-    if call.name != 'run_shell_command':
-        raise ValueError('Only shell commands supported for now')
-    shell = run_shell_command(call)
-    output_str = json.dumps({'command': shell.command, 'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
-    return ToolCallResult(call.name, call.parameters, output_str)
+    if call.name == 'run_shell_command':
+        shell = run_shell_command(call)
+        output_str = json.dumps({'command': shell.command, 'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
+        return ToolCallResult(call.name, call.parameters, output_str)
+    elif call.name == 'run_semantic_search':
+        return run_semantic_search(call)
+    else:
+        raise ValueError(f'Unsupported tool call {call.name}')
 
 @app.post('/api/prompt')
 async def prompt_model(request: Request):
@@ -335,6 +392,7 @@ async def prompt_model(request: Request):
             chat_gen_inner = completions_endpoint.chat.completions.create(
                 model=model_id,
                 messages=messages_context,
+                reasoning_effort='high',
                 stream=True,
                 tools=FUNCTIONS,
             )
@@ -375,6 +433,7 @@ async def prompt_model(request: Request):
                         messages_context.extend(oai_elems)
                         # Loop back for tool call
                         run_next_loop = True
+        print('Stream finished')
 
     stream = StreamingResponse(generate_stream(), media_type='text/plain')
     stream.headers['X-Conversation-ID'] = str(conversation_id)
@@ -435,17 +494,17 @@ def get_token_chunks(text, max_tokens=400, overlap=50) -> tuple[list[list[int]],
     assert len(token_ids) == len(text_chunks)
     return token_ids, text_chunks
 
-# Search endpoint – returns top_k relevant documents
-@app.post('/api/search')
-async def search(payload: dict = Body(...)):
-    query_text: str = payload.get('query', '')
-    top_k: int = int(payload.get('top_k', 3))
-    if not query_text:
-        return JSONResponse(status_code=400, content={'error': 'query required'})
-    # Embed query
+class SearchHit(NamedTuple):
+    document_id: int
+    file_path: str
+    chunk_index: int
+    score: float
+    text: str
+
+def semantic_search(query: str, top_k: int) -> list[SearchHit]:
     embedding_resp = embeddings_endpoint.embeddings.create(
         model=EMBEDDING_MODEL,
-        input=query_text
+        input=query
     )
     query_vec = embedding_resp.data[0].embedding
     with conn.cursor() as cur:
@@ -460,14 +519,27 @@ async def search(payload: dict = Body(...)):
         results = []
         for row in rows:
             doc_id, file_path, chunk_index, content, score = row
-            snippet = content[:200] + ('...' if len(content) > 200 else '')
-            results.append({'id': doc_id, 'title': f"{file_path} ({chunk_index})", 'snippet': snippet, 'score': score})
+            results.append(SearchHit(doc_id, file_path, chunk_index, score, content))
+        return results
+
+@app.post('/api/search')
+async def search(payload: dict = Body(...)):
+    query_text: str = payload.get('query', '')
+    top_k: int = int(payload.get('top_k', 3))
+    if not query_text:
+        return JSONResponse(status_code=400, content={'error': 'query required'})
+    results = []
+    for hit in semantic_search(query_text, top_k):
+        snippet = hit.text[:200] + ('...' if len(hit.text) > 200 else '')
+        results.append({'id': hit.document_id, 'title': f"{hit.file_path} ({hit.chunk_index})", 'snippet': snippet, 'score': hit.score})
     return JSONResponse(content={'results': results})
 
 def process_folder():
     for root, _, files in os.walk(KNOWLEDGE_FOLDER):
         for fname in files:
             if pathlib.Path(fname).suffix.lower() not in {
+                ".yml", ".yaml", ".mill", ".html", ".hbs", ".properties",
+                ".sql",
                 ".md", ".txt", ".java", ".py", ".c", ".cpp", ".js", ".ts"
             }:
                 print(f"Skipping unhandled file type {fname}")
@@ -486,14 +558,13 @@ def process_folder():
                 model=EMBEDDING_MODEL,
                 input=token_ids
             )
-            print(f'{fname} - got {len(embedding_resp.data)} embeddings')
             assert len(embedding_resp.data) == len(chunk_texts)
 
             with conn.cursor() as cur:
-                cur.execute("DELETE FROM documents WHERE file_path=%s", (fname,))
+                cur.execute("DELETE FROM documents WHERE file_path=%s", (str(full_path),))
                 cur.execute(
                     "INSERT INTO documents (file_path, file_hash, content) VALUES (%s, %s, %s) RETURNING id",
-                    (fname, file_hash, full_text)
+                    (str(full_path), file_hash, full_text)
                 )
                 (doc_id,) = cur.fetchone()
                 for index, (embedding, chunk_text) in enumerate(zip(embedding_resp.data, chunk_texts)):
@@ -502,7 +573,7 @@ def process_folder():
                         (doc_id, index, chunk_text, embedding.embedding)
                     )
                 conn.commit()
-            print(f"[OK] {full_path}")
+            print(f"[OK] {full_path} - {len(embedding_resp.data)} embeddings")
 
 @app.post("/api/sync")
 async def sync(background_tasks: BackgroundTasks):
