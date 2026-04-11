@@ -4,7 +4,6 @@ import requests
 from fastapi.staticfiles import StaticFiles
 import psycopg2
 from psycopg2.extensions import connection
-from pgvector.psycopg2 import register_vector
 import os
 import pathlib
 import glob
@@ -30,11 +29,11 @@ def get_document_by_path(path: str) -> Optional[Tuple[int, str]]:
         return row if row else None
 
 
-def upsert_document(conn: connection, path: pathlib.Path, file_hash: str, content: str) -> int:
+def upsert_document(conn: connection, path: str, file_hash: str, content: str) -> int:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id FROM documents WHERE file_path = %s",
-            (str(path),),
+            (path,),
         )
         row = cur.fetchone()
         if row:
@@ -46,7 +45,7 @@ def upsert_document(conn: connection, path: pathlib.Path, file_hash: str, conten
         else:
             cur.execute(
                 "INSERT INTO documents (file_path, file_hash, content) VALUES (%s, %s, %s) RETURNING id",
-                (str(path), file_hash, content),
+                (path, file_hash, content),
             )
             (doc_id,) = cur.fetchone()
     return doc_id
@@ -64,11 +63,10 @@ def replace_document_chunks(conn: connection, doc_id: int, chunk_texts: List[str
 
 app = FastAPI(title="MyAI FastAPI")
 
-KNOWLEDGE_FOLDER = os.getenv('KNOWLEDGE_FOLDER', './knowledge')
-WORKSPACE_DIR = os.getenv('WORKSPACE_DIR', './workspace')
-os.makedirs(KNOWLEDGE_FOLDER, exist_ok=True)
+REPOSITORIES_FOLDER = os.getenv('REPOSITORIES_FOLDER', os.path.expanduser('~/.myai/repositories'))
+WORKSPACE_DIR = os.getenv('WORKSPACE_DIR', os.path.expanduser('~/.myai/workspace'))
+os.makedirs(REPOSITORIES_FOLDER, exist_ok=True)
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
-os.makedirs(KNOWLEDGE_FOLDER, exist_ok=True)
 
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
@@ -109,14 +107,14 @@ FUNCTIONS = [
     {
         "name": "run_semantic_search",
         "description": (
-            "Search the knowledge base for the most relevant documents "
+            "Search the repositories for the most relevant documents "
             "based on a natural-language prompt."
         ),
         "type": "function",
         "function": {
             "name": "run_semantic_search",
             "description": (
-                "Search the knowledge base for the most relevant documents "
+                "Search the repositories for the most relevant documents "
                 "based on a natural-language prompt."
             ),
             "parameters": {
@@ -365,7 +363,7 @@ def run_shell_command(tool_call: ToolCall) -> ShellResult:
         )
 
     # Run the command inside the sandbox.
-    sandbox_result = run_sandboxed_command(command, WORKSPACE_DIR, KNOWLEDGE_FOLDER)
+    sandbox_result = run_sandboxed_command(command, WORKSPACE_DIR, REPOSITORIES_FOLDER)
     if 'error' in sandbox_result:
         return ShellResult(command=command, returncode=-1, stdout='', stderr=sandbox_result['error'])
     return ShellResult(
@@ -381,10 +379,10 @@ def run_shell_command(tool_call: ToolCall) -> ShellResult:
 # ---------------------------------------------------------------------------
 # The following function provides a lightweight sandboxing layer using
 # `bubblewrap` (bwrap). It isolates the executed command from the host
-# filesystem, exposing only a read‑only view of the knowledge repository
+# filesystem, exposing only a read‑only view of the repositories repository
 # (`reference_path`) and a writable workspace (`workspace_path`). This is
 # particularly useful for running untrusted code or scripts that should
-# not modify the underlying knowledge base.
+# not modify the underlying repositories base.
 # ---------------------------------------------------------------------------
 def run_sandboxed_command(command: str, workspace_path: str, reference_path: str) -> Dict[str, Any]:
     # Resolve absolute paths for safety
@@ -403,8 +401,8 @@ def run_sandboxed_command(command: str, workspace_path: str, reference_path: str
         "--dev", "/dev",
         # Unshare namespaces for isolation
         "--unshare-all",
-        # Reference knowledge bases
-        "--ro-bind", reference_path, "/knowledge",
+        # Reference repositories
+        "--ro-bind", reference_path, "/repositories",
         # Writable workspace
         "--bind", workspace_path, "/workspace",
         # Set working directory inside the sandbox
@@ -640,33 +638,69 @@ async def search(payload: dict = Body(...)):
     return JSONResponse(content={'results': results})
 
 def process_folder():
-    """Incrementally sync knowledge folder.
+    """Incrementally sync repositories folder.
 
     For each file, compute its hash and compare it against the stored value.
     Only files that are new or changed are processed.
     """
-    for root, _, files in os.walk(KNOWLEDGE_FOLDER):
+    for repo_dir in os.listdir(REPOSITORIES_FOLDER):
+        repo_full_path = str(pathlib.Path(REPOSITORIES_FOLDER) / repo_dir)
+        is_git_result = subprocess.run(
+            [
+                "git", "-C", repo_full_path, "rev-parse", "--is-inside-work-tree"
+            ],
+            capture_output=True,
+            text=True
+        )
+        is_git = is_git_result.returncode == 0
+
+        if is_git:
+            ls_git_result = subprocess.run(
+                [
+                    "git", "-C", repo_full_path, "ls-files" 
+                ],
+                capture_output=True,
+                text=True
+            )
+            if ls_git_result.returncode != 0:
+                print(f"[ERROR]: Couldn't list directories of Git repo {repo_dir} at {repo_full_path}: {ls_git_result.stderr}")
+                continue
+            files = ls_git_result.stdout.splitlines()
+        else:
+            files: list[str] = []
+            for root, _, fnames in os.walk(repo_full_path):
+                for fname in fnames:
+                    f = pathlib.Path(root) / fname
+                    f = f.relative_to(repo_full_path)
+                    files.append(f)
+
         for fname in files:
             if pathlib.Path(fname).suffix.lower() not in {
-                ".yml", ".yaml", ".mill", ".html", ".hbs", ".properties",
+                ".properties",
+                ".md", ".txt",
+                ".json", ".xml", ".csv", ".yml", ".yaml", 
+                ".mill", ".java", 
+                ".c", ".cpp", 
+                ".html", ".hbs", ".js", ".ts",
+                ".py", ".sh",
                 ".sql",
-                ".md", ".txt", ".java", ".py", ".c", ".cpp", ".js", ".ts"
             }:
                 print(f"Skipping unhandled file type {fname}")
                 continue
 
-            full_path = pathlib.Path(root) / fname
+            full_path = pathlib.Path(repo_full_path) / fname
+            relative_path = str(full_path.relative_to(REPOSITORIES_FOLDER))
             try:
                 file_bytes = full_path.read_bytes()
                 file_text = file_bytes.decode()
             except Exception as exc:
-                print(f"[WARN] Unreadable file {full_path}: {exc}")
+                print(f"[WARN] Unreadable file {relative_path}: {exc}")
                 continue
             
             file_hash = hashlib.sha256(file_bytes).hexdigest()
-            existing = get_document_by_path(str(full_path))
+            existing = get_document_by_path(relative_path)
             if existing and existing[1] == file_hash:
-                print(f"[SKIP] {full_path} unchanged")
+                print(f"[SKIP] {relative_path} unchanged")
                 continue
 
             token_ids, chunk_texts = get_token_chunks(file_text)
@@ -677,9 +711,9 @@ def process_folder():
             assert len(embedding_resp.data) == len(chunk_texts)
 
             with mk_conn() as conn:
-                doc_id = upsert_document(conn, full_path, file_hash, file_text)
+                doc_id = upsert_document(conn, relative_path, file_hash, file_text)
                 replace_document_chunks(conn, doc_id, chunk_texts, [e.embedding for e in embedding_resp.data])
-                print(f"[OK] {full_path} - {len(embedding_resp.data)} embeddings")
+                print(f"[OK] {relative_path} - {len(embedding_resp.data)} embeddings")
 
 @app.post("/api/sync")
 async def sync(background_tasks: BackgroundTasks):

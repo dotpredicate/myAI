@@ -1,2 +1,4 @@
 __pycache__
-knowledge
+.mypy_cache
+repositories
+workspace
