@@ -65,6 +65,9 @@ def replace_document_chunks(conn: connection, doc_id: int, chunk_texts: List[str
 app = FastAPI(title="MyAI FastAPI")
 
 KNOWLEDGE_FOLDER = os.getenv('KNOWLEDGE_FOLDER', './knowledge')
+WORKSPACE_DIR = os.getenv('WORKSPACE_DIR', './workspace')
+os.makedirs(KNOWLEDGE_FOLDER, exist_ok=True)
+os.makedirs(WORKSPACE_DIR, exist_ok=True)
 os.makedirs(KNOWLEDGE_FOLDER, exist_ok=True)
 
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
@@ -87,22 +90,22 @@ async def read_index():
 
 # Define the function schema for OpenAI function calling
 FUNCTIONS = [
-    # {
-    #     "name": "run_shell_command",
-    #     "description": "Execute a shell command and return the output.",
-    #     "type": "function",
-    #     "function": {
-    #         "name": "run_shell_command",
-    #         "description": "Execute a shell command and return the output.",
-    #         "parameters": {
-    #             "type": "object",
-    #             "properties": {
-    #                 "command": {"type": "string", "description": "Command to execute"},
-    #             },
-    #             "required": ["command"],
-    #         },
-    #     },
-    # },
+    {
+        "name": "run_shell_command",
+        "description": "Execute a shell command and return the output.",
+        "type": "function",
+        "function": {
+            "name": "run_shell_command",
+            "description": "Execute a shell command and return the output.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Command to execute"},
+                },
+                "required": ["command"],
+            },
+        },
+    },
     {
         "name": "run_semantic_search",
         "description": (
@@ -360,14 +363,72 @@ def run_shell_command(tool_call: ToolCall) -> ShellResult:
             stdout='',
             stderr=str(e),
         )
-    completed = subprocess.run(
-        command,
-        shell=True,
-        capture_output=True,
-        text=True,
-        executable='/bin/bash',
+
+    # Run the command inside the sandbox.
+    sandbox_result = run_sandboxed_command(command, WORKSPACE_DIR, KNOWLEDGE_FOLDER)
+    if 'error' in sandbox_result:
+        return ShellResult(command=command, returncode=-1, stdout='', stderr=sandbox_result['error'])
+    return ShellResult(
+        command=command,
+        returncode=sandbox_result.get('exit_code', -1),
+        stdout=sandbox_result.get('stdout', ''),
+        stderr=sandbox_result.get('stderr', ''),
     )
-    return ShellResult(command=command, returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Bubblewrap sandbox execution
+# ---------------------------------------------------------------------------
+# The following function provides a lightweight sandboxing layer using
+# `bubblewrap` (bwrap). It isolates the executed command from the host
+# filesystem, exposing only a read‑only view of the knowledge repository
+# (`reference_path`) and a writable workspace (`workspace_path`). This is
+# particularly useful for running untrusted code or scripts that should
+# not modify the underlying knowledge base.
+# ---------------------------------------------------------------------------
+def run_sandboxed_command(command: str, workspace_path: str, reference_path: str) -> Dict[str, Any]:
+    # Resolve absolute paths for safety
+    workspace_path = os.path.abspath(workspace_path)
+    reference_path = os.path.abspath(reference_path)
+
+    # Build the bwrap command arguments
+    bwrap_args = [
+        "bwrap",
+        # Mount essential system directories as read‑only
+        "--ro-bind", "/usr", "/usr",
+        "--ro-bind", "/lib", "/lib",
+        "--ro-bind", "/lib64", "/lib64",
+        "--ro-bind", "/bin", "/bin",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        # Unshare namespaces for isolation
+        "--unshare-all",
+        # Reference knowledge bases
+        "--ro-bind", reference_path, "/knowledge",
+        # Writable workspace
+        "--bind", workspace_path, "/workspace",
+        # Set working directory inside the sandbox
+        "--chdir", "/",
+        # Execute the provided command via bash
+        "bash", "-c", command,
+    ]
+
+    try:
+        result = subprocess.run(
+            bwrap_args,
+            capture_output=True,
+            text=True,
+            timeout=30,  # safety timeout
+        )
+        return {
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "exit_code": result.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {"error": "Command timed out"}
+    except Exception as e:
+        return {"error": str(e)}
 
 def run_semantic_search(tool_call: ToolCall) -> ToolCallResult:
     try:
