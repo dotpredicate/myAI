@@ -1,7 +1,5 @@
-# Convert from Flask to FastAPI
 from fastapi import BackgroundTasks, FastAPI, Request, UploadFile, File, Body
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
-import uvicorn
 import requests
 from fastapi.staticfiles import StaticFiles
 import psycopg2
@@ -15,10 +13,53 @@ import hashlib
 import binascii
 import subprocess
 from typing import Dict, Optional, Any, Generator, NamedTuple, Union, List
+from typing import Tuple
 import openai
 from openai.types.chat.chat_completion_message_param import *
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from datetime import datetime
+
+
+def get_document_by_path(path: str) -> Optional[Tuple[int, str]]:
+    with mk_conn() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT id, file_hash FROM documents WHERE file_path = %s",
+            (path,),
+        )
+        row = cur.fetchone()
+        return row if row else None
+
+
+def upsert_document(conn: connection, path: pathlib.Path, file_hash: str, content: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT id FROM documents WHERE file_path = %s",
+            (str(path),),
+        )
+        row = cur.fetchone()
+        if row:
+            doc_id = row[0]
+            cur.execute(
+                "UPDATE documents SET file_hash = %s, content = %s WHERE id = %s",
+                (file_hash, content, doc_id),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO documents (file_path, file_hash, content) VALUES (%s, %s, %s) RETURNING id",
+                (str(path), file_hash, content),
+            )
+            (doc_id,) = cur.fetchone()
+    return doc_id
+
+
+def replace_document_chunks(conn: connection, doc_id: int, chunk_texts: List[str], chunk_embeddings: List[Any]):
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM document_chunks WHERE document_id = %s", (doc_id,))
+        for index, (embedding, chunk_text) in enumerate(zip(chunk_embeddings, chunk_texts)):
+            cur.execute(
+                "INSERT INTO document_chunks (document_id, chunk_index, chunk_text, embedding) VALUES (%s, %s, %s, %s)",
+                (doc_id, index, chunk_text, embedding),
+            )
 
 
 app = FastAPI(title="MyAI FastAPI")
@@ -29,13 +70,16 @@ os.makedirs(KNOWLEDGE_FOLDER, exist_ok=True)
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
-conn = psycopg2.connect(
-    dbname='myai',
-    user='myai',
-    password='myai',
-    host='localhost',
-    port='5432'
-)
+def mk_conn():
+    ret = psycopg2.connect(
+        dbname='myai',
+        user='myai',
+        password='myai',
+        host='localhost',
+        port='5432'
+    )
+    ret.autocommit = False
+    return ret
 
 @app.get("/")
 async def read_index():
@@ -148,7 +192,7 @@ def ask_model_stream(model_id: str, prompt_text: str, conversation_context: Opti
     for chunk in res:
         yield chunk
 
-def init_database():
+def init_database(conn: connection):
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -370,16 +414,17 @@ async def prompt_model(request: Request):
         raise ValueError('Unknown model')
     conversation_id: Optional[int] = payload.get('conversation_id')
 
-    if conversation_id:
-        messages_context = get_messages_for_continuation(conn, conversation_id)
-    else:
-        conversation_id = create_conversation(conn, prompt)
-        messages_context = []
+    with mk_conn() as conn:
+        if conversation_id:
+            messages_context = get_messages_for_continuation(conn, conversation_id)
+        else:
+            conversation_id = create_conversation(conn, prompt)
+            messages_context = []
 
-    user_message = Message(content=prompt)
-    user_message_dict = to_json_dict(user_message)
-    user_message_id = insert_message(conn, conversation_id, 'user', user_message_dict)
-    user_message_oai_dict = to_oai_completions_elements(user_message_id, 'user', user_message_dict)
+        user_message = Message(content=prompt)
+        user_message_dict = to_json_dict(user_message)
+        user_message_id = insert_message(conn, conversation_id, 'user', user_message_dict)
+        user_message_oai_dict = to_oai_completions_elements(user_message_id, 'user', user_message_dict)
 
     messages_context.extend(user_message_oai_dict)
 
@@ -441,7 +486,7 @@ async def prompt_model(request: Request):
 
 @app.get('/api/conversations')
 async def get_conversations():
-    with conn.cursor() as cur:
+    with mk_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")
         rows = cur.fetchall()
     conversations = [{'id': r[0], 'title': r[1], 'created_at': r[2].isoformat()} for r in rows]
@@ -449,16 +494,15 @@ async def get_conversations():
 
 @app.get('/api/conversation/{conv_id}')
 async def get_conversation(conv_id: int):
-    with conn.cursor() as cur:
+    with mk_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT id, title, created_at FROM conversations WHERE id = %s", (conv_id,))
         row = cur.fetchone()
-    if not row:
-        return JSONResponse(status_code=404, content={'error': 'Not found'})
-    # Fetch messages for the conversation
-    with conn.cursor() as cur:
+        if not row:
+            return JSONResponse(status_code=404, content={'error': 'Not found'})
         cur.execute("SELECT id, role, elements, created_at FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
         messages = [{'id': r[0], 'role': r[1], 'elements': r[2], 'created_at': r[3].isoformat()} for r in cur.fetchall()]
-    return JSONResponse(content={'id': row[0], 'title': row[1], 'created_at': row[2].isoformat(), 'messages': messages})
+        # Fetch messages for the conversation
+        return JSONResponse(content={'id': row[0], 'title': row[1], 'created_at': row[2].isoformat(), 'messages': messages})
 
 
 EMBEDDING_MODEL = 'unsloth/embeddinggemma-300m-GGUF'
@@ -507,7 +551,7 @@ def semantic_search(query: str, top_k: int) -> list[SearchHit]:
         input=query
     )
     query_vec = embedding_resp.data[0].embedding
-    with conn.cursor() as cur:
+    with mk_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """SELECT document_id, file_path, chunk_index, chunk_text, embedding <=> %s::vector AS score 
             FROM document_chunks
@@ -535,6 +579,11 @@ async def search(payload: dict = Body(...)):
     return JSONResponse(content={'results': results})
 
 def process_folder():
+    """Incrementally sync knowledge folder.
+
+    For each file, compute its hash and compare it against the stored value.
+    Only files that are new or changed are processed.
+    """
     for root, _, files in os.walk(KNOWLEDGE_FOLDER):
         for fname in files:
             if pathlib.Path(fname).suffix.lower() not in {
@@ -547,33 +596,29 @@ def process_folder():
 
             full_path = pathlib.Path(root) / fname
             try:
-                full_text = full_path.read_text(encoding="utf-8")
+                file_bytes = full_path.read_bytes()
+                file_text = file_bytes.decode()
             except Exception as exc:
                 print(f"[WARN] Unreadable file {full_path}: {exc}")
                 continue
+            
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
+            existing = get_document_by_path(str(full_path))
+            if existing and existing[1] == file_hash:
+                print(f"[SKIP] {full_path} unchanged")
+                continue
 
-            file_hash = hashlib.sha256(full_text.encode("utf-8")).hexdigest()
-            token_ids, chunk_texts = get_token_chunks(full_text)
+            token_ids, chunk_texts = get_token_chunks(file_text)
             embedding_resp = embeddings_endpoint.embeddings.create(
                 model=EMBEDDING_MODEL,
                 input=token_ids
             )
             assert len(embedding_resp.data) == len(chunk_texts)
 
-            with conn.cursor() as cur:
-                cur.execute("DELETE FROM documents WHERE file_path=%s", (str(full_path),))
-                cur.execute(
-                    "INSERT INTO documents (file_path, file_hash, content) VALUES (%s, %s, %s) RETURNING id",
-                    (str(full_path), file_hash, full_text)
-                )
-                (doc_id,) = cur.fetchone()
-                for index, (embedding, chunk_text) in enumerate(zip(embedding_resp.data, chunk_texts)):
-                    cur.execute(
-                        "INSERT INTO document_chunks (document_id, chunk_index, chunk_text, embedding) VALUES (%s, %s, %s, %s)",
-                        (doc_id, index, chunk_text, embedding.embedding)
-                    )
-                conn.commit()
-            print(f"[OK] {full_path} - {len(embedding_resp.data)} embeddings")
+            with mk_conn() as conn:
+                doc_id = upsert_document(conn, full_path, file_hash, file_text)
+                replace_document_chunks(conn, doc_id, chunk_texts, [e.embedding for e in embedding_resp.data])
+                print(f"[OK] {full_path} - {len(embedding_resp.data)} embeddings")
 
 @app.post("/api/sync")
 async def sync(background_tasks: BackgroundTasks):
@@ -582,7 +627,8 @@ async def sync(background_tasks: BackgroundTasks):
 
 @app.on_event("startup")
 async def startup_event():
-    init_database()
+    with mk_conn() as conn:
+        init_database(conn)
     process_folder()
 
 # Mount static files
