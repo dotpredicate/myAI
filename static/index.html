@@ -264,19 +264,28 @@
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const startIdx = buffer.indexOf('{');
-        if (startIdx === -1) break;
-        let depth = 0;
-        let endIdx = -1;
-        for (let i = startIdx; i < buffer.length; i++) {
-          if (buffer[i] === '{') depth++;
-          else if (buffer[i] === '}') depth--;
-          if (depth === 0) { endIdx = i; break; }
+        let lines = buffer.split('\n');
+        // The last element may be incomplete
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          if (line.trim()) {
+            try {
+              const jsonObj = JSON.parse(line);
+              yield jsonObj;
+            } catch (e) {
+              console.error('Error parsing NDJSON line:', e);
+            }
+          }
         }
-        if (endIdx === -1) break;
-        const jsonStr = buffer.slice(startIdx, endIdx + 1);
-        buffer = buffer.slice(endIdx + 1);
-        yield JSON.parse(jsonStr);
+      }
+      // Process any trailing data after stream ends
+      if (buffer.trim()) {
+        try {
+          const jsonObj = JSON.parse(buffer);
+          yield jsonObj;
+        } catch (e) {
+          console.error('Error parsing final NDJSON line:', e);
+        }
       }
     }
     async function sendPrompt() {

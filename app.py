@@ -449,9 +449,9 @@ async def prompt_model(request: Request):
                 # Stream assistant content.
                 match delta:
                     case Message(content=content):
-                        yield json.dumps({'type': 'response', 'content': content})
+                        yield json.dumps({'type': 'response', 'content': content}) + '\n'
                     case Thinking(content=content):
-                        yield json.dumps({'type': 'reasoning', 'content': content})
+                        yield json.dumps({'type': 'reasoning', 'content': content}) + '\n'
                     case _:
                         print(f'Not broadcasting {delta}')
 
@@ -472,7 +472,7 @@ async def prompt_model(request: Request):
                         result = run_tool_call(call)
                         print(f'Tool call finished: {result}')
                         result_json = to_json_dict(result)
-                        yield json.dumps(result_json)
+                        yield json.dumps(result_json) + '\n'
                         msg_id = insert_message(conn, conversation_id, 'assistant', result_json)
                         oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
                         messages_context.extend(oai_elems)
@@ -480,7 +480,7 @@ async def prompt_model(request: Request):
                         run_next_loop = True
         print('Stream finished')
 
-    stream = StreamingResponse(generate_stream(), media_type='text/plain')
+    stream = StreamingResponse(generate_stream(), media_type='application/x-ndjson')
     stream.headers['X-Conversation-ID'] = str(conversation_id)
     return stream
 
