@@ -150,7 +150,6 @@ def create_conversation(conn: connection, title: str) -> int:
     
 
 def insert_message(conn: connection, conv_id: int, role: str, element: Dict[str, str]) -> int:
-    """Persist a full array of elements for a message."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -402,14 +401,22 @@ def run_sandboxed_command(command: str, workspace_path: str, reference_path: str
         # Unshare namespaces for isolation
         "--unshare-all",
         # Reference repositories
-        "--ro-bind", reference_path, "/repositories",
+        # "--ro-bind", reference_path, "/repositories",
         # Writable workspace
         "--bind", workspace_path, "/workspace",
         # Set working directory inside the sandbox
         "--chdir", "/",
-        # Execute the provided command via bash
-        "bash", "-c", command,
     ]
+
+    for entry in os.scandir(reference_path):
+        # bwrap --ro-bind follows symlinks
+        print(entry.path)
+        bwrap_args.extend(["--ro-bind", entry.path, f"/repositories/{entry.name}"])
+
+    # Execute the provided command via bash
+    bwrap_args.extend([
+        "bash", "-c", command
+    ])
 
     try:
         result = subprocess.run(
@@ -529,7 +536,6 @@ async def prompt_model(request: Request):
                         messages_context.extend(oai_elems)
                     case ToolCall() as call:
                         result = run_tool_call(call)
-                        print(f'Tool call finished: {result}')
                         result_json = to_json_dict(result)
                         yield json.dumps(result_json) + '\n'
                         msg_id = insert_message(conn, conversation_id, 'assistant', result_json)
