@@ -5,7 +5,7 @@ from fastapi.staticfiles import StaticFiles
 import psycopg2
 from psycopg2.extensions import connection
 import os
-import pathlib
+from pathlib import Path
 import glob
 import json
 import hashlib
@@ -63,10 +63,33 @@ def replace_document_chunks(conn: connection, doc_id: int, chunk_texts: List[str
 
 app = FastAPI(title="MyAI FastAPI")
 
-REPOSITORIES_FOLDER = os.getenv('REPOSITORIES_FOLDER', os.path.expanduser('~/.myai/repositories'))
+REPOSITORIES_DIR = os.getenv('REPOSITORIES_DIR', os.path.expanduser('~/.myai/repositories'))
+REPOSITORIES_VROOT = "/repositories"
 WORKSPACE_DIR = os.getenv('WORKSPACE_DIR', os.path.expanduser('~/.myai/workspace'))
-os.makedirs(REPOSITORIES_FOLDER, exist_ok=True)
+WORKSPACE_VROOT = "/workspace"
+os.makedirs(REPOSITORIES_DIR, exist_ok=True)
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
+def is_safe_vpath(vpath: Path, expected_vroot: Path) -> tuple[bool, str]:
+    try:
+        parts = vpath.parts
+        if ".." in parts:
+            return False, "Path traversal detected: '..' not allowed"
+        if not vpath.is_relative_to(expected_vroot):
+            return False, f"Path must be under {expected_vroot}"
+        return True, ""
+    except Exception as e:
+        return False, f"Path validation error: {str(e)}"
+
+def vpath_to_realpath(vpath: Path, vroot: str, base_dir: str) -> Path:
+    parts = list(vpath.parts)
+    if parts[0] == "/":
+        parts = parts[1:]          # usuń leading '/'
+    if parts and parts[0] == vroot.lstrip("/"):
+        parts = parts[1:]
+
+    # Teraz łączymy z realnym katalogiem repozytorium
+    return Path(base_dir) / Path(*parts)
+
 
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
@@ -135,6 +158,40 @@ FUNCTIONS = [
             },
         },
     },
+{
+    "name": "propose_replace",
+    "description": "Propose replacing a target file in the repositories folder with a source file from the workspace.",
+    "type": "function",
+    "function": {
+        "name": "propose_replace",
+        "description": "Replace a file in repositories with a file from workspace. Provide absolute paths: target='/repositories/foo/bar.txt', source='/workspace/baz/qux.txt'. Do not use '..'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
+                "source": {"type": "string", "description": "Absolute path to source file in workspace folder (e.g., '/workspace/baz/qux.txt')"},
+            },
+            "required": ["target", "source"],
+        },
+    },
+},
+{
+    "name": "propose_diff",
+    "description": "Proposes applying a diff file to a target file in the repositories.",
+    "type": "function",
+    "function": {
+        "name": "propose_diff",
+        "description": "Apply a diff from workspace to a target file in repositories. Provide absolute paths: target='/repositories/foo/bar.txt', diff_path='/workspace/patch.diff'. Do not use '..'.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
+                "diff_path": {"type": "string", "description": "Absolute path to diff file in workspace folder (e.g., '/workspace/patch.diff')"},
+            },
+            "required": ["target", "diff_path"],
+        },
+    },
+}
 ]
 
 def create_conversation(conn: connection, title: str) -> int:
@@ -362,7 +419,7 @@ def run_shell_command(tool_call: ToolCall) -> ShellResult:
         )
 
     # Run the command inside the sandbox.
-    sandbox_result = run_sandboxed_command(command, WORKSPACE_DIR, REPOSITORIES_FOLDER)
+    sandbox_result = run_sandboxed_command(command, WORKSPACE_DIR, REPOSITORIES_DIR)
     if 'error' in sandbox_result:
         return ShellResult(command=command, returncode=-1, stdout='', stderr=sandbox_result['error'])
     return ShellResult(
@@ -400,18 +457,15 @@ def run_sandboxed_command(command: str, workspace_path: str, reference_path: str
         "--dev", "/dev",
         # Unshare namespaces for isolation
         "--unshare-all",
-        # Reference repositories
-        # "--ro-bind", reference_path, "/repositories",
         # Writable workspace
-        "--bind", workspace_path, "/workspace",
+        "--bind", workspace_path, WORKSPACE_VROOT,
         # Set working directory inside the sandbox
         "--chdir", "/",
     ]
 
     for entry in os.scandir(reference_path):
         # bwrap --ro-bind follows symlinks
-        print(entry.path)
-        bwrap_args.extend(["--ro-bind", entry.path, f"/repositories/{entry.name}"])
+        bwrap_args.extend(["--ro-bind", entry.path, f"{REPOSITORIES_VROOT}/{entry.name}"])
 
     # Execute the provided command via bash
     bwrap_args.extend([
@@ -434,6 +488,113 @@ def run_sandboxed_command(command: str, workspace_path: str, reference_path: str
         return {"error": "Command timed out"}
     except Exception as e:
         return {"error": str(e)}
+
+def run_propose_replace(tool_call: ToolCall) -> ToolCallResult:
+    """Proposes replacing a target file with a source file."""
+    try:
+        params = json.loads(tool_call.parameters)
+        target_vpath_str = params.get("target")
+        source_vpath_str = params.get("source")
+        
+        if not target_vpath_str or not source_vpath_str:
+            raise ValueError("Missing target or source path")
+        
+        target_vpath = Path(target_vpath_str)
+        source_vpath = Path(source_vpath_str)
+        
+        target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT))
+        if not target_safe:
+            return ToolCallResult(tool_call.name, tool_call.parameters, 
+                                 json.dumps({"error": target_err}))
+        
+        source_safe, source_err = is_safe_vpath(source_vpath, Path(WORKSPACE_VROOT))
+        if not source_safe:
+            return ToolCallResult(tool_call.name, tool_call.parameters, 
+                                 json.dumps({"error": source_err}))
+        
+        target_realpath = vpath_to_realpath(target_vpath, REPOSITORIES_VROOT, REPOSITORIES_DIR)
+        source_realpath = vpath_to_realpath(source_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
+        
+        if not source_realpath.exists():
+            return ToolCallResult(tool_call.name, tool_call.parameters, 
+                                 json.dumps({"error": f"Source file not found: {source_vpath}"}))
+        
+        if target_realpath.exists():
+            target_content = target_realpath.read_text(encoding='utf-8')
+        else:
+            target_content = ""
+        
+        source_content = source_realpath.read_text(encoding='utf-8')
+        
+        proposal = {
+            "type": "replace_proposal",
+            "target": str(target_vpath),
+            "source": str(source_vpath),
+            "preview": f"Replace {target_vpath} with content from {source_vpath}",
+            "target_sample": target_content[:200] + ("..." if len(target_content) > 200 else ""),
+            "source_sample": source_content[:200] + ("..." if len(source_content) > 200 else ""),
+            "status": "pending"
+        }
+        return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal))
+    except json.JSONDecodeError as e:
+        return ToolCallResult(tool_call.name, tool_call.parameters, 
+                             json.dumps({"error": f"Invalid JSON: {str(e)}"}))
+    except Exception as e:
+        return ToolCallResult(tool_call.name, tool_call.parameters, 
+                             json.dumps({"error": f"Unexpected error: {str(e)}"}))
+
+def run_propose_diff(tool_call: ToolCall) -> ToolCallResult:
+    """Proposes applying a diff to a target file."""
+    # Analogiczna logika jak w propose_replace
+    try:
+        params = json.loads(tool_call.parameters)
+        target_vpath_str = params.get("target")
+        diff_vpath_str = params.get("diff_path")
+        
+        if not target_vpath_str or not diff_vpath_str:
+            raise ValueError("Missing target or diff_path")
+        
+        target_vpath = Path(target_vpath_str)
+        diff_vpath = Path(diff_vpath_str)
+        
+        target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT))
+        if not target_safe:
+            return ToolCallResult(tool_call.name, tool_call.parameters, 
+                                 json.dumps({"error": target_err}))
+        
+        diff_safe, diff_err = is_safe_vpath(diff_vpath, Path(WORKSPACE_VROOT))
+        if not diff_safe:
+            return ToolCallResult(tool_call.name, tool_call.parameters, 
+                                 json.dumps({"error": diff_err}))
+        
+        target_realpath = vpath_to_realpath(target_vpath, REPOSITORIES_VROOT, REPOSITORIES_DIR)
+        diff_realpath = vpath_to_realpath(diff_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
+        
+        if not target_realpath.exists():
+            return ToolCallResult(tool_call.name, tool_call.parameters, 
+                                 json.dumps({"error": f"Target file not found: {target_vpath}"}))
+        
+        if not diff_realpath.exists():
+            return ToolCallResult(tool_call.name, tool_call.parameters, 
+                                 json.dumps({"error": f"Diff file not found: {diff_vpath}"}))
+        
+        diff_content = diff_realpath.read_text(encoding='utf-8')
+        
+        proposal = {
+            "type": "diff_proposal",
+            "target": str(target_vpath),
+            "diff": str(diff_vpath),
+            "preview": f"Apply diff {diff_vpath} to {target_vpath}",
+            "diff_preview": diff_content[:300] + ("..." if len(diff_content) > 300 else ""),
+            "status": "pending"
+        }
+        return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal))
+    except json.JSONDecodeError as e:
+        return ToolCallResult(tool_call.name, tool_call.parameters, 
+                             json.dumps({"error": f"Invalid JSON: {str(e)}"}))
+    except Exception as e:
+        return ToolCallResult(tool_call.name, tool_call.parameters, 
+                             json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
 def run_semantic_search(tool_call: ToolCall) -> ToolCallResult:
     try:
@@ -468,6 +629,10 @@ def run_tool_call(call: ToolCall) -> ToolCallResult:
         return ToolCallResult(call.name, call.parameters, output_str)
     elif call.name == 'run_semantic_search':
         return run_semantic_search(call)
+    elif call.name == 'propose_replace':
+        return run_propose_replace(call)
+    elif call.name == 'propose_diff':
+        return run_propose_diff(call)
     else:
         raise ValueError(f'Unsupported tool call {call.name}')
 
@@ -649,8 +814,8 @@ def process_folder():
     For each file, compute its hash and compare it against the stored value.
     Only files that are new or changed are processed.
     """
-    for repo_dir in os.listdir(REPOSITORIES_FOLDER):
-        repo_full_path = str(pathlib.Path(REPOSITORIES_FOLDER) / repo_dir)
+    for repo_dir in os.listdir(REPOSITORIES_DIR):
+        repo_full_path = str(Path(REPOSITORIES_DIR) / repo_dir)
         is_git_result = subprocess.run(
             [
                 "git", "-C", repo_full_path, "rev-parse", "--is-inside-work-tree"
@@ -676,12 +841,12 @@ def process_folder():
             files: list[str] = []
             for root, _, fnames in os.walk(repo_full_path):
                 for fname in fnames:
-                    f = pathlib.Path(root) / fname
+                    f = Path(root) / fname
                     f = f.relative_to(repo_full_path)
                     files.append(f)
 
         for fname in files:
-            if pathlib.Path(fname).suffix.lower() not in {
+            if Path(fname).suffix.lower() not in {
                 ".properties",
                 ".md", ".txt",
                 ".json", ".xml", ".csv", ".yml", ".yaml", 
@@ -694,8 +859,8 @@ def process_folder():
                 print(f"Skipping unhandled file type {fname}")
                 continue
 
-            full_path = pathlib.Path(repo_full_path) / fname
-            relative_path = str(full_path.relative_to(REPOSITORIES_FOLDER))
+            full_path = Path(repo_full_path) / fname
+            relative_path = str(full_path.relative_to(REPOSITORIES_DIR))
             try:
                 file_bytes = full_path.read_bytes()
                 file_text = file_bytes.decode()
