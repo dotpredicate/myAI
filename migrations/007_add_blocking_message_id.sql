@@ -1,0 +1,1 @@
+ALTER TABLE conversations ADD COLUMN blocking_message_id INTEGER DEFAULT NULL;

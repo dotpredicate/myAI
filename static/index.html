@@ -96,6 +96,15 @@
     .msg-body th {
       background: #f9f9f9;
     }
+
+    .blocked {
+      background-color: #ffe6e6;
+      border-left: 4px solid #ff0000;
+    }
+    textarea:disabled, button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 
@@ -133,6 +142,26 @@
   </script>
 
   <script>
+    let blockingMessageId = null;
+
+    function highlightBlockingMessage(id) {
+      const elem = document.querySelector(`details[data-message-id='${id}']`);
+      if (elem) {
+        elem.classList.add('blocked');
+        elem.scrollIntoView({ behavior: 'smooth' });
+      }
+    }
+
+    function clearBlock() {
+      blockingMessageId = null;
+      const promptArea = document.getElementById('prompt');
+      const sendBtn = document.getElementById('sendBtn');
+      if (promptArea) promptArea.disabled = false;
+      if (sendBtn) sendBtn.disabled = false;
+      const blockedElems = document.querySelectorAll('details[data-message-id]');
+      blockedElems.forEach(e => e.classList.remove('blocked'));
+    }
+
     async function loadModels() {
       const res = await fetch('/api/models');
       const data = await res.json();
@@ -175,9 +204,9 @@
       });
     }
 
-    function renderMessage(container, role, label, element) {
+    function renderMessage(container, { id, role, element }) {
       const labelEl = document.createElement('div');
-      labelEl.textContent = label + ':';
+      labelEl.textContent = role + ':';
       labelEl.classList.add('msg-label');
       container.appendChild(labelEl);
       if (element.type === 'thinking') {
@@ -193,13 +222,30 @@
         container.appendChild(details);
       } else if (element.type === 'tool_call') {
         const containerElem = document.createElement('details');
+        if(id) containerElem.dataset.id = id;
         containerElem.dataset.mode = 'function_call';
+        // Attach message id for decision actions
         const summary = document.createElement('summary');
         summary.textContent = `Function Call: ${element.name}`;
         containerElem.appendChild(summary);
         const pre = document.createElement('pre');
         pre.textContent = `Input: ${element.parameters}\n\nOutput:\n${element.result}`;
         containerElem.appendChild(pre);
+        // If this is a blocking call, render approve/reject buttons
+        if (element.is_blocking) {
+          const btnApprove = document.createElement('button');
+          btnApprove.textContent = 'Approve';
+          btnApprove.addEventListener('click', () => {
+            handleDecision(containerElem.dataset.id, 'approve');
+          });
+          const btnReject = document.createElement('button');
+          btnReject.textContent = 'Reject';
+          btnReject.addEventListener('click', () => {
+            handleDecision(containerElem.dataset.id, 'reject');
+          });
+          containerElem.appendChild(btnApprove);
+          containerElem.appendChild(btnReject);
+        }
         container.appendChild(containerElem);
       } else {
         // For regular messages, including assistant responses.
@@ -231,21 +277,21 @@
       title.textContent = data.title + ' (' + new Date(data.created_at).toLocaleString() + ')';
       responseContainer.appendChild(title);
       for (const msg of data.messages) {
-        renderMessage(responseContainer, msg.role, msg.role, msg.elements);
+        renderMessage(responseContainer, msg);
       }
       responseContainer.scrollTop = responseContainer.scrollHeight;
+      // Ensure any previous block state is cleared when we reload a conversation
+      clearBlock();
     }
 
-    async function* streamPrompt(promptText, responseContainer) {
-      const res = await fetch('/api/prompt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model_id: document.getElementById('modelSelect').value,
-          prompt: promptText,
-          conversation_id: selectedConversationId
-        })
-      });
+    async function* streamPrompt(res, responseContainer) {
+      // Handle 403 blocking response
+      if (res.status === 403) {
+        const data = await res.json();
+        highlightBlockingMessage(data.blocking_message_id);
+        return;
+      }
+
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       if (!selectedConversationId) {
@@ -264,46 +310,35 @@
         const { value, done } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        let lines = buffer.split('\n');
-        // The last element may be incomplete
+        const lines = buffer.split('\n');
         buffer = lines.pop() || '';
         for (const line of lines) {
-          if (line.trim()) {
-            try {
-              const jsonObj = JSON.parse(line);
-              yield jsonObj;
-            } catch (e) {
-              console.error('Error parsing NDJSON line:', e);
-            }
+          const trimmed = line.trim();
+          if (trimmed) {
+            const jsonObj = JSON.parse(trimmed);
+            yield jsonObj;
           }
         }
       }
-      // Process any trailing data after stream ends
       if (buffer.trim()) {
-        try {
-          const jsonObj = JSON.parse(buffer);
-          yield jsonObj;
-        } catch (e) {
-          console.error('Error parsing final NDJSON line:', e);
-        }
+        const jsonObj = JSON.parse(buffer.trim());
+        yield jsonObj;
       }
     }
-    async function sendPrompt() {
 
-      const responseContainer = document.getElementById('response');
-      const promptText = document.getElementById('prompt').value;
+    // Shared helper that processes the streaming response from either a new prompt
+    // or a continued conversation. It encapsulates the state machine used to
+    // render reasoning, responses, and tool calls.
+    async function processStream(res, responseContainer) {
+      const streamState = { type: null };
 
-      renderMessage(responseContainer, 'user', 'User', { type: 'message', content: promptText });
-
-      var streamState = { type: null };
-      
       const initializeState = (newType) => {
         console.log('Initializing state for type', newType);
         const assistantLabel = document.createElement('div');
         assistantLabel.textContent = 'Assistant:';
         assistantLabel.classList.add('msg-label');
         responseContainer.appendChild(assistantLabel);
-        if(newType === 'reasoning') {
+        if (newType === 'reasoning') {
           const container = document.createElement('details');
           const summary = document.createElement('summary');
           summary.textContent = 'Reasoning';
@@ -324,27 +359,24 @@
           streamState.type = 'tool_call';
         } else {
           console.log('Unhandled type', newType);
-          // Unhandled state
         }
         console.log('Initialized state', streamState);
       };
 
       const finalizeState = () => {
         console.log('Finalizing current state', streamState);
-        if(streamState.type === 'thinking') {
+        if (streamState.type === 'thinking') {
           // Explicit no-op
         } else if (streamState.type === 'response') {
-          smd.parser_end(currentState.parser);
+          smd.parser_end(streamState.parser);
         } else if (streamState.type === 'tool_call') {
           // Explicit no-op
-        } else {
-          // Unhandled state
         }
       };
 
       const handleStreamChunk = (chunk) => {
-        console.log('Handling stream chunk', chunk)
-        if(streamState.type === 'reasoning') {
+        console.log('Handling stream chunk', chunk);
+        if (streamState.type === 'reasoning') {
           const token = chunk.content;
           streamState.writeElem.append(token);
         } else if (streamState.type === 'response') {
@@ -360,19 +392,71 @@
           pre.textContent = `Input: ${chunk.parameters}\n\nOutput:\n${chunk.result}`;
           container.appendChild(pre);
           responseContainer.appendChild(container);
-        } else {
-          // Unhandled state
         }
       };
 
-      for await (const val of streamPrompt(promptText, responseContainer)) {
-        if(val.type !== streamState.type) {
+      for await (const val of streamPrompt(res, responseContainer)) {
+        if (val.type !== streamState.type) {
           finalizeState();
           initializeState(val.type);
         }
         handleStreamChunk(val);
       }
       responseContainer.scrollTop = responseContainer.scrollHeight;
+    }
+
+    // Resume a conversation by fetching the continuation endpoint and
+    // streaming the assistant's response using the shared processStream helper.
+    async function resumeConversation(conversationId) {
+      const modelId = document.getElementById('modelSelect').value;
+      const res = await fetch(`/api/continue/${conversationId}?model_id=${encodeURIComponent(modelId)}`);
+      const responseContainer = document.getElementById('response');
+      await processStream(res, responseContainer);
+    }
+
+    async function sendPrompt() {
+      const responseContainer = document.getElementById('response');
+      const promptText = document.getElementById('prompt').value;
+      const res = await fetch('/api/prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model_id: document.getElementById('modelSelect').value,
+          prompt: promptText,
+          conversation_id: selectedConversationId
+        })
+      });
+      // Handle blocked message
+      if (res.status === 403) {
+        const data = await res.json();
+        highlightBlockingMessage(data.blocking_message_id);
+        const promptArea = document.getElementById('prompt');
+        const sendBtn = document.getElementById('sendBtn');
+        if (promptArea) promptArea.disabled = true;
+        if (sendBtn) sendBtn.disabled = true;
+        return;
+      }
+      // Render user message before streaming response
+      renderMessage(responseContainer, { id: null, role: 'user', element: { type: 'message', content: promptText } });
+      await processStream(res, responseContainer);
+    }
+
+    async function handleDecision(msgId, decision) {
+      const res = await fetch(`/api/tool_calls/${msgId}/decide`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision })
+      });
+      if (res.ok) {
+        // Remove approve/reject buttons from the UI
+        const container = document.querySelector(`details[data-id='${msgId}']`);
+        if (container) {
+          const btns = container.querySelectorAll('button');
+          btns.forEach(b => b.remove());
+        }
+        // Resume conversation using the shared helper
+        await resumeConversation(selectedConversationId);
+      }
     }
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);

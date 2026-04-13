@@ -83,11 +83,10 @@ def is_safe_vpath(vpath: Path, expected_vroot: Path) -> tuple[bool, str]:
 def vpath_to_realpath(vpath: Path, vroot: str, base_dir: str) -> Path:
     parts = list(vpath.parts)
     if parts[0] == "/":
-        parts = parts[1:]          # usuń leading '/'
+        parts = parts[1:]
     if parts and parts[0] == vroot.lstrip("/"):
         parts = parts[1:]
 
-    # Teraz łączymy z realnym katalogiem repozytorium
     return Path(base_dir) / Path(*parts)
 
 
@@ -221,6 +220,15 @@ def insert_message(conn: connection, conv_id: int, role: str, element: Dict[str,
     print(f'Inserted new message {id}')
     return id
 
+def get_blocking_message(conn, conv_id: int) -> Optional[int]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT blocking_message_id FROM conversations WHERE id = %s",
+            (conv_id,),
+        )
+        res = cur.fetchone()
+        return res[0] if res else None
+
 def get_messages_for_continuation(conn: connection, conv_id: int) -> list[dict[str, any]]:
     messages = []
 
@@ -232,6 +240,58 @@ def get_messages_for_continuation(conn: connection, conv_id: int) -> list[dict[s
             new_messages = to_oai_completions_elements(message_id, role, element)
             messages.extend(new_messages)
     return messages
+
+def continue_conversation(conn: connection, conv_id: int, model_id: str) -> Generator[bytes, None, None]:
+    messages_context = get_messages_for_continuation(conn, conv_id)
+    run_next_loop = True
+    while run_next_loop:
+        processor = DeltaProcessor()
+        chat_gen_inner = completions_endpoint.chat.completions.create(
+            model=model_id,
+            messages=messages_context,
+            reasoning_effort='high',
+            stream=True,
+            tools=FUNCTIONS,
+        )
+        run_next_loop = False
+        for chunk in chat_gen_inner:
+            (delta, aggregated_element) = processor.process(chunk)
+            if delta is not None:
+                if isinstance(delta, Message):
+                    yield json.dumps({'type': 'response', 'content': delta.content}) + '\n'
+                elif isinstance(delta, Thinking):
+                    yield json.dumps({'type': 'reasoning', 'content': delta.content}) + '\n'
+            if aggregated_element is not None:
+                match aggregated_element:
+                    case Message() as message:
+                        result_json = to_json_dict(message)
+                        msg_id = insert_message(conn, conv_id, 'assistant', result_json)
+                        oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
+                        messages_context.extend(oai_elems)
+                    case Thinking() as thinking:
+                        result_json = to_json_dict(thinking)
+                        msg_id = insert_message(conn, conv_id, 'assistant', result_json)
+                        oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
+                        messages_context.extend(oai_elems)
+                    case ToolCall() as call:
+                        result = run_tool_call(call)
+                        result_json = to_json_dict(result)
+                        msg_id = insert_message(conn, conv_id, 'assistant', result_json)
+                        result_json['id'] = msg_id
+                        yield json.dumps(result_json) + '\n'
+                        oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
+                        messages_context.extend(oai_elems)
+                        if result.is_blocking:
+                            cur = conn.cursor()
+                            cur.execute(
+                                "UPDATE conversations SET blocking_message_id = %s WHERE id = %s",
+                                (msg_id, conv_id),
+                            )
+                            conn.commit()
+                            run_next_loop = False
+                        else:
+                            run_next_loop = True
+    # Stream finished
 
 def ask_model_stream(model_id: str, prompt_text: str, conversation_context: Optional[list[dict[str, Any]]] = None) -> Generator[ChatCompletionChunk, None, None]:
 
@@ -323,6 +383,7 @@ class ToolCallResult(NamedTuple):
     name: str
     parameters: str
     result: str
+    is_blocking: bool = False
 FinishedElement = Union[Thinking, Message, ToolCallResult]
 
 def to_json_dict(element: FinishedElement) -> dict[str, Any]:
@@ -331,8 +392,8 @@ def to_json_dict(element: FinishedElement) -> dict[str, Any]:
             return {'type': 'message', 'content': content}
         case Thinking(content=content):
             return {'type': 'thinking', 'content': content}
-        case ToolCallResult(name=name, parameters=parameters, result=result):
-            return {'type': 'tool_call', 'name': name, 'parameters': parameters, 'result': result}
+        case ToolCallResult(name=name, parameters=parameters, result=result, is_blocking=is_blocking):
+            return {'type': 'tool_call', 'name': name, 'parameters': parameters, 'result': result, 'is_blocking': is_blocking}
 
 def to_oai_completions_elements(message_id: int, role: str, myai_dict: dict[str, any]) -> list[dict[str, Any]]:
     messages = []
@@ -489,7 +550,7 @@ def run_sandboxed_command(command: str, workspace_path: str, reference_path: str
     except Exception as e:
         return {"error": str(e)}
 
-def run_propose_replace(tool_call: ToolCall) -> ToolCallResult:
+def run_propose_replace(tool_call: ToolCall, privileged: bool = False) -> ToolCallResult:
     """Proposes replacing a target file with a source file."""
     try:
         params = json.loads(tool_call.parameters)
@@ -526,16 +587,24 @@ def run_propose_replace(tool_call: ToolCall) -> ToolCallResult:
         
         source_content = source_realpath.read_text(encoding='utf-8')
         
-        proposal = {
-            "type": "replace_proposal",
-            "target": str(target_vpath),
-            "source": str(source_vpath),
-            "preview": f"Replace {target_vpath} with content from {source_vpath}",
-            "target_sample": target_content[:200] + ("..." if len(target_content) > 200 else ""),
-            "source_sample": source_content[:200] + ("..." if len(source_content) > 200 else ""),
-            "status": "pending"
-        }
-        return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal))
+        if not privileged:
+            proposal = {
+                "type": "replace_proposal",
+                "target": str(target_vpath),
+                "source": str(source_vpath),
+                "preview": f"Replace {target_vpath} with content from {source_vpath}",
+                "target_sample": target_content[:200] + ("..." if len(target_content) > 200 else ""),
+                "source_sample": source_content[:200] + ("..." if len(source_content) > 200 else ""),
+                "status": "pending"
+            }
+            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
+        # privileged: perform actual replace
+        try:
+            target_realpath.parent.mkdir(parents=True, exist_ok=True)
+            target_realpath.write_text(source_content, encoding='utf-8')
+            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "applied", "error": None}))
+        except Exception as e:
+            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "failed", "error": str(e)}))
     except json.JSONDecodeError as e:
         return ToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Invalid JSON: {str(e)}"}))
@@ -543,7 +612,7 @@ def run_propose_replace(tool_call: ToolCall) -> ToolCallResult:
         return ToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
-def run_propose_diff(tool_call: ToolCall) -> ToolCallResult:
+def run_propose_diff(tool_call: ToolCall, privileged: bool = False) -> ToolCallResult:
     """Proposes applying a diff to a target file."""
     # Analogiczna logika jak w propose_replace
     try:
@@ -580,15 +649,24 @@ def run_propose_diff(tool_call: ToolCall) -> ToolCallResult:
         
         diff_content = diff_realpath.read_text(encoding='utf-8')
         
-        proposal = {
-            "type": "diff_proposal",
-            "target": str(target_vpath),
-            "diff": str(diff_vpath),
-            "preview": f"Apply diff {diff_vpath} to {target_vpath}",
-            "diff_preview": diff_content[:300] + ("..." if len(diff_content) > 300 else ""),
-            "status": "pending"
-        }
-        return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal))
+        if not privileged:
+            proposal = {
+                "type": "diff_proposal",
+                "target": str(target_vpath),
+                "diff": str(diff_vpath),
+                "preview": f"Apply diff {diff_vpath} to {target_vpath}",
+                "diff_preview": diff_content[:300] + ("..." if len(diff_content) > 300 else ""),
+                "status": "pending"
+            }
+            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
+        # privileged: apply patch
+        try:
+            result = subprocess.run(['patch', '-p0', str(target_realpath)], input=diff_content, text=True, capture_output=True)
+            if result.returncode != 0:
+                raise RuntimeError(f"Patch failed: {result.stderr}")
+            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "applied", "error": None}))
+        except Exception as e:
+            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "failed", "error": str(e)}))
     except json.JSONDecodeError as e:
         return ToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Invalid JSON: {str(e)}"}))
@@ -622,7 +700,7 @@ def run_semantic_search(tool_call: ToolCall) -> ToolCallResult:
         result=json.dumps({"results": json.dumps(results)})
     )
 
-def run_tool_call(call: ToolCall) -> ToolCallResult:
+def run_tool_call(call: ToolCall, privileged: bool = False) -> ToolCallResult:
     if call.name == 'run_shell_command':
         shell = run_shell_command(call)
         output_str = json.dumps({'command': shell.command, 'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
@@ -630,9 +708,9 @@ def run_tool_call(call: ToolCall) -> ToolCallResult:
     elif call.name == 'run_semantic_search':
         return run_semantic_search(call)
     elif call.name == 'propose_replace':
-        return run_propose_replace(call)
+        return run_propose_replace(call, privileged)
     elif call.name == 'propose_diff':
-        return run_propose_diff(call)
+        return run_propose_diff(call, privileged)
     else:
         raise ValueError(f'Unsupported tool call {call.name}')
 
@@ -646,7 +724,13 @@ async def prompt_model(request: Request):
     conversation_id: Optional[int] = payload.get('conversation_id')
 
     with mk_conn() as conn:
-        if conversation_id:
+        # Guard clause: if a proposal is still pending, block the conversation
+        if conversation_id and (blocking_id := get_blocking_message(conn, conversation_id)):
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Action required", "blocking_message_id": blocking_id}
+            )
+        elif conversation_id:
             messages_context = get_messages_for_continuation(conn, conversation_id)
         else:
             conversation_id = create_conversation(conn, prompt)
@@ -660,57 +744,7 @@ async def prompt_model(request: Request):
     messages_context.extend(user_message_oai_dict)
 
 
-    def generate_stream():
-        run_next_loop = True
-        while run_next_loop:
-            processor = DeltaProcessor()
-            print(f'{model_id=}, {messages_context=}')
-            chat_gen_inner = completions_endpoint.chat.completions.create(
-                model=model_id,
-                messages=messages_context,
-                reasoning_effort='high',
-                stream=True,
-                tools=FUNCTIONS,
-            )
-            run_next_loop = False
-            for chunk in chat_gen_inner:
-                (delta, aggregated_element) = processor.process(chunk)
-                if delta is not None:
-                    print(f'Processed new delta: {delta}')
-                # Stream assistant content.
-                match delta:
-                    case Message(content=content):
-                        yield json.dumps({'type': 'response', 'content': content}) + '\n'
-                    case Thinking(content=content):
-                        yield json.dumps({'type': 'reasoning', 'content': content}) + '\n'
-                    case _:
-                        print(f'Not broadcasting {delta}')
-
-                if aggregated_element is not None:
-                    print(f'Aggregated new element: {aggregated_element}')
-                match aggregated_element:
-                    case Message() as message:
-                        result_json = to_json_dict(message)
-                        msg_id = insert_message(conn, conversation_id, 'assistant', result_json)
-                        oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
-                        messages_context.extend(oai_elems)
-                    case Thinking() as thinking:
-                        result_json = to_json_dict(thinking)
-                        msg_id = insert_message(conn, conversation_id, 'assistant', result_json)
-                        oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
-                        messages_context.extend(oai_elems)
-                    case ToolCall() as call:
-                        result = run_tool_call(call)
-                        result_json = to_json_dict(result)
-                        yield json.dumps(result_json) + '\n'
-                        msg_id = insert_message(conn, conversation_id, 'assistant', result_json)
-                        oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
-                        messages_context.extend(oai_elems)
-                        # Loop back for tool call
-                        run_next_loop = True
-        print('Stream finished')
-
-    stream = StreamingResponse(generate_stream(), media_type='application/x-ndjson')
+    stream = StreamingResponse(continue_conversation(conn, conversation_id, model_id), media_type='application/x-ndjson')
     stream.headers['X-Conversation-ID'] = str(conversation_id)
     return stream
 
@@ -725,14 +759,19 @@ async def get_conversations():
 @app.get('/api/conversation/{conv_id}')
 async def get_conversation(conv_id: int):
     with mk_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id, title, created_at FROM conversations WHERE id = %s", (conv_id,))
+        cur.execute("SELECT id, title, created_at, blocking_message_id FROM conversations WHERE id = %s", (conv_id,))
         row = cur.fetchone()
         if not row:
             return JSONResponse(status_code=404, content={'error': 'Not found'})
         cur.execute("SELECT id, role, elements, created_at FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
-        messages = [{'id': r[0], 'role': r[1], 'elements': r[2], 'created_at': r[3].isoformat()} for r in cur.fetchall()]
-        # Fetch messages for the conversation
-        return JSONResponse(content={'id': row[0], 'title': row[1], 'created_at': row[2].isoformat(), 'messages': messages})
+        messages = [{'id': r[0], 'role': r[1], 'element': r[2], 'created_at': r[3].isoformat()} for r in cur.fetchall()]
+        return JSONResponse(content={
+            'id': row[0],
+            'title': row[1],
+            'created_at': row[2].isoformat(),
+            'blocking_message_id': row[3],
+            'messages': messages
+        })
 
 
 EMBEDDING_MODEL = 'unsloth/embeddinggemma-300m-GGUF'
@@ -896,6 +935,76 @@ async def startup_event():
     with mk_conn() as conn:
         init_database(conn)
     process_folder()
+
+@app.post('/api/tool_calls/{msg_id}/decide')
+async def decide_tool_call(msg_id: int, request: Request):
+    """Handle the user's approval or rejection of a tool call proposal.
+
+    The endpoint updates the stored message with the decision and the result of
+    the tool execution (if approved). It also clears the conversation's
+    ``blocking_message_id`` so the conversation can continue. The response is
+    a simple JSON object indicating success and whether the tool was
+    executed.
+    """
+    payload = await request.json()
+    decision = payload.get('decision')
+    if decision not in {'approve', 'reject'}:
+        return JSONResponse(status_code=400, content={'error': 'invalid decision'})
+
+    with mk_conn() as conn:
+        cur = conn.cursor()
+        # Fetch the message elements
+        cur.execute('SELECT elements FROM messages WHERE id = %s', (msg_id,))
+        row = cur.fetchone()
+        if not row:
+            return JSONResponse(status_code=404, content={'error': 'message not found'})
+        elem = row[0]
+
+        executed = False
+        if decision == 'approve':
+            # Reconstruct the tool call
+            tool_call = ToolCall(name=elem.get('name'), parameters=elem.get('parameters'))
+            # Execute with privilege to perform the operation
+            result = run_tool_call(tool_call, privileged=True)
+            # Store stringified result and mark as completed
+            elem['tool_call_result'] = str(result)
+            elem['status'] = 'completed'
+            executed = True
+        else:  # reject
+            elem['tool_call_result'] = 'User rejected this action'
+            elem['status'] = 'rejected'
+
+        # Update the message in the DB
+        cur.execute('UPDATE messages SET elements = %s WHERE id = %s', (json.dumps(elem), msg_id))
+
+        # Unblock the conversation
+        cur.execute('SELECT conversation_id FROM messages WHERE id = %s', (msg_id,))
+        conv_row = cur.fetchone()
+        if conv_row:
+            conv_id = conv_row[0]
+            cur.execute('UPDATE conversations SET blocking_message_id = NULL WHERE id = %s', (conv_id,))
+        conn.commit()
+    return JSONResponse(content={'status': 'success', 'executed': executed})
+
+
+@app.get('/api/continue/{conv_id}')
+async def continue_conversation_endpoint(conv_id: int, request: Request):
+    """Resume a conversation after a proposal decision.
+
+    The client must supply the ``model_id`` as a query parameter. The endpoint
+    streams the assistant output until a new proposal is generated or the
+    conversation ends.
+    """
+    model_id = request.query_params.get('model_id')
+    if not model_id:
+        return JSONResponse(status_code=400, content={'error': 'model_id query parameter required'})
+    with mk_conn() as conn:
+        # Verify conversation exists
+        cur = conn.cursor()
+        cur.execute('SELECT id FROM conversations WHERE id = %s', (conv_id,))
+        if cur.fetchone() is None:
+            return JSONResponse(status_code=404, content={'error': 'conversation not found'})
+        return StreamingResponse(continue_conversation(conn, conv_id, model_id), media_type='application/x-ndjson')
 
 # Mount static files
 app.mount("/", StaticFiles(directory="static"), name="static")
