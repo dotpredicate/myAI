@@ -1,4 +1,4 @@
-from fastapi import BackgroundTasks, FastAPI, Request, UploadFile, File, Body
+from fastapi import BackgroundTasks, FastAPI, Request, Body
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 import requests
 from fastapi.staticfiles import StaticFiles
@@ -157,40 +157,40 @@ FUNCTIONS = [
             },
         },
     },
-{
-    "name": "propose_replace",
-    "description": "Propose replacing a target file in the repositories folder with a source file from the workspace.",
-    "type": "function",
-    "function": {
+    {
         "name": "propose_replace",
-        "description": "Replace a file in repositories with a file from workspace. Provide absolute paths: target='/repositories/foo/bar.txt', source='/workspace/baz/qux.txt'. Do not use '..'.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
-                "source": {"type": "string", "description": "Absolute path to source file in workspace folder (e.g., '/workspace/baz/qux.txt')"},
+        "description": "Propose replacing a target file in the repositories folder with a source file from the workspace.",
+        "type": "function",
+        "function": {
+            "name": "propose_replace",
+            "description": "Replace a file in repositories with a file from workspace. Provide absolute paths: target='/repositories/foo/bar.txt', source='/workspace/baz/qux.txt'. Do not use '..'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
+                    "source": {"type": "string", "description": "Absolute path to source file in workspace folder (e.g., '/workspace/baz/qux.txt')"},
+                },
+                "required": ["target", "source"],
             },
-            "required": ["target", "source"],
         },
     },
-},
-{
-    "name": "propose_diff",
-    "description": "Proposes applying a diff file to a target file in the repositories.",
-    "type": "function",
-    "function": {
+    {
         "name": "propose_diff",
-        "description": "Apply a diff from workspace to a target file in repositories. Provide absolute paths: target='/repositories/foo/bar.txt', diff_path='/workspace/patch.diff'. Do not use '..'.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
-                "diff_path": {"type": "string", "description": "Absolute path to diff file in workspace folder (e.g., '/workspace/patch.diff')"},
+        "description": "Proposes applying a diff file to a target file in the repositories.",
+        "type": "function",
+        "function": {
+            "name": "propose_diff",
+            "description": "Apply a diff from workspace to a target file in repositories. Provide absolute paths: target='/repositories/foo/bar.txt', diff_path='/workspace/patch.diff'. Do not use '..'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
+                    "diff_path": {"type": "string", "description": "Absolute path to diff file in workspace folder (e.g., '/workspace/patch.diff')"},
+                },
+                "required": ["target", "diff_path"],
             },
-            "required": ["target", "diff_path"],
         },
-    },
-}
+    }
 ]
 
 def create_conversation(conn: connection, title: str) -> int:
@@ -220,14 +220,14 @@ def insert_message(conn: connection, conv_id: int, role: str, element: Dict[str,
     print(f'Inserted new message {id}')
     return id
 
-def get_blocking_message(conn, conv_id: int) -> Optional[int]:
+def get_blocking_message_id(conn: connection, conv_id: int) -> Optional[int]:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT blocking_message_id FROM conversations WHERE id = %s",
             (conv_id,),
         )
-        res = cur.fetchone()
-        return res[0] if res else None
+        row = cur.fetchone()
+        return row[0] if row and row[0] is not None else None
 
 def get_messages_for_continuation(conn: connection, conv_id: int) -> list[dict[str, any]]:
     messages = []
@@ -274,14 +274,22 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str) -> Gene
                         oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
                         messages_context.extend(oai_elems)
                     case ToolCall() as call:
+                        # Execute the tool call. If the tool call is blocking, 
+                        # we simply insert the pending action 
+                        # and pause the stream until the user decides.
                         result = run_tool_call(call)
                         result_json = to_json_dict(result)
+                        if result.is_blocking:
+                            result_json['status'] = 'pending'
+                        else:
+                            result_json['status'] = 'completed'
                         msg_id = insert_message(conn, conv_id, 'assistant', result_json)
                         result_json['id'] = msg_id
                         yield json.dumps(result_json) + '\n'
                         oai_elems = to_oai_completions_elements(msg_id, 'assistant', result_json)
                         messages_context.extend(oai_elems)
                         if result.is_blocking:
+                            # Mark the conversation as blocked.
                             cur = conn.cursor()
                             cur.execute(
                                 "UPDATE conversations SET blocking_message_id = %s WHERE id = %s",
@@ -419,13 +427,27 @@ def to_oai_completions_elements(message_id: int, role: str, myai_dict: dict[str,
                 'arguments': myai_dict['parameters'],
             },
         }]
-        tool_call_result = {
-            'role': 'tool',
-            'tool_call_id': str(message_id),
-            'content': myai_dict['result']
-        }
         messages.append(tool_call)
-        messages.append(tool_call_result)
+        if myai_dict.get('status') != 'pending':
+            tool_result = {
+                'role': 'tool',
+                'tool_call_id': str(message_id),
+                'content': str(myai_dict.get('result', ''))
+            }
+            messages.append(tool_result)
+    elif elem_type == 'tool_decision':
+        if myai_dict.get('decision') == 'reject':
+            messages.append({
+                'role': 'tool',
+                'tool_call_id': str(myai_dict.get('original_message_id')),
+                'content': 'User rejected this action'
+            })
+    elif elem_type == 'tool_result':
+        messages.append({
+            'role': 'tool',
+            'tool_call_id': str(myai_dict['original_message_id']),
+            'content': myai_dict['result']
+        })
     else:
         raise ValueError(f'Unhandled element type {elem_type}')
     return messages
@@ -725,10 +747,10 @@ async def prompt_model(request: Request):
 
     with mk_conn() as conn:
         # Guard clause: if a proposal is still pending, block the conversation
-        if conversation_id and (blocking_id := get_blocking_message(conn, conversation_id)):
+        if conversation_id and (blocking_message_id := get_blocking_message_id(conn, conversation_id)):
             return JSONResponse(
                 status_code=403,
-                content={"error": "Action required", "blocking_message_id": blocking_id}
+                content={"error": "Action required", "blocking_message_id": blocking_message_id}
             )
         elif conversation_id:
             messages_context = get_messages_for_continuation(conn, conversation_id)
@@ -954,35 +976,49 @@ async def decide_tool_call(msg_id: int, request: Request):
     with mk_conn() as conn:
         cur = conn.cursor()
         # Fetch the message elements
-        cur.execute('SELECT elements FROM messages WHERE id = %s', (msg_id,))
+        cur.execute('SELECT elements, conversation_id FROM messages WHERE id = %s', (msg_id,))
         row = cur.fetchone()
         if not row:
             return JSONResponse(status_code=404, content={'error': 'message not found'})
-        elem = row[0]
+        elem_json, conv_id = row
+        if isinstance(elem_json, str):
+            elem = json.loads(elem_json)
+        else:
+            elem = elem_json
+
+        # Build the decision element
+        decision_elem: Dict[str, Any] = {
+            'type': 'tool_decision',
+            'decision': decision,
+            'original_message_id': msg_id,
+        }
+
+        # Insert decision message
+        decision_msg_id = insert_message(conn, conv_id, 'assistant', decision_elem)
+
+        # Clear blocking status
+        cur.execute('UPDATE conversations SET blocking_message_id = NULL WHERE id = %s', (conv_id,))
 
         executed = False
         if decision == 'approve':
             # Reconstruct the tool call
+            if elem.get('type') != 'tool_call':
+                return JSONResponse(status_code=400, content={'error': 'original message is not a tool call'})
             tool_call = ToolCall(name=elem.get('name'), parameters=elem.get('parameters'))
             # Execute with privilege to perform the operation
             result = run_tool_call(tool_call, privileged=True)
-            # Store stringified result and mark as completed
-            elem['tool_call_result'] = str(result)
-            elem['status'] = 'completed'
+            # Insert tool result message
+            result_elem: Dict[str, Any] = {
+                'type': 'tool_result',
+                'original_message_id': msg_id,
+                'result': result.result,
+            }
+            insert_message(conn, conv_id, 'assistant', result_elem)
             executed = True
         else:  # reject
-            elem['tool_call_result'] = 'User rejected this action'
-            elem['status'] = 'rejected'
+            # No tool result
+            pass
 
-        # Update the message in the DB
-        cur.execute('UPDATE messages SET elements = %s WHERE id = %s', (json.dumps(elem), msg_id))
-
-        # Unblock the conversation
-        cur.execute('SELECT conversation_id FROM messages WHERE id = %s', (msg_id,))
-        conv_row = cur.fetchone()
-        if conv_row:
-            conv_id = conv_row[0]
-            cur.execute('UPDATE conversations SET blocking_message_id = NULL WHERE id = %s', (conv_id,))
         conn.commit()
     return JSONResponse(content={'status': 'success', 'executed': executed})
 

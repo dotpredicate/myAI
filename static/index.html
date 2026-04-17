@@ -27,12 +27,14 @@
       display: flex;
       flex-direction: column;
       min-height: 0;
+      min-width: 0;
+      overflow: hidden;
     }
 
     #chatHistory {
       flex: 1;
       padding: 10px;
-      overflow-y: scroll;
+      overflow: auto;
       background: #fff;
       min-height: 0;
     }
@@ -82,6 +84,8 @@
 
     .msg-body {
       margin-top: .5em;
+      overflow-wrap: break-word;
+      word-break: break-word;
     }
     .msg-body table {
       border-collapse: collapse;
@@ -123,15 +127,15 @@
       <textarea id="prompt" rows="5" placeholder="Enter prompt here"></textarea>
       <label for="modelSelect">Select Model:</label>
       <select id="modelSelect"></select>
-  <button id="sendBtn">Send</button>
-  <hr>
-  <h3>Upload Documents</h3>
-  <input type="file" id="fileInput" multiple accept=".txt,.md">
-  <button id="uploadBtn">Upload</button>
-  <hr>
-  <h3>Search</h3>
-  <input type="text" id="searchInput" placeholder="Search query">
-  <button id="searchBtn">Search</button>
+      <button id="sendBtn">Send</button>
+      <hr>
+      <h3>Upload Documents</h3>
+      <input type="file" id="fileInput" multiple accept=".txt,.md">
+      <button id="uploadBtn">Upload</button>
+      <hr>
+      <h3>Search</h3>
+      <input type="text" id="searchInput" placeholder="Search query">
+      <button id="searchBtn">Search</button>
     </div>
   </div>
 
@@ -222,46 +226,71 @@
         container.appendChild(details);
       } else if (element.type === 'tool_call') {
         const containerElem = document.createElement('details');
-        if(id) containerElem.dataset.id = id;
+        if (id) containerElem.dataset.messageId = id;
         containerElem.dataset.mode = 'function_call';
-        // Attach message id for decision actions
         const summary = document.createElement('summary');
         summary.textContent = `Function Call: ${element.name}`;
         containerElem.appendChild(summary);
-        const pre = document.createElement('pre');
-        pre.textContent = `Input: ${element.parameters}\n\nOutput:\n${element.result}`;
-        containerElem.appendChild(pre);
-        // If this is a blocking call, render approve/reject buttons
+        const contentDiv = document.createElement('div');
+        contentDiv.className = 'msg-body';
+        const paramsPre = document.createElement('pre');
+        const paramsText = typeof element.parameters === 'object' ? JSON.stringify(element.parameters, null, 2) : element.parameters;
+        paramsPre.textContent = `Input:\n${paramsText}`;
+        contentDiv.appendChild(paramsPre);
+        const resultDiv = document.createElement('div');
+        resultDiv.style.marginTop = '1em';
+        resultDiv.innerHTML = '<strong>Output:</strong>';
+        if (element.status === 'pending') {
+          const pendingMsg = document.createElement('div');
+          pendingMsg.textContent = ' (Pending...)';
+          pendingMsg.style.fontStyle = 'italic';
+          resultDiv.appendChild(pendingMsg);
+        } else if (element.result) {
+          const resultPre = document.createElement('pre');
+          resultPre.textContent = element.result;
+          resultDiv.appendChild(resultPre);
+        } else {
+          const noResultMsg = document.createElement('div');
+          noResultMsg.textContent = ' (No result yet)';
+          resultDiv.appendChild(noResultMsg);
+        }
+        contentDiv.appendChild(resultDiv);
+        containerElem.appendChild(contentDiv);
         if (element.is_blocking) {
           const btnApprove = document.createElement('button');
           btnApprove.textContent = 'Approve';
           btnApprove.addEventListener('click', () => {
-            handleDecision(containerElem.dataset.id, 'approve');
+            handleDecision(containerElem.dataset.messageId, 'approve');
           });
           const btnReject = document.createElement('button');
           btnReject.textContent = 'Reject';
           btnReject.addEventListener('click', () => {
-            handleDecision(containerElem.dataset.id, 'reject');
+            handleDecision(containerElem.dataset.messageId, 'reject');
           });
           containerElem.appendChild(btnApprove);
           containerElem.appendChild(btnReject);
         }
         container.appendChild(containerElem);
+      } else if (element.type === 'tool_decision') {
+        const decisionDiv = document.createElement('div');
+        decisionDiv.className = 'msg-body';
+        decisionDiv.textContent = `Decision: ${element.decision}`;
+        container.appendChild(decisionDiv);
+      } else if (element.type === 'tool_result') {
+        const resultDiv = document.createElement('div');
+        resultDiv.className = 'msg-body';
+        resultDiv.textContent = `Tool Result: ${element.result}`;
+        container.appendChild(resultDiv);
       } else {
-        // For regular messages, including assistant responses.
         const msgDiv = document.createElement('div');
         msgDiv.className = 'msg-body';
-        // If this is an assistant message, render Markdown using smd.
         if (role === 'assistant') {
           const renderer = smd.default_renderer(msgDiv);
           const parser = smd.parser(renderer);
-          // Store parser on element for streaming updates.
           msgDiv._smdParser = parser;
           smd.parser_write(parser, element.content);
-          // Since we only have a complete chunk for historical messages, flush.
           smd.parser_end(parser);
         } else {
-          // Regular user or tool messages.
           msgDiv.textContent = element.content;
         }
         container.appendChild(msgDiv);
@@ -280,12 +309,9 @@
         renderMessage(responseContainer, msg);
       }
       responseContainer.scrollTop = responseContainer.scrollHeight;
-      // Ensure any previous block state is cleared when we reload a conversation
-      clearBlock();
     }
 
     async function* streamPrompt(res, responseContainer) {
-      // Handle 403 blocking response
       if (res.status === 403) {
         const data = await res.json();
         highlightBlockingMessage(data.blocking_message_id);
@@ -326,9 +352,6 @@
       }
     }
 
-    // Shared helper that processes the streaming response from either a new prompt
-    // or a continued conversation. It encapsulates the state machine used to
-    // render reasoning, responses, and tool calls.
     async function processStream(res, responseContainer) {
       const streamState = { type: null };
 
@@ -364,33 +387,63 @@
       };
 
       const finalizeState = () => {
-        console.log('Finalizing current state', streamState);
-        if (streamState.type === 'thinking') {
-          // Explicit no-op
-        } else if (streamState.type === 'response') {
+        if (streamState.type === 'response') {
           smd.parser_end(streamState.parser);
-        } else if (streamState.type === 'tool_call') {
-          // Explicit no-op
         }
       };
 
       const handleStreamChunk = (chunk) => {
         console.log('Handling stream chunk', chunk);
         if (streamState.type === 'reasoning') {
-          const token = chunk.content;
-          streamState.writeElem.append(token);
+          streamState.writeElem.append(chunk.content);
         } else if (streamState.type === 'response') {
-          const token = chunk.content;
-          smd.parser_write(streamState.parser, token);
+          smd.parser_write(streamState.parser, chunk.content);
         } else if (streamState.type === 'tool_call') {
           const container = document.createElement('details');
+          if (chunk.id) container.dataset.messageId = chunk.id;
           container.dataset.mode = 'function_call';
           const summary = document.createElement('summary');
           summary.textContent = `Function Call: ${chunk.name}`;
           container.appendChild(summary);
-          const pre = document.createElement('pre');
-          pre.textContent = `Input: ${chunk.parameters}\n\nOutput:\n${chunk.result}`;
-          container.appendChild(pre);
+          const contentDiv = document.createElement('div');
+          contentDiv.className = 'msg-body';
+          const paramsPre = document.createElement('pre');
+          const paramsText = typeof chunk.parameters === 'object' ? JSON.stringify(chunk.parameters, null, 2) : chunk.parameters;
+          paramsPre.textContent = `Input:\n${paramsText}`;
+          contentDiv.appendChild(paramsPre);
+          const resultDiv = document.createElement('div');
+          resultDiv.style.marginTop = '1em';
+          resultDiv.innerHTML = '<strong>Output:</strong>';
+          if (chunk.status === 'pending') {
+            const pendingMsg = document.createElement('div');
+            pendingMsg.textContent = ' (Pending...)';
+            pendingMsg.style.fontStyle = 'italic';
+            resultDiv.appendChild(pendingMsg);
+          } else if (chunk.result) {
+            const resultPre = document.createElement('pre');
+            resultPre.textContent = chunk.result;
+            resultDiv.appendChild(resultPre);
+          } else {
+            const noResultMsg = document.createElement('div');
+            noResultMsg.textContent = ' (No result yet)';
+            resultDiv.appendChild(noResultMsg);
+          }
+          contentDiv.appendChild(resultDiv);
+          container.appendChild(contentDiv);
+          if (chunk.is_blocking) {
+            const btnApprove = document.createElement('button');
+            btnApprove.textContent = 'Approve';
+            btnApprove.addEventListener('click', () => {
+              handleDecision(container.dataset.messageId, 'approve');
+            });
+            const btnReject = document.createElement('button');
+            btnReject.textContent = 'Reject';
+            btnReject.addEventListener('click', () => {
+              handleDecision(container.dataset.messageId, 'reject');
+            });
+            container.appendChild(btnApprove);
+            container.appendChild(btnReject);
+          }
           responseContainer.appendChild(container);
         }
       };
@@ -405,8 +458,6 @@
       responseContainer.scrollTop = responseContainer.scrollHeight;
     }
 
-    // Resume a conversation by fetching the continuation endpoint and
-    // streaming the assistant's response using the shared processStream helper.
     async function resumeConversation(conversationId) {
       const modelId = document.getElementById('modelSelect').value;
       const res = await fetch(`/api/continue/${conversationId}?model_id=${encodeURIComponent(modelId)}`);
@@ -426,7 +477,6 @@
           conversation_id: selectedConversationId
         })
       });
-      // Handle blocked message
       if (res.status === 403) {
         const data = await res.json();
         highlightBlockingMessage(data.blocking_message_id);
@@ -436,7 +486,6 @@
         if (sendBtn) sendBtn.disabled = true;
         return;
       }
-      // Render user message before streaming response
       renderMessage(responseContainer, { id: null, role: 'user', element: { type: 'message', content: promptText } });
       await processStream(res, responseContainer);
     }
@@ -448,13 +497,12 @@
         body: JSON.stringify({ decision })
       });
       if (res.ok) {
-        // Remove approve/reject buttons from the UI
-        const container = document.querySelector(`details[data-id='${msgId}']`);
+        const container = document.querySelector(`details[data-message-id='${msgId}']`);
         if (container) {
           const btns = container.querySelectorAll('button');
           btns.forEach(b => b.remove());
         }
-        // Resume conversation using the shared helper
+        clearBlock();
         await resumeConversation(selectedConversationId);
       }
     }
@@ -469,7 +517,6 @@
 
     loadModels();
     loadConversations();
-    // Upload documents
     document.getElementById('uploadBtn').addEventListener('click', async () => {
       const files = document.getElementById('fileInput').files;
       if (!files.length) return;
@@ -483,7 +530,6 @@
       alert(`Uploaded ${data.ids.length} documents.`);
     });
 
-    // Search
     document.getElementById('searchBtn').addEventListener('click', async () => {
       const query = document.getElementById('searchInput').value;
       if (!query) return;
