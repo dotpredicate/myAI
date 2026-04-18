@@ -19,9 +19,16 @@ Like Open WebUI but better suited for me.
 ## Technical info
 
 Project structure:
-- `./migrations` - folder with migration scripts
-- `./app.py` - entrypoint to the Python web server
-- `./static` - static resources deployed by the server, web front-end
+- `./app.py` - FastAPI routes and application entrypoint
+- `./conversation.py` - conversation state management and orchestration
+- `./inference.py` - AI protocol handling (stateless)
+- `./index.py` - search indexing and vector search logic
+- `./database.py` - database connection and utility functions
+- `./documents.py` - document processing and management
+- `./system.py` - system-level utilities
+- `./tools.py` - tool execution logic
+- `./migrations/` - folder with migration scripts
+- `./static/` - static resources deployed by the server, web front-end
 
 ### Quickstart
 1. source .venv/bin/activate
