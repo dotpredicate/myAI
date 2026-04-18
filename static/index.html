@@ -192,7 +192,7 @@
       list.innerHTML = '';
       data.forEach(conv => {
         const div = document.createElement('div');
-        div.textContent = conv.title;
+        div.textContent = conv.title || ("Conversation #" + conv.id);
         div.className = 'menu-item';
         div.dataset.id = conv.id;
         if (selectedConversationId === conv.id) {
@@ -303,7 +303,8 @@
       const responseContainer = document.getElementById('response');
       responseContainer.innerHTML = '';
       const title = document.createElement('h2');
-      title.textContent = data.title + ' (' + new Date(data.created_at).toLocaleString() + ')';
+      const displayTitle = data.title || ("Conversation (" + data.id + ")");
+      title.textContent = displayTitle + ' (' + new Date(data.created_at).toLocaleString() + ')';
       responseContainer.appendChild(title);
       for (const msg of data.messages) {
         renderMessage(responseContainer, msg);

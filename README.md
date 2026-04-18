@@ -49,4 +49,3 @@ At startup, the module scans the `migrations` folder for SQL files, sorts them i
 - no cloud integrations
 - monolithic back-end, single instance
 - no caching like Redis, prefer in-memory structures
-- function calls and shell execution aren't secured

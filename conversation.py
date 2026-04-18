@@ -27,9 +27,9 @@ def to_json_dict(element: FinishedElement) -> dict[str, Any]:
             return {'type': 'tool_call', 'name': name, 'parameters': parameters, 'result': result, 'is_blocking': is_blocking}
 
 
-def create_conversation(conn: connection, title: str) -> int:
+def create_conversation(conn: connection) -> int:
     with conn.cursor() as cur:
-        cur.execute("INSERT INTO conversations (title) VALUES (%s) RETURNING id", (title,))
+        cur.execute("INSERT INTO conversations DEFAULT VALUES RETURNING id")
         row = cur.fetchone()
         if not row:
             raise RuntimeError("Failed to create conversation")
@@ -70,7 +70,7 @@ def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Opt
         raise ConversationBlockedError(blocking_id)
     
     if not conv_id:
-        conv_id = create_conversation(conn, prompt)
+        conv_id = create_conversation(conn)
     
     user_message = Message(content=prompt)
     user_message_dict = to_json_dict(user_message)
