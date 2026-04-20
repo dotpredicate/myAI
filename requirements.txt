@@ -2,5 +2,4 @@ psycopg2-binary
 fastapi[standard]
 openai
 pgvector==0.4.2
-llama_cpp_python
 huggingface_hub

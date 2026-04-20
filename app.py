@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import BackgroundTasks, FastAPI, Request, Body
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,12 +13,21 @@ from conversation import (
     decide_tool_call,
     continue_conversation
 )
+import index
 from inference import list_models
 from tools import TOOL_REGISTRY
 FUNCTIONS = [t['schema'] for t in TOOL_REGISTRY]
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    with mk_conn() as conn:
+        init_database(conn)
+    index.synchronize()
+    yield
+    from inference import llama_cpp_server
+    llama_cpp_server.stop()
 
-app = FastAPI(title="MyAI FastAPI")
+app = FastAPI(title="MyAI FastAPI", lifespan=lifespan)
 
 
 @app.get("/")
@@ -71,9 +82,6 @@ async def get_conversation(conv_id: int):
             return JSONResponse(status_code=404, content={'error': 'Not found'})
         return JSONResponse(content=details)
 
-
-import index
-
 @app.post('/api/search')
 async def search(payload: dict = Body(...)):
     query_text: str = payload.get('query', '')
@@ -90,12 +98,6 @@ async def search(payload: dict = Body(...)):
 async def sync(background_tasks: BackgroundTasks):
     background_tasks.add_task(index.synchronize)
     return JSONResponse({"status": "sync started"})
-
-@app.on_event("startup")
-async def startup_event():
-    with mk_conn() as conn:
-        init_database(conn)
-    index.synchronize()
 
 @app.post('/api/conversations/{conv_id}/tool_calls/{msg_id}/decide')
 async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request):

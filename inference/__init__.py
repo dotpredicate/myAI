@@ -1,4 +1,4 @@
-from .openai import (
+from .llama_cpp_server import (
     Message,
     Thinking,
     ToolCall,
