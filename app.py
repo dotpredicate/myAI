@@ -14,7 +14,7 @@ from conversation import (
     continue_conversation
 )
 import index
-from inference import list_models
+from inference import list_models, llama_cpp_server
 from tools import TOOL_REGISTRY
 FUNCTIONS = [t['schema'] for t in TOOL_REGISTRY]
 
@@ -24,7 +24,6 @@ async def lifespan(app: FastAPI):
         init_database(conn)
     index.synchronize()
     yield
-    from inference import llama_cpp_server
     llama_cpp_server.stop()
 
 app = FastAPI(title="MyAI FastAPI", lifespan=lifespan)

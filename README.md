@@ -35,7 +35,7 @@ Project structure:
 2. pip install -r requirements.txt
 3. python app.py
 
-Server runs at http://127.0.0.1:5000
+Server runs at http://127.0.0.1:8000
 
 ### Migrations
 At startup, the module scans the `migrations` folder for SQL files, sorts them in lexicographic order, executes those that have not yet been applied and records the execution in the `migrations` table

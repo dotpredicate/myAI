@@ -8,6 +8,7 @@ from typing import NamedTuple
 
 import database
 import documents
+from inference import llama_cpp_server
 
 EMBEDDING_MODEL = 'unsloth/embeddinggemma-300m-GGUF'
 LLAMA_CPP_EMBEDDINGS_URL = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:2345')
@@ -21,6 +22,7 @@ class SearchHit(NamedTuple):
     text: str
 
 def get_token_chunks(text, max_tokens=400, overlap=50) -> tuple[list[list[int]], list[str]]:
+    llama_cpp_server.ensure_embedding_server_started()
     response = requests.post(
         f"{LLAMA_CPP_EMBEDDINGS_URL}/tokenize",
         json={"content": text, "with_pieces": True}
@@ -49,6 +51,7 @@ def get_token_chunks(text, max_tokens=400, overlap=50) -> tuple[list[list[int]],
     return token_ids, text_chunks
 
 def semantic_search(query: str, top_k: int) -> list[SearchHit]:
+    llama_cpp_server.ensure_embedding_server_started()
     embedding_resp = embeddings_endpoint.embeddings.create(
         model=EMBEDDING_MODEL,
         input=query
@@ -136,8 +139,9 @@ def synchronize():
             if existing and existing[1] == file_hash:
                 print(f"[SKIP] {relative_path} unchanged")
                 continue
-
+            
             token_ids, chunk_texts = get_token_chunks(file_text)
+            llama_cpp_server.ensure_embedding_server_started()
             embedding_resp = embeddings_endpoint.embeddings.create(
                 model=EMBEDDING_MODEL,
                 input=token_ids

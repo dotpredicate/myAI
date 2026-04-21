@@ -3,7 +3,7 @@ import subprocess
 import time
 import openai
 import atexit
-from typing import List, Generator, Any
+from typing import List, Generator, Any, Dict
 from .openai import (
     Message,
     Thinking,
@@ -20,29 +20,38 @@ from .openai import (
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
-_server_process = None
+_server_processes: Dict[str, subprocess.Popen] = {}
 
-def _ensure_server_started():
-    global _server_process
-    if _server_process is None:
+def _start_server(port: str, args: List[str]):
+    global _server_processes
+    if port not in _server_processes:
         try:
-            _server_process = subprocess.Popen(
-                ["llama-server", "--offline", "--port", "1234"],
+            cmd = ["llama-server", "--port", port] + args
+            print(f"Starting server on port {port}: {' '.join(cmd)}")
+            proc = subprocess.Popen(
+                cmd,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 preexec_fn=os.setsid
             )
+            _server_processes[port] = proc
         except FileNotFoundError:
             print("Error: llama-server not found in PATH.")
             raise
 
+def _ensure_server_started():
+    _start_server("1234", ["--offline"])
+
+def ensure_embedding_server_started():
+    _start_server("2345", ["--embedding", "-hf", "unsloth/embeddinggemma-300m-GGUF"])
+
 def stop():
-    global _server_process
-    if _server_process:
-        print(f"Terminating llama-server process {_server_process.pid}")
-        _server_process.terminate()
-        _server_process.wait()
-        _server_process = None
+    global _server_processes
+    for port, process in list(_server_processes.items()):
+        print(f"Terminating llama-server process {process.pid} on port {port}")
+        process.terminate()
+        process.wait()
+        del _server_processes[port]
 
 def run_chat_completion_stream(model_id: str, context: ChatContext, functions: List[Any]):
     _ensure_server_started()

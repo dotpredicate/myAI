@@ -87,8 +87,8 @@ def run_propose_replace(tool_call: ToolCall, privileged: bool = False) -> ToolCa
                 "target": str(target_vpath),
                 "source": str(source_vpath),
                 "preview": f"Replace {target_vpath} with content from {source_vpath}",
-                "target_sample": target_content[:200] + ("..." if len(target_content) > 200 else ""),
-                "source_sample": source_content[:200] + ("..." if len(source_content) > 200 else ""),
+                "before": target_content,
+                "after": source_content,
                 "status": "pending"
             }
             return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
@@ -145,10 +145,9 @@ def run_propose_diff(tool_call: ToolCall, privileged: bool = False) -> ToolCallR
         if not privileged:
             proposal = {
                 "type": "diff_proposal",
+                "diff_path": str(diff_vpath),
                 "target": str(target_vpath),
-                "diff": str(diff_vpath),
-                "preview": f"Apply diff {diff_vpath} to {target_vpath}",
-                "diff_preview": diff_content[:300] + ("..." if len(diff_content) > 300 else ""),
+                "diff": diff_content,
                 "status": "pending"
             }
             return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)

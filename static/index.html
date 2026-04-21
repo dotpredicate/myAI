@@ -87,16 +87,19 @@
       overflow-wrap: break-word;
       word-break: break-word;
     }
+
     .msg-body table {
       border-collapse: collapse;
       width: 100%;
       margin-top: 0.5em;
     }
+
     .msg-body th,
     .msg-body td {
       border: 1px solid #ddd;
       padding: 4px;
     }
+
     .msg-body th {
       background: #f9f9f9;
     }
@@ -105,9 +108,41 @@
       background-color: #ffe6e6;
       border-left: 4px solid #ff0000;
     }
-    textarea:disabled, button:disabled {
+
+    textarea:disabled,
+    button:disabled {
       opacity: 0.5;
       cursor: not-allowed;
+    }
+
+    .file-compare {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .file-pane {
+      flex: 1;
+      background: #f8f8f8;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      white-space: pre-wrap;
+      font-family: monospace;
+      font-size: 12px;
+      overflow-x: auto;
+    }
+
+    .diff-view {
+      background: #f8f8f8;
+      padding: 10px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      white-space: pre-wrap;
+      font-family: monospace;
+      font-size: 12px;
+      margin-top: 10px;
+      overflow-x: auto;
     }
   </style>
 </head>
@@ -149,6 +184,7 @@
     let blockingMessageId = null;
 
     function highlightBlockingMessage(id) {
+      blockingMessageId = id;
       const elem = document.querySelector(`details[data-message-id='${id}']`);
       if (elem) {
         elem.classList.add('blocked');
@@ -240,23 +276,43 @@
         const resultDiv = document.createElement('div');
         resultDiv.style.marginTop = '1em';
         resultDiv.innerHTML = '<strong>Output:</strong>';
-        if (element.status === 'pending') {
-          const pendingMsg = document.createElement('div');
-          pendingMsg.textContent = ' (Pending...)';
-          pendingMsg.style.fontStyle = 'italic';
-          resultDiv.appendChild(pendingMsg);
-        } else if (element.result) {
-          const resultPre = document.createElement('pre');
-          resultPre.textContent = element.result;
-          resultDiv.appendChild(resultPre);
-        } else {
-          const noResultMsg = document.createElement('div');
-          noResultMsg.textContent = ' (No result yet)';
-          resultDiv.appendChild(noResultMsg);
-        }
+        if (element.result) {
+          const resData = JSON.parse(element.result);
+          if (resData.type === 'replace_proposal') {
+            const compareDiv = document.createElement('div');
+            compareDiv.className = 'file-compare';
+            const beforeDiv = document.createElement('div');
+            beforeDiv.className = 'file-pane';
+            beforeDiv.innerHTML = `<strong>Before (${resData.target})</strong><br>${resData.before}`;
+            const afterDiv = document.createElement('div');
+            afterDiv.className = 'file-pane';
+            afterDiv.innerHTML = `<strong>After (${resData.target})</strong><br>${resData.after}`;
+            compareDiv.appendChild(beforeDiv);
+            compareDiv.appendChild(afterDiv);
+            resultDiv.appendChild(compareDiv);
+          } else if (resData.type === 'diff_proposal') {
+            const diffDiv = document.createElement('div');
+            diffDiv.className = 'diff-view';
+            diffDiv.innerHTML = `<strong>Diff (${resData.target})</strong><br>${resData.diff}`;
+            resultDiv.appendChild(diffDiv);
+            } else {
+              const resultPre = document.createElement('pre');
+              resultPre.textContent = element.result;
+              resultDiv.appendChild(resultPre);
+            }
+          } else if (element.status === 'pending') {
+            const pendingMsg = document.createElement('div');
+            pendingMsg.textContent = ' (Pending...)';
+            pendingMsg.style.fontStyle = 'italic';
+            resultDiv.appendChild(pendingMsg);
+          } else {
+            const noResultMsg = document.createElement('div');
+            noResultMsg.textContent = ' (No result yet)';
+            resultDiv.appendChild(noResultMsg);
+          }
         contentDiv.appendChild(resultDiv);
         containerElem.appendChild(contentDiv);
-        if (element.is_blocking) {
+        if (element.is_blocking && id === blockingMessageId) {
           const btnApprove = document.createElement('button');
           btnApprove.textContent = 'Approve';
           btnApprove.addEventListener('click', () => {
@@ -300,6 +356,7 @@
     async function loadConversation(conv_id) {
       const res = await fetch(`/api/conversations/${conv_id}`);
       const data = await res.json();
+      blockingMessageId = data.blocking_message_id;
       const responseContainer = document.getElementById('response');
       responseContainer.innerHTML = '';
       const title = document.createElement('h2');
@@ -415,25 +472,46 @@
           const resultDiv = document.createElement('div');
           resultDiv.style.marginTop = '1em';
           resultDiv.innerHTML = '<strong>Output:</strong>';
-          if (chunk.status === 'pending') {
+          if (chunk.result) {
+            const resData = JSON.parse(chunk.result);
+            if (resData.type === 'replace_proposal') {
+              const compareDiv = document.createElement('div');
+              compareDiv.className = 'file-compare';
+              const beforeDiv = document.createElement('div');
+              beforeDiv.className = 'file-pane';
+              beforeDiv.innerHTML = `<strong>Before (${resData.target})</strong><br>${resData.before}`;
+              const afterDiv = document.createElement('div');
+              afterDiv.className = 'file-pane';
+              afterDiv.innerHTML = `<strong>After (${resData.target})</strong><br>${resData.after}`;
+              compareDiv.appendChild(beforeDiv);
+              compareDiv.appendChild(afterDiv);
+              resultDiv.appendChild(compareDiv);
+            } else if (resData.type === 'diff_proposal') {
+              const diffDiv = document.createElement('div');
+              diffDiv.className = 'diff-view';
+              diffDiv.innerHTML = `<strong>Diff (${resData.target})</strong><br>${resData.diff}`;
+              resultDiv.appendChild(diffDiv);
+            } else {
+              const resultPre = document.createElement('pre');
+              resultPre.textContent = chunk.result;
+              resultDiv.appendChild(resultPre);
+            }
+          } else if (chunk.status === 'pending') {
             const pendingMsg = document.createElement('div');
             pendingMsg.textContent = ' (Pending...)';
             pendingMsg.style.fontStyle = 'italic';
             resultDiv.appendChild(pendingMsg);
-          } else if (chunk.result) {
-            const resultPre = document.createElement('pre');
-            resultPre.textContent = chunk.result;
-            resultDiv.appendChild(resultPre);
           } else {
             const noResultMsg = document.createElement('div');
             noResultMsg.textContent = ' (No result yet)';
             resultDiv.appendChild(noResultMsg);
           }
-          contentDiv.appendChild(resultDiv);
-          container.appendChild(contentDiv);
-          if (chunk.is_blocking) {
-            const btnApprove = document.createElement('button');
-            btnApprove.textContent = 'Approve';
+           contentDiv.appendChild(resultDiv);
+           container.appendChild(contentDiv);
+           if (chunk.is_blocking) {
+             blockingMessageId = chunk.id;
+             const btnApprove = document.createElement('button');
+             btnApprove.textContent = 'Approve';
             btnApprove.addEventListener('click', () => {
               handleDecision(container.dataset.messageId, 'approve');
             });
