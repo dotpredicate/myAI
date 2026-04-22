@@ -1,6 +1,6 @@
 import os
 import openai
-from typing import Dict, Optional, Any, Generator, Union, List, NamedTuple
+from typing import Dict, Optional, Any, Union, List, NamedTuple
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 # LLM Configuration

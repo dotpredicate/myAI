@@ -101,9 +101,9 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
             (delta, aggregated_element) = processor.process(chunk)
             if delta is not None:
                 if isinstance(delta, Message):
-                    yield json.dumps({'type': 'response', 'content': delta.content}).encode() + b'\n'
+                    yield json.dumps({'type': 'message', 'content': delta.content}).encode() + b'\n'
                 elif isinstance(delta, Thinking):
-                    yield json.dumps({'type': 'reasoning', 'content': delta.content}).encode() + b'\n'
+                    yield json.dumps({'type': 'thinking', 'content': delta.content}).encode() + b'\n'
             if aggregated_element is not None:
                 match aggregated_element:
                     case Message() | Thinking() as msg:

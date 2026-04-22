@@ -244,221 +244,57 @@
       });
     }
 
-    function renderMessage(container, { id, role, element }) {
-      const labelEl = document.createElement('div');
-      labelEl.textContent = role + ':';
-      labelEl.classList.add('msg-label');
-      container.appendChild(labelEl);
-      if (element.type === 'thinking') {
-        const details = document.createElement('details');
-        details.className = 'msg-body';
-        const summary = document.createElement('summary');
-        summary.textContent = 'Thinking';
-        details.appendChild(summary);
-        const content = document.createElement('div');
-        content.textContent = element.content;
-        content.className = 'msg-body';
-        details.appendChild(content);
-        container.appendChild(details);
-      } else if (element.type === 'tool_call') {
-        const containerElem = document.createElement('details');
-        if (id) containerElem.dataset.messageId = id;
-        containerElem.dataset.mode = 'function_call';
-        const summary = document.createElement('summary');
-        summary.textContent = `Function Call: ${element.name}`;
-        containerElem.appendChild(summary);
-        const contentDiv = document.createElement('div');
-        contentDiv.className = 'msg-body';
-        const paramsPre = document.createElement('pre');
-        const paramsText = typeof element.parameters === 'object' ? JSON.stringify(element.parameters, null, 2) : element.parameters;
-        paramsPre.textContent = `Input:\n${paramsText}`;
-        contentDiv.appendChild(paramsPre);
-        const resultDiv = document.createElement('div');
-        resultDiv.style.marginTop = '1em';
-        resultDiv.innerHTML = '<strong>Output:</strong>';
-        if (element.result) {
-          const resData = JSON.parse(element.result);
-          if (resData.type === 'replace_proposal') {
-            const compareDiv = document.createElement('div');
-            compareDiv.className = 'file-compare';
-            const beforeDiv = document.createElement('div');
-            beforeDiv.className = 'file-pane';
-            beforeDiv.innerHTML = `<strong>Before (${resData.target})</strong><br>${resData.before}`;
-            const afterDiv = document.createElement('div');
-            afterDiv.className = 'file-pane';
-            afterDiv.innerHTML = `<strong>After (${resData.target})</strong><br>${resData.after}`;
-            compareDiv.appendChild(beforeDiv);
-            compareDiv.appendChild(afterDiv);
-            resultDiv.appendChild(compareDiv);
-          } else if (resData.type === 'diff_proposal') {
-            const diffDiv = document.createElement('div');
-            diffDiv.className = 'diff-view';
-            diffDiv.innerHTML = `<strong>Diff (${resData.target})</strong><br>${resData.diff}`;
-            resultDiv.appendChild(diffDiv);
-            } else {
-              const resultPre = document.createElement('pre');
-              resultPre.textContent = element.result;
-              resultDiv.appendChild(resultPre);
-            }
-          } else if (element.status === 'pending') {
-            const pendingMsg = document.createElement('div');
-            pendingMsg.textContent = ' (Pending...)';
-            pendingMsg.style.fontStyle = 'italic';
-            resultDiv.appendChild(pendingMsg);
-          } else {
-            const noResultMsg = document.createElement('div');
-            noResultMsg.textContent = ' (No result yet)';
-            resultDiv.appendChild(noResultMsg);
-          }
-        contentDiv.appendChild(resultDiv);
-        containerElem.appendChild(contentDiv);
-        if (element.is_blocking && id === blockingMessageId) {
-          const btnApprove = document.createElement('button');
-          btnApprove.textContent = 'Approve';
-          btnApprove.addEventListener('click', () => {
-            handleDecision(containerElem.dataset.messageId, 'approve');
-          });
-          const btnReject = document.createElement('button');
-          btnReject.textContent = 'Reject';
-          btnReject.addEventListener('click', () => {
-            handleDecision(containerElem.dataset.messageId, 'reject');
-          });
-          containerElem.appendChild(btnApprove);
-          containerElem.appendChild(btnReject);
-        }
-        container.appendChild(containerElem);
-      } else if (element.type === 'tool_decision') {
-        const decisionDiv = document.createElement('div');
-        decisionDiv.className = 'msg-body';
-        decisionDiv.textContent = `Decision: ${element.decision}`;
-        container.appendChild(decisionDiv);
-      } else if (element.type === 'tool_result') {
-        const resultDiv = document.createElement('div');
-        resultDiv.className = 'msg-body';
-        resultDiv.textContent = `Tool Result: ${element.result}`;
-        container.appendChild(resultDiv);
-      } else {
-        const msgDiv = document.createElement('div');
-        msgDiv.className = 'msg-body';
-        if (role === 'assistant') {
-          const renderer = smd.default_renderer(msgDiv);
-          const parser = smd.parser(renderer);
-          msgDiv._smdParser = parser;
-          smd.parser_write(parser, element.content);
-          smd.parser_end(parser);
-        } else {
-          msgDiv.textContent = element.content;
-        }
-        container.appendChild(msgDiv);
-      }
-    }
-
-    async function loadConversation(conv_id) {
-      const res = await fetch(`/api/conversations/${conv_id}`);
-      const data = await res.json();
-      blockingMessageId = data.blocking_message_id;
-      const responseContainer = document.getElementById('response');
-      responseContainer.innerHTML = '';
-      const title = document.createElement('h2');
-      const displayTitle = data.title || ("Conversation (" + data.id + ")");
-      title.textContent = displayTitle + ' (' + new Date(data.created_at).toLocaleString() + ')';
-      responseContainer.appendChild(title);
-      for (const msg of data.messages) {
-        renderMessage(responseContainer, msg);
-      }
-      responseContainer.scrollTop = responseContainer.scrollHeight;
-    }
-
-    async function* streamPrompt(res, responseContainer) {
-      if (res.status === 403) {
-        const data = await res.json();
-        highlightBlockingMessage(data.blocking_message_id);
-        return;
+    class ChatStreamRenderer {
+      constructor(responseContainer) {
+        this.responseContainer = responseContainer;
+        this.streamState = { type: null };
       }
 
-      const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      if (!selectedConversationId) {
-        const newConvId = res.headers.get('X-Conversation-ID');
-        if (newConvId) {
-          selectedConversationId = newConvId;
-        }
-        responseContainer.innerHTML = '';
-        const title = document.createElement('h2');
-        title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
-        responseContainer.appendChild(title);
-      }
-
-      let buffer = '';
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed) {
-            const jsonObj = JSON.parse(trimmed);
-            yield jsonObj;
-          }
-        }
-      }
-      if (buffer.trim()) {
-        const jsonObj = JSON.parse(buffer.trim());
-        yield jsonObj;
-      }
-    }
-
-    async function processStream(res, responseContainer) {
-      const streamState = { type: null };
-
-      const initializeState = (newType) => {
-        console.log('Initializing state for type', newType);
-        const assistantLabel = document.createElement('div');
-        assistantLabel.textContent = 'Assistant:';
-        assistantLabel.classList.add('msg-label');
-        responseContainer.appendChild(assistantLabel);
-        if (newType === 'reasoning') {
+      initializeState(newType, role = 'assistant') {
+        console.log('Initializing state for type', newType, 'and role', role);
+        const label = document.createElement('div');
+        label.textContent = (role === 'user' ? 'User:' : 'Assistant:');
+        label.classList.add('msg-label');
+        this.responseContainer.appendChild(label);
+        if (newType === 'thinking') {
           const container = document.createElement('details');
           const summary = document.createElement('summary');
           summary.textContent = 'Reasoning';
           container.appendChild(summary);
-          container.dataset.mode = 'reasoning';
-          responseContainer.appendChild(container);
-          streamState.type = 'reasoning';
-          streamState.writeElem = container;
-        } else if (newType === 'response') {
+          container.dataset.mode = 'thinking';
+          this.responseContainer.appendChild(container);
+          this.streamState = {
+            type: 'thinking',
+            writeElem: container
+          };
+        } else if (newType === 'message') {
           const msgDiv = document.createElement('div');
           msgDiv.className = 'msg-body';
-          const renderer = smd.default_renderer(msgDiv);
-          const parser = smd.parser(renderer);
-          responseContainer.appendChild(msgDiv);
-          streamState.type = 'response';
-          streamState.parser = parser;
+          const smdRenderer = smd.default_renderer(msgDiv);
+          this.responseContainer.appendChild(msgDiv);
+          this.streamState = {
+            type: 'message',
+            parser: smd.parser(smdRenderer)
+          };
         } else if (newType === 'tool_call') {
-          streamState.type = 'tool_call';
+          this.streamState = {
+            type: 'tool_call'
+          };
         } else {
           console.log('Unhandled type', newType);
         }
-        console.log('Initialized state', streamState);
+        console.log('Initialized state', this.streamState);
       };
 
-      const finalizeState = () => {
-        if (streamState.type === 'response') {
-          smd.parser_end(streamState.parser);
-        }
-      };
-
-      const handleStreamChunk = (chunk) => {
+      handleStreamChunk(chunk) {
         console.log('Handling stream chunk', chunk);
-        if (streamState.type === 'reasoning') {
-          streamState.writeElem.append(chunk.content);
-        } else if (streamState.type === 'response') {
-          smd.parser_write(streamState.parser, chunk.content);
-        } else if (streamState.type === 'tool_call') {
+        if (this.streamState.type === 'thinking') {
+          this.streamState.writeElem.append(chunk.content);
+        } else if (this.streamState.type === 'message') {
+          smd.parser_write(this.streamState.parser, chunk.content);
+        } else if (this.streamState.type === 'tool_call') {
           const container = document.createElement('details');
-          if (chunk.id) container.dataset.messageId = chunk.id;
+          container.dataset.messageId = chunk.id;
           container.dataset.mode = 'function_call';
           const summary = document.createElement('summary');
           summary.textContent = `Function Call: ${chunk.name}`;
@@ -506,12 +342,12 @@
             noResultMsg.textContent = ' (No result yet)';
             resultDiv.appendChild(noResultMsg);
           }
-           contentDiv.appendChild(resultDiv);
-           container.appendChild(contentDiv);
-           if (chunk.is_blocking) {
-             blockingMessageId = chunk.id;
-             const btnApprove = document.createElement('button');
-             btnApprove.textContent = 'Approve';
+          contentDiv.appendChild(resultDiv);
+          container.appendChild(contentDiv);
+          if (chunk.is_blocking) {
+            blockingMessageId = chunk.id;
+            const btnApprove = document.createElement('button');
+            btnApprove.textContent = 'Approve';
             btnApprove.addEventListener('click', () => {
               handleDecision(container.dataset.messageId, 'approve');
             });
@@ -523,16 +359,85 @@
             container.appendChild(btnApprove);
             container.appendChild(btnReject);
           }
-          responseContainer.appendChild(container);
+          this.responseContainer.appendChild(container);
         }
       };
 
-      for await (const val of streamPrompt(res, responseContainer)) {
-        if (val.type !== streamState.type) {
-          finalizeState();
-          initializeState(val.type);
+      finalizeState() {
+        if (this.streamState.type === 'message') {
+          smd.parser_end(this.streamState.parser);
+          this.streamState.parser = null;
         }
-        handleStreamChunk(val);
+      };
+    }
+
+      async function loadConversation(conv_id) {
+        const res = await fetch(`/api/conversations/${conv_id}`);
+        const data = await res.json();
+        blockingMessageId = data.blocking_message_id;
+        const responseContainer = document.getElementById('response');
+        responseContainer.innerHTML = '';
+        const title = document.createElement('h2');
+        const displayTitle = data.title || ("Conversation (" + data.id + ")");
+        title.textContent = displayTitle + ' (' + new Date(data.created_at).toLocaleString() + ')';
+        responseContainer.appendChild(title);
+        const renderer = new ChatStreamRenderer(responseContainer);
+        for (const msg of data.messages) {
+          renderer.initializeState(msg.element.type, msg.role);
+          renderer.handleStreamChunk(msg.element)
+          renderer.finalizeState();
+        }
+        responseContainer.scrollTop = responseContainer.scrollHeight;
+      }
+
+    async function* streamPrompt(res, responseContainer) {
+      if (res.status === 403) {
+        const data = await res.json();
+        highlightBlockingMessage(data.blocking_message_id);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      if (!selectedConversationId) {
+        const newConvId = res.headers.get('X-Conversation-ID');
+        if (newConvId) {
+          selectedConversationId = newConvId;
+        }
+        const title = document.createElement('h2');
+        title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
+        responseContainer.prepend(title);
+      }
+
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (trimmed) {
+            const jsonObj = JSON.parse(trimmed);
+            yield jsonObj;
+          }
+        }
+      }
+      if (buffer.trim()) {
+        const jsonObj = JSON.parse(buffer.trim());
+        yield jsonObj;
+      }
+    }
+
+    async function processStream(res, responseContainer) {
+      const renderer = new ChatStreamRenderer(responseContainer);
+      for await (const val of streamPrompt(res, responseContainer)) {
+        if (val.type !== renderer.streamState.type) {
+          renderer.finalizeState();
+          renderer.initializeState(val.type, 'assistant');
+        }
+        renderer.handleStreamChunk(val);
       }
       responseContainer.scrollTop = responseContainer.scrollHeight;
     }
@@ -544,9 +449,20 @@
       await processStream(res, responseContainer);
     }
 
+    function renderSingleMessage(container, msg) {
+      const renderer = new ChatStreamRenderer(container);
+      renderer.initializeState(msg.element.type, msg.role);
+      renderer.handleStreamChunk(msg.element);
+      renderer.finalizeState();
+    }
+
     async function sendPrompt() {
       const responseContainer = document.getElementById('response');
       const promptText = document.getElementById('prompt').value;
+      
+      renderSingleMessage(responseContainer, { id: null, role: 'user', element: { type: 'message', content: promptText } });
+      document.getElementById('prompt').value = '';
+
       const res = await fetch('/api/conversations/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -565,7 +481,6 @@
         if (sendBtn) sendBtn.disabled = true;
         return;
       }
-      renderMessage(responseContainer, { id: null, role: 'user', element: { type: 'message', content: promptText } });
       await processStream(res, responseContainer);
     }
 
