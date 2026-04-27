@@ -3,3 +3,4 @@ fastapi[standard]
 openai
 pgvector==0.4.2
 huggingface_hub
+httpx

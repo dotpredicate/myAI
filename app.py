@@ -14,7 +14,7 @@ from conversation import (
     continue_conversation
 )
 import index
-from inference import list_models, llama_cpp_server
+from inference import list_models, llama_cpp_server, estimator
 from tools import TOOL_REGISTRY
 FUNCTIONS = [t['schema'] for t in TOOL_REGISTRY]
 
@@ -22,7 +22,7 @@ FUNCTIONS = [t['schema'] for t in TOOL_REGISTRY]
 async def lifespan(app: FastAPI):
     with mk_conn() as conn:
         init_database(conn)
-    index.synchronize()
+    await index.synchronize()
     yield
     llama_cpp_server.stop()
 
@@ -92,6 +92,11 @@ async def search(payload: dict = Body(...)):
         snippet = hit.text[:200] + ('...' if len(hit.text) > 200 else '')
         results.append({'id': hit.document_id, 'title': f"{hit.file_path} ({hit.chunk_index})", 'snippet': snippet, 'score': hit.score})
     return JSONResponse(content={'results': results})
+
+@app.get('/api/estimate')
+async def estimate_model(model_id: str, n_ctx: int = 2048, device_metric: Optional[str] = None):
+    data = await estimator.estimate_vram_remote(model_id, n_ctx=n_ctx, device_metric=device_metric)
+    return JSONResponse(content=data)
 
 @app.post("/api/sync")
 async def sync(background_tasks: BackgroundTasks):

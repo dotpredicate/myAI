@@ -168,6 +168,13 @@
       <input type="file" id="fileInput" multiple accept=".txt,.md">
       <button id="uploadBtn">Upload</button>
       <hr>
+      <h3>Estimate VRAM</h3>
+      <input type="text" id="modelEstimateInput" placeholder="Model repo ID (e.g. bartowski/...)" style="width: 100%;">
+      <button id="estimateBtn">Estimate</button>
+      <div id="estimateResult" style="margin-top: 10px; font-size: 0.9em; white-space: pre-wrap;"></div>
+      <label>Device Metrics (e.g. 35TFLOPS;900GBps):</label>
+      <input type="text" id="deviceMetricInput" placeholder="TFLOPS;Bandwidth" style="width: 100%;">
+      <hr>
       <h3>Search</h3>
       <input type="text" id="searchInput" placeholder="Search query">
       <button id="searchBtn">Search</button>
@@ -540,6 +547,28 @@
         div.innerHTML = `<strong>${r.title}</strong> (score ${r.score.toFixed(4)}): ${r.snippet}`;
         container.appendChild(div);
       });
+    });
+
+    document.getElementById('estimateBtn').addEventListener('click', async () => {
+      const modelId = document.getElementById('modelEstimateInput').value;
+      const deviceMetric = document.getElementById('deviceMetricInput').value;
+      if (!modelId) return;
+      
+      let url = `/api/estimate?model_id=${encodeURIComponent(modelId)}`;
+      if (deviceMetric) url += `&device_metric=${encodeURIComponent(deviceMetric)}`;
+      
+      const res = await fetch(url);
+      const data = await res.json();
+      const resultDiv = document.getElementById('estimateResult');
+      
+      if (data.error) {
+        resultDiv.textContent = `Error: ${data.error}`;
+      } else {
+        const vramGB = (data.vram / (1024**3)).toFixed(2);
+        const ramGB = (data.ram / (1024**3)).toFixed(2);
+        const tps = data.tps ? data.tps.toFixed(2) : "N/A";
+        resultDiv.textContent = `VRAM: ${vramGB} GB\nRAM: ${ramGB} GB\nTPS: ${tps}`;
+      }
     });
   </script>
 </body>

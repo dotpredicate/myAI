@@ -1,8 +1,14 @@
-# Based on llama.cpp code from https://github.com/ggml-org/llama.cpp/blob/4eac5b45095a4e8a1ff1cce4f6d030e0872fb4ad/common/download.cpp
 import re
 from pathlib import Path
 from typing import List, Tuple, Optional
 from huggingface_hub import HfApi
+from huggingface_hub import hf_hub_url
+import httpx
+
+
+# Llama.cpp model cache and Huggingface download algorithm is based on:
+# https://github.com/ggml-org/llama.cpp/blob/4eac5b45095a4e8a1ff1cce4f6d030e0872fb4ad/common/download.cpp
+# https://github.com/ggml-org/llama.cpp/blob/master/common/download.cpp
 
 DEFAULT_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
 
@@ -48,7 +54,7 @@ def resolve_hf_alias(alias: str, api: Optional[HfApi] = None) -> Tuple[str, str]
     if ":" in alias:
         repo_id, tag = alias.rsplit(":", 1)
     else:
-        repo_id, tag = alias, "Q4_K_M" # Domyślny tag z llama.cpp
+        repo_id, tag = alias, "Q4_K_M" # Default tag
 
     api = api or HfApi()
     files = api.list_repo_files(repo_id=repo_id)
@@ -66,3 +72,12 @@ def resolve_hf_alias(alias: str, api: Optional[HfApi] = None) -> Tuple[str, str]
         return repo_id, gguf_files[0]
 
     raise FileNotFoundError(f"Couldn't find matching repo file for {alias} in {repo_id}")
+
+async def download_file_slice(repo_id: str, filename: str, start: int, bytes_to_read: int) -> bytes:
+    print(f"Downloading bytes {start}-{bytes_to_read-1} of {repo_id}/{filename} ")
+    url = hf_hub_url(repo_id, filename)
+    headers = {"Range": f"bytes={start}-{bytes_to_read - 1}"}
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        response = await client.get(url, headers=headers)
+    response.raise_for_status()
+    return response.content

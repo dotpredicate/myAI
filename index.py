@@ -1,7 +1,7 @@
 import os
 import hashlib
 import subprocess
-import requests
+import httpx
 import openai
 from pathlib import Path
 from typing import NamedTuple
@@ -21,14 +21,15 @@ class SearchHit(NamedTuple):
     score: float
     text: str
 
-def get_token_chunks(text, max_tokens=400, overlap=50) -> tuple[list[list[int]], list[str]]:
+async def get_token_chunks(text, max_tokens=400, overlap=50) -> tuple[list[list[int]], list[str]]:
     llama_cpp_server.ensure_embedding_server_started()
-    response = requests.post(
-        f"{LLAMA_CPP_EMBEDDINGS_URL}/tokenize",
-        json={"content": text, "with_pieces": True}
-    ).json()
-
-    all_tokens = response["tokens"]
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{LLAMA_CPP_EMBEDDINGS_URL}/tokenize",
+            json={"content": text, "with_pieces": True}
+        )
+    response_data = response.json()
+    all_tokens = response_data["tokens"]
 
     token_ids: list[list[int]] = []
     text_chunks: list[str] = []
@@ -72,7 +73,7 @@ def semantic_search(query: str, top_k: int) -> list[SearchHit]:
             results.append(SearchHit(doc_id, file_path, chunk_index, score, content))
         return results
 
-def synchronize():
+async def synchronize():
     """Incrementally sync repositories folder.
     For each file, compute its hash and compare it against the stored value.
     Only files that are new or changed are processed.
@@ -140,7 +141,7 @@ def synchronize():
                 print(f"[SKIP] {relative_path} unchanged")
                 continue
             
-            token_ids, chunk_texts = get_token_chunks(file_text)
+            token_ids, chunk_texts = await get_token_chunks(file_text)
             llama_cpp_server.ensure_embedding_server_started()
             embedding_resp = embeddings_endpoint.embeddings.create(
                 model=EMBEDDING_MODEL,
