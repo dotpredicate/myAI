@@ -1,6 +1,7 @@
 import os
 import subprocess
 import time
+import httpx
 import openai
 import atexit
 from typing import List, Generator, Any, Dict
@@ -39,11 +40,28 @@ def _start_server(port: str, args: List[str]):
             print("Error: llama-server not found in PATH.")
             raise
 
+def _wait_for_server(port: str, timeout: int = 120):
+    """Wait for the server to respond to HTTP requests."""
+    url = f"http://localhost:{port}/v1/models"
+    start_time = time.time()
+    print(f"Waiting for server on port {port} to be ready...")
+    while time.time() - start_time < timeout:
+        try:
+            response = httpx.get(url, timeout=1.0)
+            if response.status_code in (200, 401):  # 401 is also valid for dummy API key
+                print(f"Server on port {port} is ready.")
+                return
+        except Exception:
+            pass
+        time.sleep(1.0)
+    raise TimeoutError(f"Server on port {port} did not start within {timeout} seconds.")
+
 def _ensure_server_started():
     _start_server("1234", ["--offline", "--jinja"])
 
 def ensure_embedding_server_started():
     _start_server("2345", ["--embedding", "-hf", "unsloth/embeddinggemma-300m-GGUF"])
+    _wait_for_server("2345")
 
 def stop():
     global _server_processes

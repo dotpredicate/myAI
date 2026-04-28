@@ -144,8 +144,8 @@ async def synchronize():
                 print(f"[SKIP] {relative_path} unchanged")
                 continue
             
-            token_ids, chunk_texts = await get_token_chunks(file_text)
             llama_cpp_server.ensure_embedding_server_started()
+            token_ids, chunk_texts = await get_token_chunks(file_text)
             embedding_resp = embeddings_endpoint.embeddings.create(
                 model=EMBEDDING_MODEL,
                 input=token_ids

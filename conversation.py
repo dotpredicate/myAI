@@ -222,3 +222,17 @@ def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: str)
     
     conn.commit()
     return executed
+
+def delete_conversation(conn: connection, conv_id: int) -> bool:
+    """Delete a conversation and all its messages."""
+    with conn.cursor() as cur:
+        # Check if conversation exists
+        cur.execute("SELECT id FROM conversations WHERE id = %s", (conv_id,))
+        if not cur.fetchone():
+            return False
+        # Delete messages first
+        cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conv_id,))
+        # Delete conversation
+        cur.execute("DELETE FROM conversations WHERE id = %s", (conv_id,))
+        conn.commit()
+        return True

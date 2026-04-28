@@ -11,7 +11,8 @@ from conversation import (
     get_conversations as fetch_conversations,
     get_conversation_details,
     decide_tool_call,
-    continue_conversation
+    continue_conversation,
+    delete_conversation
 )
 import index
 from inference import list_models, llama_cpp_server, estimator
@@ -23,7 +24,7 @@ FUNCTIONS = [t['schema'] for t in TOOL_REGISTRY]
 async def lifespan(app: FastAPI):
     with mk_conn() as conn:
         init_database(conn)
-    await index.synchronize()
+    # await index.synchronize()
     yield
     llama_cpp_server.stop()
 
@@ -88,6 +89,18 @@ async def get_conversation(conv_id: int):
         if not details:
             return JSONResponse(status_code=404, content={'error': 'Not found'})
         return JSONResponse(content=details)
+
+@app.delete('/api/conversations/{conv_id}')
+async def delete_conversation_endpoint(conv_id: int):
+    """Delete a conversation by its ID."""
+    try:
+        with mk_conn() as conn:
+            success = delete_conversation(conn, conv_id)
+        if not success:
+            return JSONResponse(status_code=404, content={'error': 'Conversation not found'})
+        return JSONResponse(content={'status': 'deleted', 'id': conv_id})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={'error': str(e)})
 
 @app.post('/api/search')
 async def search(payload: dict = Body(...)):
