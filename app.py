@@ -16,6 +16,7 @@ from conversation import (
 import index
 from inference import list_models, llama_cpp_server, estimator
 from tools import TOOL_REGISTRY
+import system
 FUNCTIONS = [t['schema'] for t in TOOL_REGISTRY]
 
 @asynccontextmanager
@@ -44,18 +45,25 @@ async def get_models():
         models = []
     return JSONResponse(content={"models": [{'id': m.id, 'name': m.id} for m in models]})
 
+
+@app.get('/api/repositories')
+async def get_repositories():
+    repos = system.get_repositories()
+    return JSONResponse(content={"repositories": repos})
+
 @app.post('/api/conversations/prompt')
 async def prompt_model(request: Request):
     payload: dict[str, Any] = await request.json()
     prompt: str = payload.get('prompt', '')
     model_id: Optional[str] = payload.get('model_id')
+    scopes: Optional[list[str]] = payload.get('scopes')
     if model_id is None:
         return JSONResponse(status_code=400, content={'error': 'model_id required'})
     conversation_id: Optional[int] = payload.get('conversation_id')
 
     try:
         with mk_conn() as conn:
-            conversation_id = prepare_conversation_with_prompt(conn, prompt, conversation_id)
+            conversation_id = prepare_conversation_with_prompt(conn, prompt, conversation_id, scopes=scopes)
     except ConversationBlockedError as e:
         return JSONResponse(
             status_code=403,

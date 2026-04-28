@@ -4,7 +4,7 @@ import subprocess
 import httpx
 import openai
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, List, Optional
 
 import database
 import documents
@@ -51,21 +51,35 @@ async def get_token_chunks(text, max_tokens=400, overlap=50) -> tuple[list[list[
     assert len(token_ids) == len(text_chunks)
     return token_ids, text_chunks
 
-def semantic_search(query: str, top_k: int) -> list[SearchHit]:
+def semantic_search(query: str, top_k: int, scopes: Optional[List[str]] = None) -> list[SearchHit]:
     llama_cpp_server.ensure_embedding_server_started()
     embedding_resp = embeddings_endpoint.embeddings.create(
         model=EMBEDDING_MODEL,
         input=query
     )
     query_vec = embedding_resp.data[0].embedding
+    
+    # Build the SQL query with filtering if scopes are provided
+    base_query = """
+        SELECT document_id, file_path, chunk_index, chunk_text, embedding <=> %s::vector AS score 
+        FROM document_chunks
+        JOIN documents ON documents.id = document_chunks.document_id
+    """
+    
+    new_params = [query_vec]
+    if scopes:
+        where_clauses = []
+        for scope in scopes:
+            where_clauses.append("file_path LIKE %s")
+            new_params.append(f"{scope}/%")
+        
+        base_query += " WHERE " + " OR ".join(where_clauses)
+        
+    base_query += " ORDER BY score ASC LIMIT %s"
+    new_params.append(top_k)
+
     with database.mk_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            """SELECT document_id, file_path, chunk_index, chunk_text, embedding <=> %s::vector AS score 
-            FROM document_chunks
-            JOIN documents ON documents.id=document_chunks.document_id
-            ORDER BY score ASC LIMIT %s""",
-            (query_vec, top_k)
-        )
+        cur.execute(base_query, tuple(new_params))
         rows = cur.fetchall()
         results = []
         for row in rows:
@@ -74,11 +88,7 @@ def semantic_search(query: str, top_k: int) -> list[SearchHit]:
         return results
 
 async def synchronize():
-    """Incrementally sync repositories folder.
-    For each file, compute its hash and compare it against the stored value.
-    Only files that are new or changed are processed.
-    """
-    # Some of this should move to system module
+    """Incrementally sync repositories folder."""
     from system import REPOSITORIES_DIR
     for repo_dir in os.listdir(REPOSITORIES_DIR):
         repo_full_path = str(Path(REPOSITORIES_DIR) / repo_dir)
@@ -93,9 +103,7 @@ async def synchronize():
 
         if is_git:
             ls_git_result = subprocess.run(
-                [
-                    "git", "-C", repo_full_path, "ls-files" 
-                ],
+                ["git", "-C", repo_full_path, "ls-files" ],
                 capture_output=True,
                 text=True
             )
@@ -113,14 +121,9 @@ async def synchronize():
 
         for fname in files:
             if Path(fname).suffix.lower() not in {
-                ".properties",
-                ".md", ".txt",
-                ".json", ".xml", ".csv", ".yml", ".yaml", 
-                ".mill", ".java", 
-                ".c", ".cpp", 
-                ".html", ".hbs", ".js", ".ts",
-                ".py", ".sh",
-                ".sql",
+                ".properties", ".md", ".txt", ".json", ".xml", ".csv", ".yml", ".yaml", 
+                ".mill", ".java", ".c", ".cpp", ".html", ".hbs", ".js", ".ts",
+                ".py", ".sh", ".sql",
             }:
                 print(f"Skipping unhandled file type {fname}")
                 continue

@@ -40,7 +40,7 @@ def _start_server(port: str, args: List[str]):
             raise
 
 def _ensure_server_started():
-    _start_server("1234", ["--offline"])
+    _start_server("1234", ["--offline", "--jinja"])
 
 def ensure_embedding_server_started():
     _start_server("2345", ["--embedding", "-hf", "unsloth/embeddinggemma-300m-GGUF"])

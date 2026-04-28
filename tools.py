@@ -2,23 +2,23 @@ import os
 import json
 import subprocess
 from pathlib import Path
-from typing import Dict, Any, NamedTuple
+from typing import Dict, Any, NamedTuple, Optional, List
 from conversation import ToolCall, ToolCallResult
 import system
 import index
 
-def run_shell_command(tool_call: ToolCall, privileged: bool = False) -> ToolCallResult:
+def run_shell_command(tool_call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
     params = json.loads(tool_call.parameters)
     command: str = params['command']
     if not isinstance(command, str):
         raise ValueError('Cannot parse the command field. Double-check if input is valid JSON.')
 
-    shell = system.run_sandboxed_command(command)
+    shell = system.run_sandboxed_command(command, scopes=scopes)
 
-    output_str = json.dumps({'command': command, 'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
+    output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
     return ToolCallResult(tool_call.name, tool_call.parameters, output_str)
 
-def run_semantic_search(tool_call: ToolCall, privileged: bool = False) -> ToolCallResult:
+def run_semantic_search(tool_call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
     try:
         params = json.loads(tool_call.parameters)
         prompt: str = params["prompt"]
@@ -31,7 +31,7 @@ def run_semantic_search(tool_call: ToolCall, privileged: bool = False) -> ToolCa
         )
 
     try:
-        results = index.semantic_search(prompt, top_k)
+        results = index.semantic_search(prompt, top_k, scopes=scopes)
     except Exception as exc:
         return ToolCallResult(
             name=tool_call.name,
@@ -44,7 +44,7 @@ def run_semantic_search(tool_call: ToolCall, privileged: bool = False) -> ToolCa
         result=json.dumps({"results": json.dumps(results)})
     )
 
-def run_propose_replace(tool_call: ToolCall, privileged: bool = False) -> ToolCallResult:
+def run_propose_replace(tool_call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, REPOSITORIES_DIR, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -57,7 +57,7 @@ def run_propose_replace(tool_call: ToolCall, privileged: bool = False) -> ToolCa
         target_vpath = Path(target_vpath_str)
         source_vpath = Path(source_vpath_str)
         
-        target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT))
+        target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT), allowed_scopes=scopes)
         if not target_safe:
             return ToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": target_err}))
@@ -106,7 +106,7 @@ def run_propose_replace(tool_call: ToolCall, privileged: bool = False) -> ToolCa
         return ToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
-def run_propose_diff(tool_call: ToolCall, privileged: bool = False) -> ToolCallResult:
+def run_propose_diff(tool_call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, REPOSITORIES_DIR, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -119,7 +119,7 @@ def run_propose_diff(tool_call: ToolCall, privileged: bool = False) -> ToolCallR
         target_vpath = Path(target_vpath_str)
         diff_vpath = Path(diff_vpath_str)
         
-        target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT))
+        target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT), allowed_scopes=scopes)
         if not target_safe:
             return ToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": target_err}))
@@ -247,7 +247,7 @@ TOOL_REGISTRY = [
         "name": "propose_diff",
         "schema": {
             "name": "propose_diff",
-            "description": "Proposes applying a diff file to a target file in the repositories.",
+            "description": "Propose applying a diff file from the workspace to a target file in the repositories.",
             "type": "function",
             "function": {
                 "name": "propose_diff",
@@ -266,9 +266,9 @@ TOOL_REGISTRY = [
     }
 ]
 
-def run_tool_call(call: ToolCall, privileged: bool = False) -> ToolCallResult:
+def run_tool_call(call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
     for entry in TOOL_REGISTRY:
         if entry["name"] == call.name:
-            return entry["executor"](call, privileged)
+            return entry["executor"](call, privileged, scopes)
     
     raise ValueError(f'Unsupported tool call {call.name}')

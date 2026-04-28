@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 
 <head>
   <meta charset="utf-8">
@@ -115,6 +115,37 @@
       cursor: not-allowed;
     }
 
+    #scopeSelectorContainer {
+      margin-bottom: 10px;
+    }
+
+    #scopePills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 5px;
+    }
+
+    .scope-pill {
+      background: #e0e0e0;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.85em;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .scope-pill .remove-btn {
+      cursor: pointer;
+      font-weight: bold;
+      color: #888;
+    }
+
+    .scope-pill .remove-btn:hover {
+      color: #ff0000;
+    }
+
     .file-compare {
       display: flex;
       gap: 10px;
@@ -148,7 +179,7 @@
 </head>
 
 <body>
-  <h1 style="text-align:center;">myAI</h1>
+  <h1>myAI</h1>
   <div id="sidebar">
     <h2>Conversations</h2>
     <button id="newBtnSide" class="menu-item">+ New</button>
@@ -159,6 +190,11 @@
       <div id="response"></div>
     </div>
     <div id="inputArea">
+      <div id="scopeSelectorContainer">
+        <label>Scopes:</label>
+        <select id="scopeSelect"></select>
+        <div id="scopePills"></div>
+      </div>
       <textarea id="prompt" rows="5" placeholder="Enter prompt here"></textarea>
       <label for="modelSelect">Select Model:</label>
       <select id="modelSelect"></select>
@@ -183,12 +219,14 @@
 
   <script type="module">
     import * as smdModule from "./smd.js";
-    // Expose smd to the global scope so other scripts can access it
     window.smd = smdModule;
   </script>
 
   <script>
     let blockingMessageId = null;
+    let activeScopes = [];
+    let allRepositories = [];
+    let selectedConversationId = null;
 
     function highlightBlockingMessage(id) {
       blockingMessageId = id;
@@ -226,7 +264,47 @@
       });
     }
 
-    let selectedConversationId = null;
+    async function loadRepositories() {
+      try {
+        const res = await fetch('/api/repositories');
+        const data = await res.json();
+        allRepositories = data.repositories || [];
+        const select = document.getElementById('scopeSelect');
+        select.innerHTML = '<option value="" disabled selected>Select a scope...</option>';
+        allRepositories.forEach(repo => {
+          const opt = document.createElement('option');
+          opt.value = repo;
+          opt.textContent = repo;
+          select.appendChild(opt);
+        });
+        select.addEventListener('change', (e) => {
+          const repo = e.target.value;
+          if (repo && !activeScopes.includes(repo)) {
+            activeScopes.push(repo);
+            renderScopePills();
+          }
+          select.value = "";
+        });
+      } catch (err) {
+        console.error("Failed to load repositories", err);
+      }
+    }
+
+    function renderScopePills() {
+      const container = document.getElementById('scopePills');
+      container.innerHTML = '';
+      activeScopes.forEach(scope => {
+        const pill = document.createElement('div');
+        pill.className = 'scope-pill';
+        pill.innerHTML = `<span>${scope}</span><span class="remove-btn" data-scope="${scope}">&times;</span>`;
+        pill.querySelector('.remove-btn').addEventListener('click', (e) => {
+          const scopeToRemove = e.target.dataset.scope;
+          activeScopes = activeScopes.filter(s => s !== scopeToRemove);
+          renderScopePills();
+        });
+        container.appendChild(pill);
+      });
+    }
 
     async function loadConversations() {
       const res = await fetch('/api/conversations');
@@ -258,7 +336,6 @@
       }
 
       initializeState(newType, role = 'assistant') {
-        console.log('Initializing state for type', newType, 'and role', role);
         const label = document.createElement('div');
         label.textContent = (role === 'user' ? 'User:' : 'Assistant:');
         label.classList.add('msg-label');
@@ -270,31 +347,19 @@
           container.appendChild(summary);
           container.dataset.mode = 'thinking';
           this.responseContainer.appendChild(container);
-          this.streamState = {
-            type: 'thinking',
-            writeElem: container
-          };
+          this.streamState = { type: 'thinking', writeElem: container };
         } else if (newType === 'message') {
           const msgDiv = document.createElement('div');
           msgDiv.className = 'msg-body';
           const smdRenderer = smd.default_renderer(msgDiv);
           this.responseContainer.appendChild(msgDiv);
-          this.streamState = {
-            type: 'message',
-            parser: smd.parser(smdRenderer)
-          };
+          this.streamState = { type: 'message', parser: smd.parser(smdRenderer) };
         } else if (newType === 'tool_call') {
-          this.streamState = {
-            type: 'tool_call'
-          };
-        } else {
-          console.log('Unhandled type', newType);
+          this.streamState = { type: 'tool_call' };
         }
-        console.log('Initialized state', this.streamState);
-      };
+      }
 
       handleStreamChunk(chunk) {
-        console.log('Handling stream chunk', chunk);
         if (this.streamState.type === 'thinking') {
           this.streamState.writeElem.append(chunk.content);
         } else if (this.streamState.type === 'message') {
@@ -322,17 +387,20 @@
               compareDiv.className = 'file-compare';
               const beforeDiv = document.createElement('div');
               beforeDiv.className = 'file-pane';
-              beforeDiv.innerHTML = `<strong>Before (${resData.target})</strong><br>${resData.before}`;
+              beforeDiv.innerHTML = `<strong>Before (${resData.target})</strong><br>`;
+              beforeDiv.innerText += resData.before;
               const afterDiv = document.createElement('div');
               afterDiv.className = 'file-pane';
-              afterDiv.innerHTML = `<strong>After (${resData.target})</strong><br>${resData.after}`;
+              afterDiv.innerHTML = `<strong>After (${resData.target})</strong><br>`;
+              afterDiv.innerText += resData.after;
               compareDiv.appendChild(beforeDiv);
               compareDiv.appendChild(afterDiv);
               resultDiv.appendChild(compareDiv);
             } else if (resData.type === 'diff_proposal') {
               const diffDiv = document.createElement('div');
               diffDiv.className = 'diff-view';
-              diffDiv.innerHTML = `<strong>Diff (${resData.target})</strong><br>${resData.diff}`;
+              diffDiv.innerHTML = `<strong>Diff (${resData.target})</strong><br>`;
+              diffDiv.textContent += resData.diff;
               resultDiv.appendChild(diffDiv);
             } else {
               const resultPre = document.createElement('pre');
@@ -355,47 +423,43 @@
             blockingMessageId = chunk.id;
             const btnApprove = document.createElement('button');
             btnApprove.textContent = 'Approve';
-            btnApprove.addEventListener('click', () => {
-              handleDecision(container.dataset.messageId, 'approve');
-            });
+            btnApprove.addEventListener('click', () => handleDecision(container.dataset.messageId, 'approve'));
             const btnReject = document.createElement('button');
             btnReject.textContent = 'Reject';
-            btnReject.addEventListener('click', () => {
-              handleDecision(container.dataset.messageId, 'reject');
-            });
+            btnReject.addEventListener('click', () => handleDecision(container.dataset.messageId, 'reject'));
             container.appendChild(btnApprove);
             container.appendChild(btnReject);
           }
           this.responseContainer.appendChild(container);
         }
-      };
+      }
 
       finalizeState() {
         if (this.streamState.type === 'message') {
           smd.parser_end(this.streamState.parser);
           this.streamState.parser = null;
         }
-      };
+      }
     }
 
-      async function loadConversation(conv_id) {
-        const res = await fetch(`/api/conversations/${conv_id}`);
-        const data = await res.json();
-        blockingMessageId = data.blocking_message_id;
-        const responseContainer = document.getElementById('response');
-        responseContainer.innerHTML = '';
-        const title = document.createElement('h2');
-        const displayTitle = data.title || ("Conversation (" + data.id + ")");
-        title.textContent = displayTitle + ' (' + new Date(data.created_at).toLocaleString() + ')';
-        responseContainer.appendChild(title);
-        const renderer = new ChatStreamRenderer(responseContainer);
-        for (const msg of data.messages) {
-          renderer.initializeState(msg.element.type, msg.role);
-          renderer.handleStreamChunk(msg.element)
-          renderer.finalizeState();
-        }
-        responseContainer.scrollTop = responseContainer.scrollHeight;
+    async function loadConversation(conv_id) {
+      const res = await fetch(`/api/conversations/${conv_id}`);
+      const data = await res.json();
+      blockingMessageId = data.blocking_message_id;
+      const responseContainer = document.getElementById('response');
+      responseContainer.innerHTML = '';
+      const title = document.createElement('h2');
+      const displayTitle = data.title || ("Conversation (" + data.id + ")");
+      title.textContent = displayTitle + ' (' + new Date(data.created_at).toLocaleString() + ')';
+      responseContainer.appendChild(title);
+      const renderer = new ChatStreamRenderer(responseContainer);
+      for (const msg of data.messages) {
+        renderer.initializeState(msg.element.type, msg.role);
+        renderer.handleStreamChunk(msg.element);
+        renderer.finalizeState();
       }
+      responseContainer.scrollTop = responseContainer.scrollHeight;
+    }
 
     async function* streamPrompt(res, responseContainer) {
       if (res.status === 403) {
@@ -403,19 +467,15 @@
         highlightBlockingMessage(data.blocking_message_id);
         return;
       }
-
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       if (!selectedConversationId) {
         const newConvId = res.headers.get('X-Conversation-ID');
-        if (newConvId) {
-          selectedConversationId = newConvId;
-        }
+        if (newConvId) selectedConversationId = newConvId;
         const title = document.createElement('h2');
         title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
         responseContainer.prepend(title);
       }
-
       let buffer = '';
       while (true) {
         const { value, done } = await reader.read();
@@ -426,14 +486,20 @@
         for (const line of lines) {
           const trimmed = line.trim();
           if (trimmed) {
-            const jsonObj = JSON.parse(trimmed);
-            yield jsonObj;
+            try {
+              yield JSON.parse(trimmed);
+            } catch (e) {
+              console.error("JSON parse error", e);
+            }
           }
         }
       }
       if (buffer.trim()) {
-        const jsonObj = JSON.parse(buffer.trim());
-        yield jsonObj;
+        try {
+          yield JSON.parse(buffer.trim());
+        } catch (e) {
+          console.error("JSON parse error", e);
+        }
       }
     }
 
@@ -466,7 +532,8 @@
     async function sendPrompt() {
       const responseContainer = document.getElementById('response');
       const promptText = document.getElementById('prompt').value;
-      
+      if (!promptText.trim()) return;
+
       renderSingleMessage(responseContainer, { id: null, role: 'user', element: { type: 'message', content: promptText } });
       document.getElementById('prompt').value = '';
 
@@ -476,7 +543,8 @@
         body: JSON.stringify({
           model_id: document.getElementById('modelSelect').value,
           prompt: promptText,
-          conversation_id: selectedConversationId
+          conversation_id: selectedConversationId,
+          scopes: activeScopes
         })
       });
       if (res.status === 403) {
@@ -518,15 +586,14 @@
 
     loadModels();
     loadConversations();
+    loadRepositories();
+
     document.getElementById('uploadBtn').addEventListener('click', async () => {
       const files = document.getElementById('fileInput').files;
       if (!files.length) return;
       const formData = new FormData();
       for (const f of files) formData.append('files', f);
-      const res = await fetch('/api/ingest', {
-        method: 'POST',
-        body: formData
-      });
+      const res = await fetch('/api/ingest', { method: 'POST', body: formData });
       const data = await res.json();
       alert(`Uploaded ${data.ids.length} documents.`);
     });
@@ -553,14 +620,11 @@
       const modelId = document.getElementById('modelEstimateInput').value;
       const deviceMetric = document.getElementById('deviceMetricInput').value;
       if (!modelId) return;
-      
       let url = `/api/estimate?model_id=${encodeURIComponent(modelId)}`;
       if (deviceMetric) url += `&device_metric=${encodeURIComponent(deviceMetric)}`;
-      
       const res = await fetch(url);
       const data = await res.json();
       const resultDiv = document.getElementById('estimateResult');
-      
       if (data.error) {
         resultDiv.textContent = `Error: ${data.error}`;
       } else {
@@ -572,5 +636,4 @@
     });
   </script>
 </body>
-
 </html>

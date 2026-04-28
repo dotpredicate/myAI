@@ -60,7 +60,19 @@ def get_blocking_message_id(conn: connection, conv_id: int) -> Optional[int]:
         row = cur.fetchone()
         return row[0] if row and row[0] is not None else None
 
-def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Optional[int] = None) -> int:
+def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> Optional[List[str]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT elements FROM messages WHERE conversation_id = %s AND role = 'user' ORDER BY created_at DESC LIMIT 1",
+            (conv_id,),
+        )
+        row = cur.fetchone()
+        if row:
+            elem = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            return elem.get('scopes')
+    return None
+
+def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Optional[int] = None, scopes: Optional[List[str]] = None) -> int:
     """Prepares a conversation by creating it if needed and inserting the user prompt.
     
     Raises:
@@ -74,12 +86,16 @@ def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Opt
     
     user_message = Message(content=prompt)
     user_message_dict = to_json_dict(user_message)
+    if scopes:
+        user_message_dict['scopes'] = scopes
+        
     insert_message(conn, conv_id, 'user', user_message_dict)
     conn.commit()
     return conv_id
 
-def get_messages_for_continuation(conn: connection, conv_id: int) -> ChatContext:
+def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[ChatContext, Optional[List[str]]]:
     ctx = ChatContext()
+    scopes = None
     with conn.cursor() as cur:
         cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
         for row in cur.fetchall():
@@ -87,11 +103,14 @@ def get_messages_for_continuation(conn: connection, conv_id: int) -> ChatContext
             element_dict = json.loads(element) if isinstance(element, str) else element
             element_dict['role'] = role
             ctx.append_from_db(message_id, element_dict)
-    return ctx
+            if role == 'user':
+                scopes = element_dict.get('scopes')
+    return ctx, scopes
 
 def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: List[Any]) -> Generator[bytes, None, None]:
     from tools import run_tool_call
-    context = get_messages_for_continuation(conn, conv_id)
+    context, scopes = get_messages_for_continuation(conn, conv_id)
+
     run_next_loop = True
     while run_next_loop:
         processor = DeltaProcessor()
@@ -111,7 +130,8 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
                         msg_id = insert_message(conn, conv_id, 'assistant', result_json)
                         context.append_finalized(msg_id, msg)
                     case ToolCall() as call:
-                        result = run_tool_call(call)
+                        # Pass the extracted scopes to the tool call
+                        result = run_tool_call(call, scopes=scopes)
                         result_json = to_json_dict(result)
                         if result.is_blocking:
                             result_json['status'] = 'pending'
@@ -187,8 +207,10 @@ def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: str)
             raise ValueError('original message is not a tool call')
         from tools import run_tool_call
         tool_call = ToolCall(name=elem.get('name'), parameters=elem.get('parameters'))
-        # Execute with privilege to perform the operation
-        result = run_tool_call(tool_call, privileged=True)
+        
+        scopes = get_scopes_from_last_user_message(conn, conv_id)
+
+        result = run_tool_call(tool_call, privileged=True, scopes=scopes)
         # Insert tool result message
         result_elem: Dict[str, Any] = {
             'type': 'tool_result',
