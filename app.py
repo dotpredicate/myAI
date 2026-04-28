@@ -134,12 +134,13 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
     """Handle the user's approval or rejection of a tool call proposal."""
     payload = await request.json()
     decision = payload.get('decision')
+    comment = payload.get('comment', '')
     if decision not in {'approve', 'reject'}:
         return JSONResponse(status_code=400, content={'error': 'invalid decision'})
 
     try:
         with mk_conn() as conn:
-            executed = decide_tool_call(conn, conv_id, msg_id, decision)
+            executed = decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
         return JSONResponse(content={'status': 'success', 'executed': executed})
     except ValueError as e:
         return JSONResponse(status_code=400, content={'error': str(e)})

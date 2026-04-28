@@ -60,10 +60,15 @@ def _to_oai_elements(message_id: int, element: Union[FinishedElement, dict]) -> 
                 'content': str(element.get('result', ''))
             }]
         if elem_type == 'tool_decision' and element.get('decision') == 'reject':
+            comment = element.get('comment', '')
+            if comment:
+                content = f"User rejected this tool call with comment: {comment}".strip()
+            else:
+                content = "User rejected this tool call"
             return [{
                 'role': 'tool',
                 'tool_call_id': str(element['original_message_id']),
-                'content': "User rejected this tool call proposal."
+                'content': content
             }]
         return []
 

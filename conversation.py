@@ -175,7 +175,7 @@ def get_conversation_details(conn: connection, conv_id: int) -> Optional[Dict[st
             'messages': messages
         }
 
-def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: str) -> bool:
+def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: str, comment: str = "") -> bool:
     """Handle the user's approval or rejection of a tool call proposal."""
     cur = conn.cursor()
     # Fetch the message elements
@@ -193,6 +193,9 @@ def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: str)
         'decision': decision,
         'original_message_id': msg_id,
     }
+    
+    if comment:
+        decision_elem['comment'] = comment
 
     # Insert decision message
     insert_message(conn, conv_id, 'assistant', decision_elem)

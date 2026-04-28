@@ -240,7 +240,41 @@
     .model-item:last-child {
       border-bottom: none;
     }
-  </style>
+  
+    .reject-panel {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+      align-items: center;
+    }
+
+    .reject-input {
+      width: 250px;
+      padding: 4px 8px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #ccc;
+    }
+
+    .btn-confirm {
+      background-color: #dc3545;
+      color: white;
+      border: none;
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .btn-cancel {
+      background-color: #6c737a;
+      color: white;
+      border: none;
+      padding: 4px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+</style>
 </head>
 
 <body id="body">
@@ -736,21 +770,70 @@
       await processStream(res, responseContainer);
     }
 
-    async function handleDecision(msgId, decision) {
+    async function executeDecision(msgId, decision, comment = "") {
       const res = await fetch(`/api/conversations/${selectedConversationId}/tool_calls/${msgId}/decide`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision })
+        body: JSON.stringify({ decision, comment })
       });
       if (res.ok) {
         const container = document.querySelector(`details[data-message-id='${msgId}']`);
         if (container) {
           const btns = container.querySelectorAll('button');
           btns.forEach(b => b.remove());
+          const panel = container.querySelector('.reject-panel');
+          if (panel) panel.remove();
         }
         clearBlock();
         await resumeConversation(selectedConversationId);
       }
+    }
+
+    async function handleDecision(msgId, decision) {
+      if (decision === 'approve') {
+        await executeDecision(msgId, 'approve');
+      } else {
+        showRejectInput(msgId);
+      }
+    }
+
+    function showRejectInput(msgId) {
+      const container = document.querySelector(`details[data-message-id='${msgId}']`);
+      if (!container) return;
+
+      const btns = container.querySelectorAll('button');
+      btns.forEach(b => b.style.display = 'none');
+
+      const panel = document.createElement('div');
+      panel.className = 'reject-panel';
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.placeholder = 'Reason for rejection...';
+      input.className = 'reject-input';
+
+      const confirmBtn = document.createElement('button');
+      confirmBtn.textContent = 'Confirm';
+      confirmBtn.className = 'btn-confirm';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.textContent = 'Cancel';
+      cancelBtn.className = 'btn-cancel';
+
+      confirmBtn.onclick = async () => {
+        const comment = input.value.trim();
+        await executeDecision(msgId, 'reject', comment);
+      };
+
+      cancelBtn.onclick = () => {
+        panel.remove();
+        btns.forEach(b => b.style.display = '');
+      };
+
+      panel.appendChild(input);
+      panel.appendChild(confirmBtn);
+      panel.appendChild(cancelBtn);
+      container.appendChild(panel);
     }
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
