@@ -1,7 +1,7 @@
 import subprocess
 import json
 import os
-from typing import TypedDict, Optional
+from typing import TypedDict, NamedTuple, Optional
 from .hf_gguf import resolve_hf_alias
 
 class EstimateResult(TypedDict, total=False):
@@ -78,15 +78,13 @@ async def estimate_vram_remote(
         traceback.print_exc()
         return {"error": f"Estimation failed: {str(e)}"}
 
-def get_total_gpu_memory(gpu_devices: list = (0,)) -> int:
-    return 34208743424 # Hardcoded for AMD Radeon AI PRO R9700 detected during research
+class GpuStats(NamedTuple):
+    free_bytes: int
+    total_bytes: int
 
-def get_free_gpu_memory(gpu_devices: list = (0,)) -> int:
-    try:
-        # Re-fetch from rocm-smi
-        result = subprocess.run(["rocm-smi", "--showmeminfo", "vram", "--json"], capture_output=True, text=True)
-        data = json.loads(result.stdout)
-        # Extract from card0
-        return int(data.get("card0", {}).get("VRAM Total Used Memory (B)", 0))
-    except:
-        return 0
+def get_gpu_stats() -> GpuStats:
+    result = subprocess.run(["rocm-smi", "--showmeminfo", "vram", "--json"], capture_output=True, text=True)
+    data = json.loads(result.stdout)
+    used = int(data.get("card0", {}).get("VRAM Total Used Memory (B)", 0))
+    total = int(data.get("card0", {}).get("VRAM Total Memory (B)", 0))
+    return GpuStats(free_bytes=total - used, total_bytes=total)

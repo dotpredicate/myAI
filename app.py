@@ -119,6 +119,11 @@ async def estimate_model(model_id: str, n_ctx: int = 2048, device_metric: Option
     data = await estimator.estimate_vram_remote(model_id, n_ctx=n_ctx, device_metric=device_metric)
     return JSONResponse(content=data)
 
+@app.get('/api/gpu-stats')
+async def gpu_stats():
+    stats = estimator.get_gpu_stats()
+    return JSONResponse(content={"free": stats.free_bytes, "total": stats.total_bytes})
+
 @app.post("/api/sync")
 async def sync(background_tasks: BackgroundTasks):
     background_tasks.add_task(index.synchronize)

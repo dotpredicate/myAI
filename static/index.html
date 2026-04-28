@@ -9,7 +9,7 @@
       display: grid;
       grid-template-columns: 200px 1fr;
       grid-template-rows: auto 1fr;
-      grid-template-areas: "sidebar header" "sidebar main";
+      grid-template-areas: "sidebar main";
       height: 100vh;
       margin: 0;
       font-family: sans-serif;
@@ -18,8 +18,34 @@
     #sidebar {
       grid-area: sidebar;
       background: #f5f5f5;
-      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
       padding: 10px;
+      height: 100vh;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+
+    #sidebarHeader {
+      text-align: center;
+      flex-shrink: 0;
+      padding: 10px 0;
+    }
+    
+    #sidebarHeader h2 {
+      margin: 0
+    }
+
+    #sidebarNav {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    #sidebarFooter {
+      flex-shrink: 0;
     }
 
     #main {
@@ -48,11 +74,6 @@
       font-size: 1.25em;
       width: 100%;
       box-sizing: border-box;
-    }
-
-    h1 {
-      grid-area: header;
-      text-align: center;
     }
 
     .menu-item {
@@ -178,45 +199,112 @@
       margin-top: 10px;
       overflow-x: auto;
     }
+
+    .view-container {
+      display: none;
+      flex-direction: column;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    .view-container.active {
+      display: flex;
+    }
+
+    #modelsView {
+      padding: 20px;
+      overflow-y: auto;
+    }
+
+    #modelsView.active {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+
+    .models-list-container {
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      padding: 10px;
+      border-radius: 4px;
+      max-height: 400px;
+      overflow-y: auto;
+      margin-bottom: 20px;
+    }
+
+    .model-item {
+      padding: 4px 8px;
+      border-bottom: 1px solid #eee;
+    }
+
+    .model-item:last-child {
+      border-bottom: none;
+    }
   </style>
 </head>
 
-<body>
-  <h1>myAI</h1>
+<body id="body">
   <div id="sidebar">
-    <h2>Conversations</h2>
-    <button id="newBtnSide" class="menu-item">+ New</button>
-    <div id="conversationList"></div>
+    <div id="sidebarHeader">
+      <h2>myAI</h2>
+    </div>
+    <div id="sidebarNav">
+      <button id="newBtnSide" class="menu-item">+ New</button>
+      <div id="conversationList"></div>
+    </div>
+    <div id="sidebarFooter">
+      <button id="modelsBtnSide" class="menu-item">Inference</button>
+    </div>
   </div>
   <div id="main">
-    <div id="chatHistory">
-      <div id="response"></div>
-    </div>
-    <div id="inputArea">
-      <div id="scopeSelectorContainer">
-        <label>Scopes:</label>
-        <select id="scopeSelect"></select>
-        <div id="scopePills"></div>
+    <!-- Chat View -->
+    <div id="chatView" class="view-container active">
+      <div id="chatHistory">
+        <div id="response"></div>
       </div>
-      <textarea id="prompt" rows="5" placeholder="Enter prompt here"></textarea>
-      <label for="modelSelect">Select Model:</label>
-      <select id="modelSelect"></select>
-      <button id="sendBtn">Send</button>
-      <hr>
-      <h3>Upload Documents</h3>
-      <input type="file" id="fileInput" multiple accept=".txt,.md">
-      <button id="uploadBtn">Upload</button>
-      <hr>
-      <h3>Estimate VRAM</h3>
-      <input type="text" id="modelEstimateInput" placeholder="Model repo ID (e.g. bartowski/...)" style="width: 100%;">
-      <button id="estimateBtn">Estimate</button>
-      <div id="estimateResult" style="margin-top: 10px; font-size: 0.9em; white-space: pre-wrap;"></div>
-      <label>Device Metrics (e.g. 35TFLOPS;900GBps):</label>
-      <input type="text" id="deviceMetricInput" placeholder="TFLOPS;Bandwidth" style="width: 100%;">
-      <hr>
-      <h3>Search</h3>
-      <input type="text" id="searchInput" placeholder="Search query">
-      <button id="searchBtn">Search</button>
+      <div id="inputArea">
+        <div id="scopeSelectorContainer">
+          <label>Scopes:</label>
+          <select id="scopeSelect"></select>
+          <div id="scopePills"></div>
+        </div>
+        <textarea id="prompt" rows="5" placeholder="Enter prompt here"></textarea>
+        <label for="modelSelect">Select Model:</label>
+        <select id="modelSelect"></select>
+        <button id="sendBtn">Send</button>
+        <hr>
+        <h3>Upload Documents</h3>
+        <input type="file" id="fileInput" multiple accept=".txt,.md">
+        <button id="uploadBtn">Upload</button>
+        <hr>
+        <h3>Search</h3>
+        <input type="text" id="searchInput" placeholder="Search query">
+        <button id="searchBtn">Search</button>
+      </div>
+    </div>
+
+    <!-- Models View -->
+    <div id="modelsView" class="view-container">
+      <div class="models-left">
+        <h2>Local Models</h2>
+        <div id="modelsList" class="models-list-container"></div>
+        <p><a href="https://huggingface.co/models?search=gguf" target="_blank">Search for GGUF models on HuggingFace</a></p>
+      </div>
+
+      <div class="models-right">
+        <h2>Estimation Tool</h2>
+        <label for="modelsEstimateSelect">Select Model (or HF alias):</label>
+        <div style="display:flex; gap: 5px;">
+           <select id="modelsEstimateSelect" style="flex: 1;"></select>
+           <input type="text" id="modelsEstimateInput" style="flex: 1;" placeholder="OR paste HF Model Alias...">
+        </div>
+        
+        <label style="display: block; margin-top: 10px;">Hardware Profile (TFLOPS;Bandwidth):</label>
+        <input type="text" id="modelsDeviceMetricInput" placeholder="e.g. 35TFLOPS;900GBps" style="width: 100%; margin-bottom: 10px;">
+        <button id="estimateBtnModels" style="width: 100%;">Estimate</button>
+        
+        <div id="estimateResultModels" style="margin-top: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; display: none; white-space: pre-wrap;"></div>
+      </div>
     </div>
   </div>
 
@@ -230,6 +318,19 @@
     let activeScopes = [];
     let allRepositories = [];
     let selectedConversationId = null;
+    let currentView = 'chat';
+
+    function switchView(viewName) {
+      currentView = viewName;
+      document.getElementById('chatView').classList.remove('active');
+      document.getElementById('modelsView').classList.remove('active');
+      
+      if (viewName === 'chat') {
+        document.getElementById('chatView').classList.add('active');
+      } else if (viewName === 'models') {
+        document.getElementById('modelsView').classList.add('active');
+      }
+    }
 
     function highlightBlockingMessage(id) {
       blockingMessageId = id;
@@ -253,18 +354,47 @@
     async function loadModels() {
       const res = await fetch('/api/models');
       const data = await res.json();
-      const select = document.getElementById('modelSelect');
+      
+      // 1. Chat Model Select
+      const chatSelect = document.getElementById('modelSelect');
+      chatSelect.innerHTML = '';
       data.models.forEach(m => {
         const opt = document.createElement('option');
         opt.value = m.id;
         opt.textContent = m.name;
-        select.appendChild(opt);
+        chatSelect.appendChild(opt);
       });
       const savedModel = localStorage.getItem('selectedModel');
-      if (savedModel) select.value = savedModel;
-      select.addEventListener('change', () => {
-        localStorage.setItem('selectedModel', select.value);
+      if (savedModel) chatSelect.value = savedModel;
+      chatSelect.addEventListener('change', () => {
+        localStorage.setItem('selectedModel', chatSelect.value);
       });
+
+      // 2. Models View: List
+      const listDiv = document.getElementById('modelsList');
+      listDiv.innerHTML = '';
+      data.models.forEach(m => {
+        const div = document.createElement('div');
+        div.className = 'model-item';
+        div.textContent = m.name;
+        listDiv.appendChild(div);
+      });
+
+      // 3. Models View: Estimate Select
+      const estSelect = document.getElementById('modelsEstimateSelect');
+      estSelect.innerHTML = '<option value="" disabled selected>Select from cache...</option>';
+      data.models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id;
+        opt.textContent = m.name;
+        estSelect.appendChild(opt);
+      });
+
+      // Load saved device metrics
+      const savedMetrics = localStorage.getItem('deviceMetrics');
+      if (savedMetrics) {
+        document.getElementById('modelsDeviceMetricInput').value = savedMetrics;
+      }
     }
 
     async function loadRepositories() {
@@ -362,6 +492,7 @@
           div.classList.add('selected');
         }
         div.addEventListener('click', () => {
+          switchView('chat');
           document.querySelectorAll('.menu-item').forEach(t => t.classList.remove('selected'));
           div.classList.add('selected');
           selectedConversationId = conv.id;
@@ -612,10 +743,14 @@
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
     document.getElementById('newBtnSide').addEventListener('click', () => {
+      switchView('chat');
       document.getElementById('prompt').value = '';
       document.getElementById('response').innerHTML = '';
       selectedConversationId = null;
       loadConversations();
+    });
+    document.getElementById('modelsBtnSide').addEventListener('click', () => {
+      switchView('models');
     });
 
     loadModels();
@@ -650,22 +785,49 @@
       });
     });
 
-    document.getElementById('estimateBtn').addEventListener('click', async () => {
-      const modelId = document.getElementById('modelEstimateInput').value;
-      const deviceMetric = document.getElementById('deviceMetricInput').value;
+    document.getElementById('estimateBtnModels').addEventListener('click', async () => {
+      const select = document.getElementById('modelsEstimateSelect');
+      const input = document.getElementById('modelsEstimateInput');
+      const deviceMetric = document.getElementById('modelsDeviceMetricInput').value;
+      
+      const modelId = input.value || select.value;
       if (!modelId) return;
+
+      localStorage.setItem('deviceMetrics', deviceMetric);
+      
+      const gpuRes = await fetch('/api/gpu-stats');
+      const gpuData = await gpuRes.json();
+      
       let url = `/api/estimate?model_id=${encodeURIComponent(modelId)}`;
       if (deviceMetric) url += `&device_metric=${encodeURIComponent(deviceMetric)}`;
       const res = await fetch(url);
       const data = await res.json();
-      const resultDiv = document.getElementById('estimateResult');
+      const resultDiv = document.getElementById('estimateResultModels');
+      
+      resultDiv.style.display = 'block';
       if (data.error) {
         resultDiv.textContent = `Error: ${data.error}`;
+        resultDiv.style.borderColor = '#ffcccc';
       } else {
         const vramGB = (data.vram / (1024**3)).toFixed(2);
         const ramGB = (data.ram / (1024**3)).toFixed(2);
         const tps = data.tps ? data.tps.toFixed(2) : "N/A";
-        resultDiv.textContent = `VRAM: ${vramGB} GB\nRAM: ${ramGB} GB\nTPS: ${tps}`;
+        const gpuFreeGB = (gpuData.free / (1024**3)).toFixed(2);
+        const gpuTotalGB = (gpuData.total / (1024**3)).toFixed(2);
+        const gpuUsedBytes = (parseFloat(vramGB) + parseFloat(ramGB)) * (1024**3);
+        const gpuUsedPercent = gpuData.total ? ((gpuUsedBytes / gpuData.total) * 100).toFixed(1) : 0;
+        resultDiv.textContent = `Weights Size: ${vramGB} GB\nKV Cache Size: ${ramGB} GB\nTotal: ${(parseFloat(vramGB) + parseFloat(ramGB)).toFixed(2)} GB\nTPS Estimate: ${tps}\nGPU Free: ${gpuFreeGB} GB\nGPU Total: ${gpuTotalGB} GB\nUtilization: ${gpuUsedPercent}%`;
+        resultDiv.style.borderColor = '#ddd';
+      }
+    });
+
+    // Sync input with select
+    document.getElementById('modelsEstimateSelect').addEventListener('change', (e) => {
+      document.getElementById('modelsEstimateInput').value = '';
+    });
+    document.getElementById('modelsEstimateInput').addEventListener('input', (e) => {
+      if (e.target.value) {
+        document.getElementById('modelsEstimateSelect').value = '';
       }
     });
   </script>
