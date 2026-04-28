@@ -167,24 +167,6 @@
       color: #ff0000;
     }
 
-    .file-compare {
-      display: flex;
-      gap: 10px;
-      margin-top: 10px;
-    }
-
-    .file-pane {
-      flex: 1;
-      background: #f8f8f8;
-      padding: 10px;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      white-space: pre-wrap;
-      font-family: monospace;
-      font-size: 12px;
-      overflow-x: auto;
-    }
-
     .diff-view {
       background: #f8f8f8;
       padding: 10px;
@@ -443,24 +425,16 @@
           if (chunk.result) {
             const resData = JSON.parse(chunk.result);
             if (resData.type === 'replace_proposal') {
-              const compareDiv = document.createElement('div');
-              compareDiv.className = 'file-compare';
-              const beforeDiv = document.createElement('div');
-              beforeDiv.className = 'file-pane';
-              beforeDiv.innerHTML = `<strong>Before (${resData.target})</strong><br>`;
-              beforeDiv.innerText += resData.before;
-              const afterDiv = document.createElement('div');
-              afterDiv.className = 'file-pane';
-              afterDiv.innerHTML = `<strong>After (${resData.target})</strong><br>`;
-              afterDiv.innerText += resData.after;
-              compareDiv.appendChild(beforeDiv);
-              compareDiv.appendChild(afterDiv);
-              resultDiv.appendChild(compareDiv);
+              const diffDiv = document.createElement('div');
+              diffDiv.className = 'diff-view';
+              diffDiv.innerHTML = `<strong>Diff (${resData.target})</strong><br>`;
+              diffDiv.append(resData.diff);
+              resultDiv.appendChild(diffDiv);
             } else if (resData.type === 'diff_proposal') {
               const diffDiv = document.createElement('div');
               diffDiv.className = 'diff-view';
               diffDiv.innerHTML = `<strong>Diff (${resData.target})</strong><br>`;
-              diffDiv.textContent += resData.diff;
+              diffDiv.append(resData.diff);
               resultDiv.appendChild(diffDiv);
             } else {
               const resultPre = document.createElement('pre');

@@ -151,7 +151,7 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
                             run_next_loop = False
                         else:
                             run_next_loop = True
-    # Stream finished
+    print("Stream finished")
 
 def get_conversations(conn: connection) -> List[Dict[str, Any]]:
     with conn.cursor() as cur:

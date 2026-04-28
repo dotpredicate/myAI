@@ -1,6 +1,7 @@
 import os
 import json
 import subprocess
+import difflib
 from pathlib import Path
 from typing import Dict, Any, NamedTuple, Optional, List
 from conversation import ToolCall, ToolCallResult
@@ -82,13 +83,21 @@ def run_propose_replace(tool_call: ToolCall, privileged: bool = False, scopes: O
         source_content = source_realpath.read_text(encoding='utf-8')
         
         if not privileged:
+            target_lines = target_content.splitlines()
+            source_lines = source_content.splitlines()
+            diff_lines = difflib.unified_diff(
+                target_lines,
+                source_lines,
+                fromfile=str(source_vpath),
+                tofile=str(target_vpath),
+            )
+            diff_text = ''.join(line if line.endswith('\n') else line + '\n' for line in diff_lines)
+            
             proposal = {
                 "type": "replace_proposal",
                 "target": str(target_vpath),
                 "source": str(source_vpath),
-                "preview": f"Replace {target_vpath} with content from {source_vpath}",
-                "before": target_content,
-                "after": source_content,
+                "diff": diff_text,
                 "status": "pending"
             }
             return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
