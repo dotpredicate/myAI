@@ -272,6 +272,7 @@
         <label for="modelSelect">Select Model:</label>
         <select id="modelSelect"></select>
         <button id="sendBtn">Send</button>
+        <button id="continueBtn">Continue</button>
         <hr>
         <h3>Upload Documents</h3>
         <input type="file" id="fileInput" multiple accept=".txt,.md">
@@ -611,6 +612,8 @@
       const res = await fetch(`/api/conversations/${conv_id}`);
       const data = await res.json();
       blockingMessageId = data.blocking_message_id;
+      const continueBtn = document.getElementById('continueBtn');
+      continueBtn.disabled = blockingMessageId !== null;
       const responseContainer = document.getElementById('response');
       responseContainer.innerHTML = '';
       const title = document.createElement('h2');
@@ -669,6 +672,8 @@
     }
 
     async function processStream(res, responseContainer) {
+      const continueBtn = document.getElementById('continueBtn');
+      continueBtn.disabled = true;
       const renderer = new ChatStreamRenderer(responseContainer);
       for await (const val of streamPrompt(res, responseContainer)) {
         if (val.type !== renderer.streamState.type) {
@@ -678,6 +683,7 @@
         renderer.handleStreamChunk(val);
       }
       responseContainer.scrollTop = responseContainer.scrollHeight;
+      continueBtn.disabled = false;
     }
 
     async function resumeConversation(conversationId) {
@@ -686,6 +692,12 @@
       const responseContainer = document.getElementById('response');
       await processStream(res, responseContainer);
     }
+
+    document.getElementById('continueBtn').addEventListener('click', () => {
+      if (selectedConversationId) {
+        resumeConversation(selectedConversationId);
+      }
+    });
 
     function renderSingleMessage(container, msg) {
       const renderer = new ChatStreamRenderer(container);
