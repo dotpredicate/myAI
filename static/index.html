@@ -274,6 +274,25 @@
       cursor: pointer;
     }
 
+    .msg-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .copy-btn {
+      background: #eee;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 2px 6px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .copy-btn:hover {
+      background: #ddd;
+    }
+
 </style>
 </head>
 
@@ -544,34 +563,71 @@
       }
 
       initializeState(newType, role = 'assistant') {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'message-wrapper';
+
+        this.responseContainer.appendChild(wrapper);
+        this.messageWrapper = wrapper;
+
+        const header = document.createElement('div');
+        header.className = 'msg-header';
+
         const label = document.createElement('div');
-        label.textContent = (role === 'user' ? 'User:' : 'Assistant:');
         label.classList.add('msg-label');
-        this.responseContainer.appendChild(label);
+        label.textContent = (role === 'user' ? 'User:' : 'Assistant:');
+        header.appendChild(label);
+
+        const newStream = { type: newType };
+        this.streamState = newStream;
+
+        const createCopyButton = () => {
+          const fullTextHolder = { content: '' };
+          const copyBtn = document.createElement('button');
+          copyBtn.className = 'copy-btn';
+          copyBtn.textContent = 'Copy';
+          copyBtn.onclick = () => {
+            navigator.clipboard.writeText(newStream.fullText.content).then(() => {
+              const originalText = copyBtn.textContent;
+              copyBtn.textContent = 'Copied!';
+              setTimeout(() => copyBtn.textContent = originalText, 2000);
+            });
+          };
+          header.appendChild(copyBtn);
+          newStream.copyBtn = copyBtn;
+          newStream.fullText = fullTextHolder;
+        }
+        wrapper.appendChild(header);
+
         if (newType === 'thinking') {
           const container = document.createElement('details');
           const summary = document.createElement('summary');
           summary.textContent = 'Reasoning';
           container.appendChild(summary);
           container.dataset.mode = 'thinking';
-          this.responseContainer.appendChild(container);
-          this.streamState = { type: 'thinking', writeElem: container };
+          wrapper.appendChild(container);
+          const smdRenderer = smd.default_renderer(container);
+          this.streamState.parser = smd.parser(smdRenderer);
+          this.streamState.writeElem = container;
+          createCopyButton();
         } else if (newType === 'message') {
           const msgDiv = document.createElement('div');
           msgDiv.className = 'msg-body';
           const smdRenderer = smd.default_renderer(msgDiv);
-          this.responseContainer.appendChild(msgDiv);
-          this.streamState = { type: 'message', parser: smd.parser(smdRenderer) };
+          wrapper.appendChild(msgDiv);
+          this.streamState.parser = smd.parser(smdRenderer);
+          createCopyButton();
         } else if (newType === 'tool_call') {
-          this.streamState = { type: 'tool_call' };
+          this.streamState.type = 'tool_call';
         }
       }
 
       handleStreamChunk(chunk) {
         if (this.streamState.type === 'thinking') {
-          this.streamState.writeElem.append(chunk.content);
+          smd.parser_write(this.streamState.parser, chunk.content);
+          this.streamState.fullText.content += chunk.content;
         } else if (this.streamState.type === 'message') {
           smd.parser_write(this.streamState.parser, chunk.content);
+          this.streamState.fullText.content += chunk.content;
         } else if (this.streamState.type === 'tool_call') {
           const container = document.createElement('details');
           container.dataset.messageId = chunk.id;
@@ -630,7 +686,7 @@
             container.appendChild(btnApprove);
             container.appendChild(btnReject);
           }
-          this.responseContainer.appendChild(container);
+          this.messageWrapper.appendChild(container);
         }
       }
 
