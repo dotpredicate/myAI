@@ -704,7 +704,7 @@
 
       finalizeState(id) {
         this.messageWrapper.dataset.messageId = id;
-        if (this.type === 'tool_call' && this.streamState.blocking) {
+        if (this.streamState.type === 'tool_call' && this.streamState.blocking) {
           const container = this.messageWrapper.querySelector('details[data-mode="function_call"]');
           const actionPanel = document.createElement('div');
           actionPanel.className = 'action-panel';
