@@ -24,7 +24,14 @@ def to_json_dict(element: FinishedElement) -> dict[str, Any]:
         case Thinking(content=content):
             return {'type': 'thinking', 'content': content}
         case ToolCallResult(name=name, parameters=parameters, result=result, is_blocking=is_blocking):
-            return {'type': 'tool_call', 'name': name, 'parameters': parameters, 'result': result, 'is_blocking': is_blocking}
+            return {
+                'type': 'tool_call',
+                'name': name,
+                'parameters': parameters,
+                'result': result,
+                'is_blocking': is_blocking,
+                'status': 'pending' if is_blocking else 'completed'
+            }
 
 
 def create_conversation(conn: connection) -> int:
@@ -118,27 +125,18 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
         run_next_loop = False
         for chunk in chat_gen_inner:
             (delta, aggregated_element) = processor.process(chunk)
-            if delta is not None:
-                if isinstance(delta, Message):
-                    yield json.dumps({'type': 'message', 'content': delta.content}).encode() + b'\n'
-                elif isinstance(delta, Thinking):
-                    yield json.dumps({'type': 'thinking', 'content': delta.content}).encode() + b'\n'
             if aggregated_element is not None:
                 match aggregated_element:
                     case Message() | Thinking() as msg:
                         result_json = to_json_dict(msg)
                         msg_id = insert_message(conn, conv_id, 'assistant', result_json)
                         context.append_finalized(msg_id, msg)
+                        yield json.dumps({'type': 'finalized', 'id': msg_id}).encode() + b'\n'
                     case ToolCall() as call:
                         # Pass the extracted scopes to the tool call
                         result = run_tool_call(call, scopes=scopes)
                         result_json = to_json_dict(result)
-                        if result.is_blocking:
-                            result_json['status'] = 'pending'
-                        else:
-                            result_json['status'] = 'completed'
                         msg_id = insert_message(conn, conv_id, 'assistant', result_json)
-                        result_json['id'] = msg_id
                         yield json.dumps(result_json).encode() + b'\n'
                         context.append_finalized(msg_id, result)
                         if result.is_blocking:
@@ -151,6 +149,12 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
                             run_next_loop = False
                         else:
                             run_next_loop = True
+                        yield json.dumps({'type': 'finalized', 'id': msg_id}).encode() + b'\n'
+            if delta is not None:
+                if isinstance(delta, Message):
+                    yield json.dumps({'type': 'message', 'content': delta.content}).encode() + b'\n'
+                elif isinstance(delta, Thinking):
+                    yield json.dumps({'type': 'thinking', 'content': delta.content}).encode() + b'\n'
     print("Stream finished")
 
 def get_conversations(conn: connection) -> List[Dict[str, Any]]:

@@ -243,13 +243,22 @@
   
     .reject-panel {
       display: flex;
-      gap: 10px;
+      flex-direction: column;
+      gap: 8px;
       margin-top: 10px;
-      align-items: center;
+      padding: 10px;
+      background: #fdf2f2;
+      border: 1px solid #f5c6cb;
+      border-radius: 4px;
+    }
+
+    .reject-input-row {
+      display: flex;
+      gap: 8px;
     }
 
     .reject-input {
-      width: 250px;
+      flex: 1;
       padding: 4px 8px;
       font-size: 14px;
       border-radius: 4px;
@@ -396,30 +405,10 @@
       }
     }
 
-    function highlightBlockingMessage(id) {
-      blockingMessageId = id;
-      const elem = document.querySelector(`details[data-message-id='${id}']`);
-      if (elem) {
-        elem.classList.add('blocked');
-        elem.scrollIntoView({ behavior: 'smooth' });
-      }
-    }
-
-    function clearBlock() {
-      blockingMessageId = null;
-      const promptArea = document.getElementById('prompt');
-      const sendBtn = document.getElementById('sendBtn');
-      if (promptArea) promptArea.disabled = false;
-      if (sendBtn) sendBtn.disabled = false;
-      const blockedElems = document.querySelectorAll('details[data-message-id]');
-      blockedElems.forEach(e => e.classList.remove('blocked'));
-    }
-
     async function loadModels() {
       const res = await fetch('/api/models');
       const data = await res.json();
       
-      // 1. Chat Model Select
       const chatSelect = document.getElementById('modelSelect');
       chatSelect.innerHTML = '';
       data.models.forEach(m => {
@@ -434,7 +423,6 @@
         localStorage.setItem('selectedModel', chatSelect.value);
       });
 
-      // 2. Models View: List
       const listDiv = document.getElementById('modelsList');
       listDiv.innerHTML = '';
       data.models.forEach(m => {
@@ -444,7 +432,6 @@
         listDiv.appendChild(div);
       });
 
-      // 3. Models View: Estimate Select
       const estSelect = document.getElementById('modelsEstimateSelect');
       estSelect.innerHTML = '<option value="" disabled selected>Select from cache...</option>';
       data.models.forEach(m => {
@@ -454,7 +441,6 @@
         estSelect.appendChild(opt);
       });
 
-      // Load saved device metrics
       const savedMetrics = localStorage.getItem('deviceMetrics');
       if (savedMetrics) {
         document.getElementById('modelsDeviceMetricInput').value = savedMetrics;
@@ -501,6 +487,31 @@
         });
         container.appendChild(pill);
       });
+    }
+
+    function highlightBlockingMessage(id) {
+      blockingMessageId = id;
+      const elem = document.querySelector(`details[data-message-id='${id}']`);
+      elem.classList.add('blocked');
+      elem.scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function blockConversation(messageId) {
+      blockingMessageId = messageId;
+      const promptArea = document.getElementById('prompt');
+      const sendBtn = document.getElementById('sendBtn');
+      if (promptArea) promptArea.disabled = true;
+      if (sendBtn) sendBtn.disabled = true;
+    }
+
+    function clearBlock() {
+      blockingMessageId = null;
+      const promptArea = document.getElementById('prompt');
+      const sendBtn = document.getElementById('sendBtn');
+      if (promptArea) promptArea.disabled = false;
+      if (sendBtn) sendBtn.disabled = false;
+      const blockedElems = document.querySelectorAll('details[data-message-id]');
+      blockedElems.forEach(e => e.classList.remove('blocked'));
     }
 
     async function deleteConversation(convId, event) {
@@ -572,7 +583,7 @@
         this.streamState = { type: null };
       }
 
-      initializeState(newType, role = 'assistant') {
+      initializeState(newType, role) {
         const wrapper = document.createElement('div');
         wrapper.className = 'message-wrapper';
 
@@ -584,27 +595,24 @@
 
         const label = document.createElement('div');
         label.classList.add('msg-label');
-        label.textContent = (role === 'user' ? 'User:' : 'Assistant:');
+        label.textContent = role + ':';
         header.appendChild(label);
 
         const newStream = { type: newType };
         this.streamState = newStream;
 
-        const createCopyButton = () => {
-          const fullTextHolder = { content: '' };
+        const createCopyButton = (textHolder) => {
           const copyBtn = document.createElement('button');
           copyBtn.className = 'copy-btn';
           copyBtn.textContent = 'Copy';
           copyBtn.onclick = () => {
-            navigator.clipboard.writeText(newStream.fullText.content).then(() => {
+            navigator.clipboard.writeText(textHolder.content).then(() => {
               const originalText = copyBtn.textContent;
               copyBtn.textContent = 'Copied!';
               setTimeout(() => copyBtn.textContent = originalText, 2000);
             });
           };
           header.appendChild(copyBtn);
-          newStream.copyBtn = copyBtn;
-          newStream.fullText = fullTextHolder;
         }
         wrapper.appendChild(header);
 
@@ -618,16 +626,19 @@
           const smdRenderer = smd.default_renderer(container);
           this.streamState.parser = smd.parser(smdRenderer);
           this.streamState.writeElem = container;
-          createCopyButton();
+          this.streamState.fullText = {'content': ''};
+          createCopyButton(this.streamState.fullText);
         } else if (newType === 'message') {
           const msgDiv = document.createElement('div');
           msgDiv.className = 'msg-body';
           const smdRenderer = smd.default_renderer(msgDiv);
           wrapper.appendChild(msgDiv);
           this.streamState.parser = smd.parser(smdRenderer);
-          createCopyButton();
+          this.streamState.fullText = {'content': ''};
+          createCopyButton(this.streamState.fullText);
         } else if (newType === 'tool_call') {
           this.streamState.type = 'tool_call';
+          this.streamState.blocking = false;
         }
       }
 
@@ -640,7 +651,6 @@
           this.streamState.fullText.content += chunk.content;
         } else if (this.streamState.type === 'tool_call') {
           const container = document.createElement('details');
-          container.dataset.messageId = chunk.id;
           container.dataset.mode = 'function_call';
           const summary = document.createElement('summary');
           summary.textContent = `Function Call: ${chunk.name}`;
@@ -686,25 +696,35 @@
           contentDiv.appendChild(resultDiv);
           container.appendChild(contentDiv);
           if (chunk.is_blocking) {
-            blockingMessageId = chunk.id;
-            const btnApprove = document.createElement('button');
-            btnApprove.textContent = 'Approve';
-            btnApprove.addEventListener('click', () => handleDecision(container.dataset.messageId, 'approve'));
-            const btnReject = document.createElement('button');
-            btnReject.textContent = 'Reject';
-            btnReject.addEventListener('click', () => handleDecision(container.dataset.messageId, 'reject'));
-            container.appendChild(btnApprove);
-            container.appendChild(btnReject);
+            this.streamState.blocking = true;
           }
           this.messageWrapper.appendChild(container);
         }
       }
 
-      finalizeState() {
+      finalizeState(id) {
+        this.messageWrapper.dataset.messageId = id;
+        if (this.type === 'tool_call' && this.streamState.blocking) {
+          const container = this.messageWrapper.querySelector('details[data-mode="function_call"]');
+          const actionPanel = document.createElement('div');
+          actionPanel.className = 'action-panel';
+          const btnApprove = document.createElement('button');
+          btnApprove.textContent = 'Approve';
+          btnApprove.addEventListener('click', () => handleDecision(id, 'approve'));
+          const btnReject = document.createElement('button');
+          btnReject.textContent = 'Reject';
+          btnReject.addEventListener('click', () => handleDecision(id, 'reject'));
+          actionPanel.appendChild(btnApprove);
+          actionPanel.appendChild(btnReject);
+          container.appendChild(actionPanel);
+          blockingMessageId = id;
+        } else {
+          blockingMessageId = null;
+        }
         if (this.streamState.type === 'message') {
           smd.parser_end(this.streamState.parser);
-          this.streamState.parser = null;
         }
+        this.streamState = { type: null };
       }
     }
 
@@ -724,26 +744,25 @@
       for (const msg of data.messages) {
         renderer.initializeState(msg.element.type, msg.role);
         renderer.handleStreamChunk(msg.element);
-        renderer.finalizeState();
+        renderer.finalizeState(msg.id);
       }
-      responseContainer.scrollTop = responseContainer.scrollHeight;
+      const chatHistory = document.getElementById('chatHistory');
+      chatHistory.scrollTop = chatHistory.scrollHeight;
     }
 
     async function* streamPrompt(res, responseContainer) {
       if (res.status === 403) {
         const data = await res.json();
+        blockConversation(data.blocking_message_id);
         highlightBlockingMessage(data.blocking_message_id);
         return;
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      if (!selectedConversationId) {
-        const newConvId = res.headers.get('X-Conversation-ID');
-        if (newConvId) selectedConversationId = newConvId;
-        const title = document.createElement('h2');
-        title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
-        responseContainer.prepend(title);
-      }
+      selectedConversationId = res.headers.get('X-Conversation-ID');
+      const title = document.createElement('h2');
+      title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
+      responseContainer.prepend(title);
       let buffer = '';
       while (true) {
         const { value, done } = await reader.read();
@@ -776,13 +795,14 @@
       continueBtn.disabled = true;
       const renderer = new ChatStreamRenderer(responseContainer);
       for await (const val of streamPrompt(res, responseContainer)) {
-        if (val.type !== renderer.streamState.type) {
-          renderer.finalizeState();
+        console.log(val);
+        if (val.type === 'finalized') {
+          renderer.finalizeState(val.id);
+        } else if (val.type !== renderer.streamState.type) {
           renderer.initializeState(val.type, 'assistant');
         }
         renderer.handleStreamChunk(val);
       }
-      responseContainer.scrollTop = responseContainer.scrollHeight;
       continueBtn.disabled = false;
     }
 
@@ -803,7 +823,7 @@
       const renderer = new ChatStreamRenderer(container);
       renderer.initializeState(msg.element.type, msg.role);
       renderer.handleStreamChunk(msg.element);
-      renderer.finalizeState();
+      renderer.finalizeState(msg.id);
     }
 
     async function sendPrompt() {
@@ -826,11 +846,8 @@
       });
       if (res.status === 403) {
         const data = await res.json();
+        blockConversation(data.blocking_message_id);
         highlightBlockingMessage(data.blocking_message_id);
-        const promptArea = document.getElementById('prompt');
-        const sendBtn = document.getElementById('sendBtn');
-        if (promptArea) promptArea.disabled = true;
-        if (sendBtn) sendBtn.disabled = true;
         return;
       }
       await processStream(res, responseContainer);
@@ -843,12 +860,12 @@
         body: JSON.stringify({ decision, comment })
       });
       if (res.ok) {
-        const container = document.querySelector(`details[data-message-id='${msgId}']`);
-        if (container) {
-          const btns = container.querySelectorAll('button');
-          btns.forEach(b => b.remove());
-          const panel = container.querySelector('.reject-panel');
-          if (panel) panel.remove();
+        const wrapper = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
+        if (wrapper) {
+          const actionPanel = wrapper.querySelector('.action-panel');
+          if (actionPanel) actionPanel.remove();
+          const rejectPanel = wrapper.querySelector('.reject-panel');
+          if (rejectPanel) rejectPanel.remove();
         }
         clearBlock();
         await resumeConversation(selectedConversationId);
@@ -864,14 +881,17 @@
     }
 
     function showRejectInput(msgId) {
-      const container = document.querySelector(`details[data-message-id='${msgId}']`);
+      const container = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
       if (!container) return;
 
-      const btns = container.querySelectorAll('button');
-      btns.forEach(b => b.style.display = 'none');
+      const actionPanel = container.querySelector('.action-panel');
+      if (actionPanel) actionPanel.style.display = 'none';
 
       const panel = document.createElement('div');
       panel.className = 'reject-panel';
+
+      const inputRow = document.createElement('div');
+      inputRow.className = 'reject-input-row';
 
       const input = document.createElement('input');
       input.type = 'text';
@@ -886,6 +906,12 @@
       cancelBtn.textContent = 'Cancel';
       cancelBtn.className = 'btn-cancel';
 
+      inputRow.appendChild(input);
+      inputRow.appendChild(confirmBtn);
+      inputRow.appendChild(cancelBtn);
+
+      panel.appendChild(inputRow);
+
       confirmBtn.onclick = async () => {
         const comment = input.value.trim();
         await executeDecision(msgId, 'reject', comment);
@@ -893,13 +919,11 @@
 
       cancelBtn.onclick = () => {
         panel.remove();
-        btns.forEach(b => b.style.display = '');
+        if (actionPanel) actionPanel.style.display = '';
       };
 
-      panel.appendChild(input);
-      panel.appendChild(confirmBtn);
-      panel.appendChild(cancelBtn);
       container.appendChild(panel);
+      input.focus();
     }
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
