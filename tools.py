@@ -3,12 +3,12 @@ import json
 import subprocess
 import difflib
 from pathlib import Path
-from typing import Dict, Any, NamedTuple, Optional, List
-from conversation import ToolCall, ToolCallResult
+from typing import Dict, Any, Optional, List
+from conversation import FinishedToolCall, FinishedToolCallResult
 import system
 import index
 
-def run_shell_command(tool_call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
+def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
     params = json.loads(tool_call.parameters)
     command: str = params['command']
     if not isinstance(command, str):
@@ -17,15 +17,15 @@ def run_shell_command(tool_call: ToolCall, privileged: bool = False, scopes: Opt
     shell = system.run_sandboxed_command(command, scopes=scopes)
 
     output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
-    return ToolCallResult(tool_call.name, tool_call.parameters, output_str)
+    return FinishedToolCallResult(tool_call.name, tool_call.parameters, output_str)
 
-def run_semantic_search(tool_call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
+def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
     try:
         params = json.loads(tool_call.parameters)
         prompt: str = params["prompt"]
         top_k: int = int(params.get("top_k", 5))
     except Exception as exc:
-        return ToolCallResult(
+        return FinishedToolCallResult(
             name=tool_call.name,
             parameters=tool_call.parameters,
             result=json.dumps({"error": f"bad parameters: {exc}"})
@@ -34,18 +34,18 @@ def run_semantic_search(tool_call: ToolCall, privileged: bool = False, scopes: O
     try:
         results = index.semantic_search(prompt, top_k, scopes=scopes)
     except Exception as exc:
-        return ToolCallResult(
+        return FinishedToolCallResult(
             name=tool_call.name,
             parameters=tool_call.parameters,
             result=json.dumps({"error": f"search failed: {exc}"})
         )
-    return ToolCallResult(
+    return FinishedToolCallResult(
         name=tool_call.name,
         parameters=tool_call.parameters,
         result=json.dumps({"results": json.dumps(results)})
     )
 
-def run_propose_replace(tool_call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
+def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, REPOSITORIES_DIR, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -60,19 +60,19 @@ def run_propose_replace(tool_call: ToolCall, privileged: bool = False, scopes: O
         
         target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT), allowed_scopes=scopes)
         if not target_safe:
-            return ToolCallResult(tool_call.name, tool_call.parameters, 
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": target_err}))
         
         source_safe, source_err = is_safe_vpath(source_vpath, Path(WORKSPACE_VROOT))
         if not source_safe:
-            return ToolCallResult(tool_call.name, tool_call.parameters, 
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": source_err}))
         
         target_realpath = vpath_to_realpath(target_vpath, REPOSITORIES_VROOT, REPOSITORIES_DIR)
         source_realpath = vpath_to_realpath(source_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
         
         if not source_realpath.exists():
-            return ToolCallResult(tool_call.name, tool_call.parameters, 
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": f"Source file not found: {source_vpath}"}))
         
         if target_realpath.exists():
@@ -100,22 +100,23 @@ def run_propose_replace(tool_call: ToolCall, privileged: bool = False, scopes: O
                 "diff": diff_text,
                 "status": "pending"
             }
-            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
+        
         # privileged: perform actual replace
         try:
             target_realpath.parent.mkdir(parents=True, exist_ok=True)
             target_realpath.write_text(source_content, encoding='utf-8')
-            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "applied", "error": None}))
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "applied", "error": None}))
         except Exception as e:
-            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "failed", "error": str(e)}))
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "failed", "error": str(e)}))
     except json.JSONDecodeError as e:
-        return ToolCallResult(tool_call.name, tool_call.parameters, 
+        return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Invalid JSON: {str(e)}"}))
     except Exception as e:
-        return ToolCallResult(tool_call.name, tool_call.parameters, 
+        return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
-def run_propose_diff(tool_call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
+def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, REPOSITORIES_DIR, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -130,23 +131,23 @@ def run_propose_diff(tool_call: ToolCall, privileged: bool = False, scopes: Opti
         
         target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT), allowed_scopes=scopes)
         if not target_safe:
-            return ToolCallResult(tool_call.name, tool_call.parameters, 
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": target_err}))
         
         diff_safe, diff_err = is_safe_vpath(diff_vpath, Path(WORKSPACE_VROOT))
         if not diff_safe:
-            return ToolCallResult(tool_call.name, tool_call.parameters, 
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": diff_err}))
         
         target_realpath = vpath_to_realpath(target_vpath, REPOSITORIES_VROOT, REPOSITORIES_DIR)
         diff_realpath = vpath_to_realpath(diff_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
         
         if not target_realpath.exists():
-            return ToolCallResult(tool_call.name, tool_call.parameters, 
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": f"Target file not found: {target_vpath}"}))
         
         if not diff_realpath.exists():
-            return ToolCallResult(tool_call.name, tool_call.parameters, 
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": f"Diff file not found: {diff_vpath}"}))
         
         diff_content = diff_realpath.read_text(encoding='utf-8')
@@ -159,21 +160,22 @@ def run_propose_diff(tool_call: ToolCall, privileged: bool = False, scopes: Opti
                 "diff": diff_content,
                 "status": "pending"
             }
-            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
+        
         # privileged: apply patch
         try:
             result = subprocess.run(['patch', '-p0', str(target_realpath)], input=diff_content, text=True, capture_output=True)
             if result.returncode != 0:
                 raise RuntimeError(f"Patch failed: {result.stderr}")
-            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "applied", "error": None}))
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "applied", "error": None}))
         except Exception as e:
-            return ToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "failed", "error": str(e)}))
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "failed", "error": str(e)}))
     except json.JSONDecodeError as e:
-        return ToolCallResult(tool_call.name, tool_call.parameters, 
+        return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Invalid JSON: {str(e)}"}))
     except Exception as e:
-        return ToolCallResult(tool_call.name, tool_call.parameters, 
-                             json.dumps({"error": f"Unexpected error: {str(e)}"}))
+        return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
+                             json.dumps({"error": str(e)}))
 
 TOOL_REGISTRY = [
     {
@@ -275,7 +277,7 @@ TOOL_REGISTRY = [
     }
 ]
 
-def run_tool_call(call: ToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> ToolCallResult:
+def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
     for entry in TOOL_REGISTRY:
         if entry["name"] == call.name:
             return entry["executor"](call, privileged, scopes)

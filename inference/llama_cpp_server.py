@@ -6,10 +6,13 @@ import openai
 import atexit
 from typing import List, Generator, Any, Dict
 from .openai import (
-    Message,
-    Thinking,
-    ToolCall,
-    ToolCallResult,
+    StreamingMessage,
+    StreamingThinking,
+    StreamingToolCall,
+    FinishedMessage,
+    FinishedThinking,
+    FinishedToolCall,
+    FinishedToolCallResult,
     StreamingElement,
     FinishedElement,
     DeltaProcessor,

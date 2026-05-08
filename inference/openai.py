@@ -1,27 +1,50 @@
 import os
 import openai
-from typing import Dict, Optional, Any, Union, List, NamedTuple
+from dataclasses import dataclass
+from typing import Dict, Optional, Any, Union, List
+
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 # LLM Configuration
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
-class Message(NamedTuple):
+@dataclass(frozen=True)
+class StreamingMessage:
     content: str
-class Thinking(NamedTuple):
+
+@dataclass(frozen=True)
+class StreamingThinking:
     content: str
-class ToolCall(NamedTuple):
+
+@dataclass(frozen=True)
+class StreamingToolCall:
     name: str
     parameters: str
-StreamingElement = Union[Thinking, Message, ToolCall]
 
-class ToolCallResult(NamedTuple):
+StreamingElement = Union[StreamingMessage, StreamingThinking, StreamingToolCall]
+
+@dataclass(frozen=True)
+class FinishedMessage:
+    content: str
+
+@dataclass(frozen=True)
+class FinishedThinking:
+    content: str
+
+@dataclass(frozen=True)
+class FinishedToolCall:
+    name: str
+    parameters: str
+
+@dataclass(frozen=True)
+class FinishedToolCallResult:
     name: str
     parameters: str
     result: str
     is_blocking: bool = False
-FinishedElement = Union[Thinking, Message, ToolCallResult]
+
+FinishedElement = Union[FinishedMessage, FinishedThinking, FinishedToolCall, FinishedToolCallResult]
 
 def _to_oai_elements(message_id: int, element: Union[FinishedElement, dict]) -> list[dict[str, Any]]:
     # Internal helper for OAI format mapping
@@ -73,11 +96,11 @@ def _to_oai_elements(message_id: int, element: Union[FinishedElement, dict]) -> 
         return []
 
     match element:
-        case Message(content=content):
+        case FinishedMessage(content=content):
             return [{'role': 'assistant', 'content': content}]
-        case Thinking():
+        case FinishedThinking():
             return []
-        case ToolCall(name=name, parameters=params):
+        case FinishedToolCall(name=name, parameters=params):
             return [{
                 'role': 'assistant',
                 'content': '',
@@ -87,8 +110,7 @@ def _to_oai_elements(message_id: int, element: Union[FinishedElement, dict]) -> 
                     'function': {'name': name, 'arguments': params},
                 }]
             }]
-        case ToolCallResult(name=name, parameters=params, result=result):
-            # For context, we need both the call and the result
+        case FinishedToolCallResult(name=name, parameters=params, result=result):
             return [
                 {
                     'role': 'assistant',
@@ -124,31 +146,38 @@ class DeltaProcessor:
     def __init__(self):
         self.buffered_element: Optional[StreamingElement] = None
 
-    def process(self, chunk: ChatCompletionChunk) -> tuple[Optional[StreamingElement], Optional[StreamingElement]]:
+    def process(self, chunk: ChatCompletionChunk) -> tuple[Optional[StreamingElement], Optional[FinishedElement]]:
         if not chunk.choices:
             return None, None
         delta = chunk.choices[0].delta
         new_elem: Optional[StreamingElement] = None
         if delta.tool_calls:
             func = delta.tool_calls[0].function
-            new_elem = ToolCall(func.name or "", func.arguments or "")
+            new_elem = StreamingToolCall(func.name or "", func.arguments or "")
         elif hasattr(delta, 'reasoning_content') and delta.reasoning_content is not None:
-             new_elem = Thinking(delta.reasoning_content)
+             new_elem = StreamingThinking(delta.reasoning_content)
         elif delta.content is not None:
-            new_elem = Message(delta.content)
+            new_elem = StreamingMessage(delta.content)
 
-        finalized: Optional[StreamingElement] = None
+        finalized: Optional[FinishedElement] = None
         match (self.buffered_element, new_elem):
             case (None, elem):
                 self.buffered_element = elem
-            case (Message(c1), Message(c2)):
-                self.buffered_element = Message(c1 + c2)
-            case (Thinking(c1), Thinking(c2)):
-                self.buffered_element = Thinking(c1 + c2)
-            case (ToolCall(n, p1), ToolCall(parameters=p2)):
-                self.buffered_element = ToolCall(n, p1 + p2)
+            case (StreamingMessage(c1), StreamingMessage(c2)):
+                self.buffered_element = StreamingMessage(c1 + c2)
+            case (StreamingThinking(c1), StreamingThinking(c2)):
+                self.buffered_element = StreamingThinking(c1 + c2)
+            case (StreamingToolCall(n1, p1), StreamingToolCall(_, p2)):
+                self.buffered_element = StreamingToolCall(n1, p1 + p2)
             case _:
-                finalized = self.buffered_element
+                if self.buffered_element:
+                    match self.buffered_element:
+                        case StreamingMessage(content=c):
+                            finalized = FinishedMessage(content=c)
+                        case StreamingThinking(content=c):
+                            finalized = FinishedThinking(content=c)
+                        case StreamingToolCall(name=n1, parameters=p):
+                            finalized = FinishedToolCall(name=n1, parameters=p)
                 self.buffered_element = new_elem
         return new_elem, finalized
 
@@ -156,7 +185,6 @@ def run_chat_completion_stream(model_id: str, context: ChatContext, functions: L
     return completions_endpoint.chat.completions.create(
         model=model_id,
         messages=context.to_list(),
-        reasoning_effort='high',
         stream=True,
         tools=functions,
     )
