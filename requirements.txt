@@ -1,6 +1,10 @@
-psycopg2-binary
 fastapi[standard]
-openai
-pgvector==0.4.2
-huggingface_hub
 httpx
+
+psycopg2-binary
+pgvector==0.4.2
+
+openai
+huggingface_hub
+
+tinygrad==0.13.0

@@ -153,7 +153,7 @@ class DeltaProcessor:
         new_elem: Optional[StreamingElement] = None
         if delta.tool_calls:
             func = delta.tool_calls[0].function
-            new_elem = StreamingToolCall(func.name or "", func.arguments or "")
+            new_elem = StreamingToolCall(func.name, func.arguments)
         elif hasattr(delta, 'reasoning_content') and delta.reasoning_content is not None:
              new_elem = StreamingThinking(delta.reasoning_content)
         elif delta.content is not None:
@@ -167,10 +167,11 @@ class DeltaProcessor:
                 self.buffered_element = StreamingMessage(c1 + c2)
             case (StreamingThinking(c1), StreamingThinking(c2)):
                 self.buffered_element = StreamingThinking(c1 + c2)
-            case (StreamingToolCall(n1, p1), StreamingToolCall(_, p2)):
+            case (StreamingToolCall(n1, p1), StreamingToolCall(n2, p2)) if n2 is None:
                 self.buffered_element = StreamingToolCall(n1, p1 + p2)
             case _:
                 if self.buffered_element:
+                    print(f'Finalized element: {self.buffered_element}')
                     match self.buffered_element:
                         case StreamingMessage(content=c):
                             finalized = FinishedMessage(content=c)

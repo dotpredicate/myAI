@@ -16,6 +16,7 @@ from conversation import (
 )
 import index
 from inference import list_models, llama_cpp_server, estimator
+from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from tools import TOOL_REGISTRY
 import system
 FUNCTIONS = [t['schema'] for t in TOOL_REGISTRY]
@@ -51,6 +52,7 @@ async def get_models():
 async def get_repositories():
     repos = system.get_repositories()
     return JSONResponse(content={"repositories": repos})
+
 
 @app.post('/api/conversations/prompt')
 async def prompt_model(request: Request):
@@ -164,6 +166,29 @@ async def continue_conversation_endpoint(conv_id: int, request: Request):
         if not details:
             return JSONResponse(status_code=404, content={'error': 'conversation not found'})
         return StreamingResponse(continue_conversation(conn, conv_id, model_id, FUNCTIONS), media_type='application/x-ndjson')
+
+@app.get('/api/gpu-benchmark')
+async def run_gpu_benchmark(
+    tflops_size: Optional[int] = 4096, 
+    bw_size: Optional[int] = 8192
+):
+    """
+    Endpoint do testowania wydajności GPU.
+    """
+    try:
+        tflops_results = benchmark_tflops(M=tflops_size, K=tflops_size, N=tflops_size)
+        bandwidth_results = benchmark_bandwidth(R=bw_size, C=bw_size)
+        
+        return JSONResponse(content={
+            "status": "success",
+            "tflops": tflops_results,
+            "bandwidth": bandwidth_results
+        })
+    except Exception as e:
+        return JSONResponse(
+            status_code=500, 
+            content={"status": "error", "message": str(e)}
+        )
 
 # Mount static files
 app.mount("/", StaticFiles(directory="static"), name="static")

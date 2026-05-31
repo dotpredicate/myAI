@@ -43,7 +43,7 @@ def _start_server(port: str, args: List[str]):
             print("Error: llama-server not found in PATH.")
             raise
 
-def _wait_for_server(port: str, timeout: int = 120):
+def _wait_for_server(port: str, timeout: int = 15):
     """Wait for the server to respond to HTTP requests."""
     url = f"http://localhost:{port}/v1/models"
     start_time = time.time()

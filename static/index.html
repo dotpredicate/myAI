@@ -302,6 +302,84 @@
       background: #ddd;
     }
 
+
+    .gpu-status-card {
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 10px;
+      margin-bottom: 20px;
+    }
+    .gpu-status-card h3 {
+      margin: 0 0 8px 0;
+    }
+    .gpu-status-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+    }
+    .gpu-status-item {
+      display: flex;
+      justify-content: space-between;
+    }
+
+    /* NEW STYLES FOR BENCHMARK */
+    .benchmark-card {
+      background: #f0f4f8;
+      border: 1px solid #d1d9e6;
+      border-radius: 8px;
+      padding: 15px;
+      margin-top: 20px;
+    }
+    .benchmark-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 15px;
+      margin-top: 10px;
+    }
+    .benchmark-stat {
+      background: white;
+      padding: 10px;
+      border-radius: 4px;
+      border: 1px solid #eee;
+    }
+    .benchmark-stat .label {
+      font-size: 0.8em;
+      color: #666;
+      display: block;
+    }
+    .benchmark-stat .value {
+      font-size: 1.2em;
+      font-weight: bold;
+      color: #2c3e50;
+    }
+    .run-btn {
+      width: 100%;
+      padding: 10px;
+      background-color: #007bff;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-top: 10px;
+    }
+    .run-btn:disabled {
+      background-color: #ccc;
+    }
+    .loading-spinner {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      border: 3px solid rgba(255,255,255,.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin 1s ease-in-out infinite;
+      margin-right: 10px;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
 </style>
 </head>
 
@@ -349,6 +427,10 @@
 
       <div class="models-right">
         <h2>Estimation Tool</h2>
+        <div id="gpuStatusCard" class="gpu-status-card">
+          <h3>GPU Status</h3>
+          <div id="gpuStatusGrid" class="gpu-status-grid"></div>
+        </div>
         <label for="modelsEstimateSelect">Select Model (or HF alias):</label>
         <div style="display:flex; gap: 5px;">
            <select id="modelsEstimateSelect" style="flex: 1;"></select>
@@ -360,6 +442,22 @@
         <button id="estimateBtnModels" style="width: 100%;">Estimate</button>
         
         <div id="estimateResultModels" style="margin-top: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; display: none; white-space: pre-wrap;"></div>
+      </div>
+
+      <div class="benchmark-card">
+        <h3>GPU Performance Benchmark</h3>
+        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+          <div style="flex:1;">
+            <label style="font-size: 0.8em;">TFLOPS Matrix Size:</label>
+            <input type="number" id="tflopsSizeInput" value="4096" style="width: 100%;">
+          </div>
+          <div style="flex:1;">
+            <label style="font-size: 0.8em;">Bandwidth Size:</label>
+            <input type="number" id="bwSizeInput" value="8192" style="width: 100%;">
+          </div>
+        </div>
+        <button id="runBenchmarkBtn" class="run-btn">Run Benchmark</button>
+        <div id="benchmarkResult" class="benchmark-grid" style="display: none;"></div>
       </div>
     </div>
 
@@ -389,6 +487,7 @@
     let allRepositories = [];
     let selectedConversationId = null;
     let currentView = 'chat';
+    let gpuStatusInterval = null;
 
     function switchView(viewName) {
       currentView = viewName;
@@ -400,8 +499,44 @@
         document.getElementById('chatView').classList.add('active');
       } else if (viewName === 'models') {
         document.getElementById('modelsView').classList.add('active');
+        updateGpuStatus();
+        if (!gpuStatusInterval) {
+          gpuStatusInterval = setInterval(updateGpuStatus, 5000);
+        }
       } else if (viewName === 'repositories') {
         document.getElementById('repositoriesView').classList.add('active');
+      }
+
+      if (viewName !== 'models') {
+        if (gpuStatusInterval) {
+          clearInterval(gpuStatusInterval);
+          gpuStatusInterval = null;
+        }
+      }
+    }
+
+    async function updateGpuStatus() {
+      const card = document.getElementById('gpuStatusCard');
+      const grid = document.getElementById('gpuStatusGrid');
+      try {
+        const res = await fetch('/api/gpu-stats');
+        const data = await res.json();
+        
+        const freeGB = (data.free / (1024**3)).toFixed(2);
+        const totalGB = (data.total / (1024**3)).toFixed(2);
+        const usedGB = (parseFloat(totalGB) - parseFloat(freeGB)).toFixed(2);
+        const percent = totalGB > 0 ? ((usedGB / totalGB) * 100).toFixed(1) : 0;
+
+        card.style.display = 'block';
+        grid.innerHTML = `
+          <div class="gpu-status-item"><span>Free:</span> <span>${freeGB} GB</span></div>
+          <div class="gpu-status-item"><span>Total:</span> <span>${totalGB} GB</span></div>
+          <div class="gpu-status-item"><span>Used:</span> <span>${usedGB} GB</span></div>
+          <div class="gpu-status-item"><span>Usage:</span> <span>${percent}%</span></div>
+        `;
+      } catch (err) {
+        console.error("Failed to fetch GPU stats", err);
+        card.style.display = 'none';
       }
     }
 
@@ -594,7 +729,7 @@
         header.className = 'msg-header';
 
         const label = document.createElement('div');
-        label.classList.add('msg-label');
+        label.className = 'msg-label';
         label.textContent = role + ':';
         header.appendChild(label);
 
@@ -1016,6 +1151,40 @@
     document.getElementById('modelsEstimateInput').addEventListener('input', (e) => {
       if (e.target.value) {
         document.getElementById('modelsEstimateSelect').value = '';
+      }
+    });
+
+    // NEW: BENCHMARK LOGIC
+    document.getElementById('runBenchmarkBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('runBenchmarkBtn');
+      const resultDiv = document.getElementById('benchmarkResult');
+      const tSize = document.getElementById('tflopsSizeInput').value || 4096;
+      const bSize = document.getElementById('bwSizeInput').value || 8192;
+
+      btn.disabled = true;
+      btn.textContent = "Running Test...";
+      resultDiv.style.display = 'block';
+      resultDiv.innerHTML = 'Running benchmark... Please wait.';
+
+      try {
+        const res = await fetch(`/api/gpu-benchmark?tflops_size=${tSize}&bw_size=${bSize}`);
+        const data = await res.json();
+
+        if (data.status === 'success') {
+          resultDiv.innerHTML = `
+            <div class="benchmark-stat"><span class="label">FP32 TFLOPS</span><span class="value">${data.tflops.fp32.tflops.toFixed(2)}</span></div>
+            <div class="benchmark-stat"><span class="label">FP16 TFLOPS</span><span class="value">${data.tflops.fp16.tflops ? data.tflops.fp16.tflops.toFixed(2) : 'Error'}</span></div>
+            <div class="benchmark-stat"><span class="label">INT8 TFLOPS</span><span class="value">${data.tflops.int8.tflops ? data.tflops.int8.tflops.toFixed(2) : 'Error'}</span></div>
+            <div class="benchmark-stat"><span class="label">Bandwidth</span><span class="value">${data.bandwidth.gb_s.toFixed(2)} GB/s</span></div>
+          `;
+        } else {
+          resultDiv.innerHTML = `<span style="color:red">Error: ${data.message}</span>`;
+        }
+      } catch (err) {
+        resultDiv.innerHTML = `<span style="color:red">Error: ${err.message}</span>`;
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Run Benchmark";
       }
     });
   </script>

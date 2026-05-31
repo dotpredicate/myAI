@@ -20,16 +20,9 @@ def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, sco
     return FinishedToolCallResult(tool_call.name, tool_call.parameters, output_str)
 
 def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
-    try:
-        params = json.loads(tool_call.parameters)
-        prompt: str = params["prompt"]
-        top_k: int = int(params.get("top_k", 5))
-    except Exception as exc:
-        return FinishedToolCallResult(
-            name=tool_call.name,
-            parameters=tool_call.parameters,
-            result=json.dumps({"error": f"bad parameters: {exc}"})
-        )
+    params = json.loads(tool_call.parameters)
+    prompt: str = params["prompt"]
+    top_k: int = int(params.get("top_k", 5))
 
     try:
         results = index.semantic_search(prompt, top_k, scopes=scopes)
@@ -280,6 +273,13 @@ TOOL_REGISTRY = [
 def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
     for entry in TOOL_REGISTRY:
         if entry["name"] == call.name:
-            return entry["executor"](call, privileged, scopes)
+            try:
+                return entry["executor"](call, privileged, scopes)
+            except Exception as exc:
+                return FinishedToolCallResult(
+                    name=call.name,
+                    parameters=call.parameters,
+                    result=json.dumps({"error": f"Uncaught error: {exc}"})
+                )
     
     raise ValueError(f'Unsupported tool call {call.name}')
