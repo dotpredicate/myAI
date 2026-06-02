@@ -1,11 +1,14 @@
 import subprocess
 import json
-import os
 from typing import TypedDict, NamedTuple, Optional
 from .hf_gguf import resolve_hf_alias
 
 class EstimateResult(TypedDict, total=False):
+    ram: int
     vram: int
+    weight_bytes: int
+    kv_cache_bytes: int
+    total_bytes: int
     tps: float
     error: str
 

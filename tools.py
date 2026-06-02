@@ -1,9 +1,8 @@
-import os
 import json
 import subprocess
 import difflib
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Callable, Any, Optional, List, TypedDict
 from conversation import FinishedToolCall, FinishedToolCallResult
 import system
 import index
@@ -170,7 +169,13 @@ def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scop
         return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": str(e)}))
 
-TOOL_REGISTRY = [
+class Tool(TypedDict):
+    name: str
+    schema: Any
+    executor: Callable[[FinishedToolCall, bool, List[str]], FinishedToolCallResult]
+
+
+TOOL_REGISTRY: List[Tool] = [
     {
         "name": "run_shell_command",
         "schema": {
@@ -270,7 +275,7 @@ TOOL_REGISTRY = [
     }
 ]
 
-def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
+def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: List[str] = []) -> FinishedToolCallResult:
     for entry in TOOL_REGISTRY:
         if entry["name"] == call.name:
             try:

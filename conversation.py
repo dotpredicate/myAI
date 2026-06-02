@@ -1,16 +1,18 @@
-from typing import Dict, Optional, Any, Generator, Union, List
+from dataclasses import dataclass
+from typing import Dict, Literal, Optional, Any, Generator, List, TypedDict, Union
 import json
 from psycopg2.extensions import connection
-from inference import (
+from inference.engine import (
     StreamingMessage,
     StreamingThinking,
-    StreamingToolCall,
     FinishedMessage,
     FinishedThinking,
     FinishedToolCall,
     FinishedToolCallResult,
-    StreamingElement,
     FinishedElement,
+)
+
+from inference.llama_cpp_server import (
     DeltaProcessor,
     ChatContext,
     run_chat_completion_stream
@@ -20,14 +22,55 @@ class ConversationBlockedError(Exception):
     def __init__(self, blocking_message_id: int):
         self.blocking_message_id = blocking_message_id
 
-def to_json_dict(element: FinishedElement) -> dict[str, Any]:
+# @dataclass
+# class Message(frozen=True):
+#     pass
+
+class StoredMessage(TypedDict):
+    type: Literal['message']
+    author: Literal['user'] | Literal['assistant']
+    content: str
+    scopes: list[str]
+
+class StoredThinking(TypedDict):
+    type: Literal['thinking']
+    content: str
+
+# FIXME: Split into tool call and block
+class StoredToolCallResultOrBlock(TypedDict):
+    type: Literal['tool_call']
+    name: str
+    parameters: str
+    result: str
+    is_blocking: bool
+    status: Literal['pending'] | Literal['completed']
+    
+
+class StoredToolCallResult(TypedDict):
+    type: Literal['tool_call_result']
+    original_message_id: int
+    result: str
+
+class StoredToolCallDecision(TypedDict):
+    type: Literal['tool_call_decision']
+    original_message_id: int
+    decision: Literal['approve'] | Literal['reject']
+    comment: Optional[str]
+
+StoredElement = Union[StoredMessage, StoredThinking, StoredToolCallResultOrBlock, StoredToolCallResult, StoredToolCallDecision]
+
+@dataclass(frozen=True)
+class PersistedConversationElement:
+    id: int
+    msg: StoredElement
+
+
+def to_stored_elem(element: FinishedElement) -> StoredElement:
     match element:
         case FinishedMessage(content=content):
-            return {'type': 'message', 'content': content}
+            return {'type': 'message', 'author': 'assistant', 'content': content, 'scopes': []}
         case FinishedThinking(content=content):
             return {'type': 'thinking', 'content': content}
-        case FinishedToolCall(name=name, parameters=parameters):
-            return {'type': 'tool_call', 'name': name, 'parameters': parameters}
         case FinishedToolCallResult(name=name, parameters=parameters, result=result, is_blocking=is_blocking):
             return {
                 'type': 'tool_call',
@@ -37,6 +80,8 @@ def to_json_dict(element: FinishedElement) -> dict[str, Any]:
                 'is_blocking': is_blocking,
                 'status': 'pending' if is_blocking else 'completed'
             }
+        case _:
+            raise ValueError(f'Unhandled tool call type {type(element)}')
 
 def create_conversation(conn: connection) -> int:
     with conn.cursor() as cur:
@@ -48,7 +93,7 @@ def create_conversation(conn: connection) -> int:
         conn.commit()
         return conv_id
 
-def insert_message(conn: connection, conv_id: int, role: str, element: Dict[str, Any]) -> int:
+def insert_message(conn: connection, conv_id: int, role: str, element: StoredElement) -> int:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -58,9 +103,9 @@ def insert_message(conn: connection, conv_id: int, role: str, element: Dict[str,
             """,
             (conv_id, role, json.dumps(element))
         )
-        (id,) = cur.fetchone()
-        conn.commit()
-        return id
+        row = cur.fetchone()
+        assert row is not None
+        return row[0]
 
 def get_blocking_message_id(conn: connection, conv_id: int) -> Optional[int]:
     with conn.cursor() as cur:
@@ -71,14 +116,14 @@ def get_blocking_message_id(conn: connection, conv_id: int) -> Optional[int]:
         row = cur.fetchone()
         return row[0] if row and row[0] is not None else None
 
-def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> Optional[List[str]]:
+def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> List[str]:
     with conn.cursor() as cur:
         cur.execute("SELECT elements FROM messages WHERE conversation_id = %s AND role = 'user' ORDER BY created_at DESC LIMIT 1", (conv_id,))
         row = cur.fetchone()
-        if row:
-            elem = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-            return elem.get('scopes')
-    return None
+        if row and (elem := row[0]) and elem['type'] == 'message' and elem['author'] == 'user':
+            return elem['scopes']
+        else:
+            return []
 
 def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Optional[int] = None, scopes: Optional[List[str]] = None) -> int:
     if conv_id and (blocking_id := get_blocking_message_id(conn, conv_id)):
@@ -87,27 +132,28 @@ def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Opt
     if not conv_id:
         conv_id = create_conversation(conn)
     
-    user_message = FinishedMessage(content=prompt)
-    user_message_dict = to_json_dict(user_message)
-    if scopes:
-        user_message_dict['scopes'] = scopes
+    user_message_dict: StoredMessage = {
+        'type': 'message',
+        'author': 'user',
+        'content': prompt,
+        'scopes': scopes if scopes else []
+    }
         
     insert_message(conn, conv_id, 'user', user_message_dict)
     conn.commit()
     return conv_id
 
-def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[ChatContext, Optional[List[str]]]:
+def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[ChatContext, List[str]]:
     ctx = ChatContext()
-    scopes = None
+    scopes: list[str] = []
     with conn.cursor() as cur:
         cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
         for row in cur.fetchall():
             message_id, role, element = row
             element_dict = json.loads(element) if isinstance(element, str) else element
-            element_dict['role'] = role
             ctx.append_from_db(message_id, element_dict)
             if role == 'user':
-                scopes = element_dict.get('scopes')
+                scopes = element_dict.get('scopes') or []
     return ctx, scopes
 
 def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: List[Any]) -> Generator[bytes, None, None]:
@@ -124,14 +170,14 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
             if aggregated_element is not None:
                 match aggregated_element:
                     case FinishedMessage() | FinishedThinking():
-                        result_json = to_json_dict(aggregated_element)
+                        result_json = to_stored_elem(aggregated_element)
                         msg_id = insert_message(conn, conv_id, 'assistant', result_json)
                         context.append_finalized(msg_id, aggregated_element)
                         yield json.dumps({'type': 'finalized', 'id': msg_id}).encode() + b'\n'
                     case FinishedToolCall():
                         # Pass the extracted scopes to the tool call
                         result = run_tool_call(aggregated_element, scopes=scopes)
-                        result_json = to_json_dict(result)
+                        result_json = to_stored_elem(result)
                         msg_id = insert_message(conn, conv_id, 'assistant', result_json)
                         yield json.dumps(result_json).encode() + b'\n'
                         context.append_finalized(msg_id, result)
@@ -175,7 +221,7 @@ def get_conversation_details(conn: connection, conv_id: int) -> Optional[Dict[st
             'messages': messages
         }
 
-def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: str, comment: str = "") -> bool:
+def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: Literal['approve'] | Literal['reject'], comment: str = "") -> bool:
     cur = conn.cursor()
     cur.execute('SELECT elements FROM messages WHERE id = %s AND conversation_id = %s', (msg_id, conv_id))
     row = cur.fetchone()
@@ -185,14 +231,13 @@ def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: str,
     elem_json = row[0]
     elem = json.loads(elem_json) if isinstance(elem_json, str) else elem_json
 
-    decision_elem: Dict[str, Any] = {
-        'type': 'tool_decision',
+    decision_elem: StoredToolCallDecision = {
+        'type': 'tool_call_decision',
         'decision': decision,
         'original_message_id': msg_id,
+        'comment': comment
     }
     
-    if comment:
-        decision_elem['comment'] = comment
     insert_message(conn, conv_id, 'assistant', decision_elem)
     cur.execute('UPDATE conversations SET blocking_message_id = NULL WHERE id = %s', (conv_id,))
 
@@ -205,8 +250,8 @@ def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: str,
         
         scopes = get_scopes_from_last_user_message(conn, conv_id)
         result = run_tool_call(tool_call, privileged=True, scopes=scopes)
-        result_elem: Dict[str, Any] = {
-            'type': 'tool_result',
+        result_elem: StoredToolCallResult = {
+            'type': 'tool_call_result',
             'original_message_id': msg_id,
             'result': result.result,
         }

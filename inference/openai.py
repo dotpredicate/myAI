@@ -5,57 +5,20 @@ from typing import Dict, Optional, Any, Union, List
 
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
+from inference.engine import *
+
 # LLM Configuration
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
-@dataclass(frozen=True)
-class StreamingMessage:
-    content: str
-
-@dataclass(frozen=True)
-class StreamingThinking:
-    content: str
-
-@dataclass(frozen=True)
-class StreamingToolCall:
-    name: str
-    parameters: str
-
-StreamingElement = Union[StreamingMessage, StreamingThinking, StreamingToolCall]
-
-@dataclass(frozen=True)
-class FinishedMessage:
-    content: str
-
-@dataclass(frozen=True)
-class FinishedThinking:
-    content: str
-
-@dataclass(frozen=True)
-class FinishedToolCall:
-    name: str
-    parameters: str
-
-@dataclass(frozen=True)
-class FinishedToolCallResult:
-    name: str
-    parameters: str
-    result: str
-    is_blocking: bool = False
-
-FinishedElement = Union[FinishedMessage, FinishedThinking, FinishedToolCall, FinishedToolCallResult]
-
 def _to_oai_elements(message_id: int, element: Union[FinishedElement, dict]) -> list[dict[str, Any]]:
-    # Internal helper for OAI format mapping
     if isinstance(element, dict):
-        # Compatibility for historical messages from DB
         elem_type = element['type']
-        if elem_type == 'thinking':
-            return []
         if elem_type == 'message':
-            return [{'role': element.get('role', 'user'), 'content': element['content']}]
-        if elem_type == 'tool_call':
+            return [{'role': element['author'], 'content': element['content']}]
+        elif elem_type == 'thinking':
+            return []
+        elif elem_type == 'tool_call':
             tool_call = {
                 'role': 'assistant',
                 'content': '',
@@ -69,21 +32,21 @@ def _to_oai_elements(message_id: int, element: Union[FinishedElement, dict]) -> 
                 }]
             }
             res = [tool_call]
-            if element.get('status') != 'pending':
+            if element['status'] == 'completed':
                 res.append({
                     'role': 'tool',
                     'tool_call_id': str(message_id),
                     'content': str(element.get('result', ''))
                 })
             return res
-        if elem_type == 'tool_result':
+        elif elem_type == 'tool_call_result':
             return [{
                 'role': 'tool',
                 'tool_call_id': str(element['original_message_id']),
                 'content': str(element.get('result', ''))
             }]
-        if elem_type == 'tool_decision' and element.get('decision') == 'reject':
-            comment = element.get('comment', '')
+        elif elem_type == 'tool_decision' and element['decision'] == 'reject':
+            comment = element.get('comment')
             if comment:
                 content = f"User rejected this tool call with comment: {comment}".strip()
             else:
@@ -93,6 +56,11 @@ def _to_oai_elements(message_id: int, element: Union[FinishedElement, dict]) -> 
                 'tool_call_id': str(element['original_message_id']),
                 'content': content
             }]
+        elif elem_type == 'tool_call_decision':
+            # Explicitly ignored
+            pass
+        else:
+            print(f'Unhandled element {elem_type}')
         return []
 
     match element:
@@ -127,11 +95,13 @@ def _to_oai_elements(message_id: int, element: Union[FinishedElement, dict]) -> 
                     'content': result
                 }
             ]
+        case _:
+            print(f'Unhandled element {type(element)}')
     return []
 
 class ChatContext:
-    def __init__(self, messages: List[Dict[str, Any]] = None):
-        self._messages = messages or []
+    def __init__(self, messages: List[Dict[str, Any]] = []):
+        self._messages = messages
 
     def append_from_db(self, message_id: int, element: dict):
         self._messages.extend(_to_oai_elements(message_id, element))

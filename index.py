@@ -4,7 +4,7 @@ import subprocess
 import httpx
 import openai
 from pathlib import Path
-from typing import NamedTuple, List, Optional
+from typing import Any, NamedTuple, List, Optional
 
 import database
 import documents
@@ -66,7 +66,7 @@ def semantic_search(query: str, top_k: int, scopes: Optional[List[str]] = None) 
         JOIN documents ON documents.id = document_chunks.document_id
     """
     
-    new_params = [query_vec]
+    new_params: list[Any] = [query_vec]
     if scopes:
         where_clauses = []
         for scope in scopes:

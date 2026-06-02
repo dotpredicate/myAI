@@ -774,6 +774,11 @@
         } else if (newType === 'tool_call') {
           this.streamState.type = 'tool_call';
           this.streamState.blocking = false;
+        } else {
+          this.streamState.type = 'unknown';
+          const infoDiv = document.createElement('div');
+          infoDiv.textContent = `Unknown: ${newType}`;
+          wrapper.appendChild(infoDiv);
         }
       }
 

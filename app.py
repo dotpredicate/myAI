@@ -136,7 +136,7 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
     """Handle the user's approval or rejection of a tool call proposal."""
     payload = await request.json()
     decision = payload.get('decision')
-    comment = payload.get('comment', '')
+    comment = payload.get('comment')
     if decision not in {'approve', 'reject'}:
         return JSONResponse(status_code=400, content={'error': 'invalid decision'})
 
@@ -150,27 +150,24 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
         return JSONResponse(status_code=500, content={'error': str(e)})
 
 
-@app.get('/api/conversations/{conv_id}/continue')
-async def continue_conversation_endpoint(conv_id: int, request: Request):
-    """Resume a conversation after a proposal decision.
-
-    The client must supply the ``model_id`` as a query parameter. The endpoint
-    streams the assistant output until a new proposal is generated or the
-    conversation ends.
-    """
+@app.get('/api/conversations/{conversation_id}/continue')
+async def continue_conversation_endpoint(conversation_id: int, request: Request):
     model_id = request.query_params.get('model_id')
     if not model_id:
         return JSONResponse(status_code=400, content={'error': 'model_id query parameter required'})
     with mk_conn() as conn:
-        details = get_conversation_details(conn, conv_id)
+        details = get_conversation_details(conn, conversation_id)
         if not details:
             return JSONResponse(status_code=404, content={'error': 'conversation not found'})
-        return StreamingResponse(continue_conversation(conn, conv_id, model_id, FUNCTIONS), media_type='application/x-ndjson')
+        return StreamingResponse(
+            continue_conversation(conn, conversation_id, model_id, FUNCTIONS),
+            media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
+        )
 
 @app.get('/api/gpu-benchmark')
 async def run_gpu_benchmark(
-    tflops_size: Optional[int] = 4096, 
-    bw_size: Optional[int] = 8192
+    tflops_size: int = 4096, 
+    bw_size: int = 8192
 ):
     """
     Endpoint do testowania wydajności GPU.

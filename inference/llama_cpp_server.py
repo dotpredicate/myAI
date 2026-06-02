@@ -3,22 +3,9 @@ import subprocess
 import time
 import httpx
 import openai
-import atexit
-from typing import List, Generator, Any, Dict
-from .openai import (
-    StreamingMessage,
-    StreamingThinking,
-    StreamingToolCall,
-    FinishedMessage,
-    FinishedThinking,
-    FinishedToolCall,
-    FinishedToolCallResult,
-    StreamingElement,
-    FinishedElement,
-    DeltaProcessor,
-    ChatContext,
-    _to_oai_elements
-)
+from typing import List, Any, Dict
+
+from .openai import ChatContext, DeltaProcessor
 
 # LLM Configuration
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')

@@ -29,7 +29,9 @@ def upsert_document(conn: connection, path: str, file_hash: str, content: str) -
                 "INSERT INTO documents (file_path, file_hash, content) VALUES (%s, %s, %s) RETURNING id",
                 (path, file_hash, content),
             )
-            (doc_id,) = cur.fetchone()
+            doc_row = cur.fetchone()
+            assert doc_row is not None
+            doc_id = doc_row[0]
     return doc_id
 
 
