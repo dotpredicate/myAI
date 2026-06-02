@@ -17,8 +17,8 @@ def mk_conn():
     ret.autocommit = False
     return ret
 
-def init_database(conn: connection):
-    with conn.cursor() as cur:
+def init_database():
+    with mk_conn() as conn, conn.cursor() as cur:
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS migrations (
@@ -37,20 +37,18 @@ def init_database(conn: connection):
     migration_files = sorted(glob.glob(os.path.join(migration_dir, '*.sql')))
     for migration_file in migration_files:
         migration_name = os.path.basename(migration_file)
-        with conn.cursor() as cur:
+        with mk_conn() as conn, conn.cursor() as cur:
             cur.execute("SELECT 1 FROM migrations WHERE name = %s", (migration_name,))
             if cur.fetchone():
                 print(f'Skipping already executed migration: {migration_name}')
                 continue
-        with open(migration_file, 'r') as f:
-            sql = f.read()
-        with conn.cursor() as cur:
+            with open(migration_file, 'r') as f:
+                sql = f.read()
             cur.execute(sql)
-        start_time = datetime.now()
-        hash_bytes = hashlib.sha256(migration_name.encode('utf-8')).digest()
-        hash_str = binascii.hexlify(hash_bytes).decode('utf-8')
-        end_time = datetime.now()
-        with conn.cursor() as cur:
+            start_time = datetime.now()
+            hash_bytes = hashlib.sha256(migration_name.encode('utf-8')).digest()
+            hash_str = binascii.hexlify(hash_bytes).decode('utf-8')
+            end_time = datetime.now()
             cur.execute(
                 """
                 INSERT INTO migrations (name, hash, start_time, end_time)
@@ -58,6 +56,6 @@ def init_database(conn: connection):
                 """,
                 (migration_name, hash_str, start_time, end_time)
             )
-        conn.commit()
+            conn.commit()
         print(f'Applied migration: {migration_file}')
     print('Migrations completed')

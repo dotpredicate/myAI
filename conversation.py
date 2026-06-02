@@ -179,6 +179,7 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
                         result = run_tool_call(aggregated_element, scopes=scopes)
                         result_json = to_stored_elem(result)
                         msg_id = insert_message(conn, conv_id, 'assistant', result_json)
+                        conn.commit()
                         yield json.dumps(result_json).encode() + b'\n'
                         context.append_finalized(msg_id, result)
                         if result.is_blocking:
@@ -187,7 +188,6 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
                                 "UPDATE conversations SET blocking_message_id = %s WHERE id = %s",
                                 (msg_id, conv_id),
                             )
-                            conn.commit()
                             run_next_loop = False
                         else:
                             run_next_loop = True
@@ -197,6 +197,7 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
                     yield json.dumps({'type': 'message', 'content': delta.content}).encode() + b'\n'
                 elif isinstance(delta, StreamingThinking):
                     yield json.dumps({'type': 'thinking', 'content': delta.content}).encode() + b'\n'
+    conn.commit()
     print("Stream finished")
 
 def get_conversations(conn: connection) -> List[Dict[str, Any]]:
@@ -255,22 +256,18 @@ def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: Lite
             'original_message_id': msg_id,
             'result': result.result,
         }
-        insert_message(conn, conv_id, 'assistant', result_elem)
+        insert_message(conn, conv_id, 'system', result_elem)
         executed = True
     
     conn.commit()
     return executed
 
 def delete_conversation(conn: connection, conv_id: int) -> bool:
-    """Delete a conversation and all its messages."""
     with conn.cursor() as cur:
-        # Check if conversation exists
         cur.execute("SELECT id FROM conversations WHERE id = %s", (conv_id,))
         if not cur.fetchone():
             return False
-        # Delete messages first
         cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conv_id,))
-        # Delete conversation
         cur.execute("DELETE FROM conversations WHERE id = %s", (conv_id,))
         conn.commit()
         return True

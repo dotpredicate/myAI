@@ -23,8 +23,7 @@ FUNCTIONS = [t['schema'] for t in TOOL_REGISTRY]
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    with mk_conn() as conn:
-        init_database(conn)
+    init_database()
     # await index.synchronize()
     yield
     llama_cpp_server.stop()
@@ -65,8 +64,8 @@ async def prompt_model(request: Request):
     conversation_id: Optional[int] = payload.get('conversation_id')
 
     try:
-        with mk_conn() as conn:
-            conversation_id = prepare_conversation_with_prompt(conn, prompt, conversation_id, scopes=scopes)
+        conn = mk_conn()
+        conversation_id = prepare_conversation_with_prompt(conn, prompt, conversation_id, scopes=scopes)
     except ConversationBlockedError as e:
         return JSONResponse(
             status_code=403,
@@ -80,24 +79,23 @@ async def prompt_model(request: Request):
 
 @app.get('/api/conversations')
 async def get_conversations():
-    with mk_conn() as conn:
-        conversations = fetch_conversations(conn)
+    conn = mk_conn()
+    conversations = fetch_conversations(conn)
     return JSONResponse(content=conversations)
 
 @app.get('/api/conversations/{conv_id}')
 async def get_conversation(conv_id: int):
-    with mk_conn() as conn:
-        details = get_conversation_details(conn, conv_id)
-        if not details:
-            return JSONResponse(status_code=404, content={'error': 'Not found'})
-        return JSONResponse(content=details)
+    conn = mk_conn()
+    details = get_conversation_details(conn, conv_id)
+    if not details:
+        return JSONResponse(status_code=404, content={'error': 'Not found'})
+    return JSONResponse(content=details)
 
 @app.delete('/api/conversations/{conv_id}')
 async def delete_conversation_endpoint(conv_id: int):
-    """Delete a conversation by its ID."""
     try:
-        with mk_conn() as conn:
-            success = delete_conversation(conn, conv_id)
+        conn = mk_conn()
+        success = delete_conversation(conn, conv_id)
         if not success:
             return JSONResponse(status_code=404, content={'error': 'Conversation not found'})
         return JSONResponse(content={'status': 'deleted', 'id': conv_id})
@@ -133,7 +131,6 @@ async def sync(background_tasks: BackgroundTasks):
 
 @app.post('/api/conversations/{conv_id}/tool_calls/{msg_id}/decide')
 async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request):
-    """Handle the user's approval or rejection of a tool call proposal."""
     payload = await request.json()
     decision = payload.get('decision')
     comment = payload.get('comment')
@@ -141,8 +138,8 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
         return JSONResponse(status_code=400, content={'error': 'invalid decision'})
 
     try:
-        with mk_conn() as conn:
-            executed = decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
+        conn = mk_conn()
+        executed = decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
         return JSONResponse(content={'status': 'success', 'executed': executed})
     except ValueError as e:
         return JSONResponse(status_code=400, content={'error': str(e)})
@@ -155,23 +152,20 @@ async def continue_conversation_endpoint(conversation_id: int, request: Request)
     model_id = request.query_params.get('model_id')
     if not model_id:
         return JSONResponse(status_code=400, content={'error': 'model_id query parameter required'})
-    with mk_conn() as conn:
-        details = get_conversation_details(conn, conversation_id)
-        if not details:
-            return JSONResponse(status_code=404, content={'error': 'conversation not found'})
-        return StreamingResponse(
-            continue_conversation(conn, conversation_id, model_id, FUNCTIONS),
-            media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
-        )
+    conn = mk_conn()
+    details = get_conversation_details(conn, conversation_id)
+    if not details:
+        return JSONResponse(status_code=404, content={'error': 'conversation not found'})
+    return StreamingResponse(
+        continue_conversation(conn, conversation_id, model_id, FUNCTIONS),
+        media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
+    )
 
 @app.get('/api/gpu-benchmark')
 async def run_gpu_benchmark(
     tflops_size: int = 4096, 
     bw_size: int = 8192
 ):
-    """
-    Endpoint do testowania wydajności GPU.
-    """
     try:
         tflops_results = benchmark_tflops(M=tflops_size, K=tflops_size, N=tflops_size)
         bandwidth_results = benchmark_bandwidth(R=bw_size, C=bw_size)

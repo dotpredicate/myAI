@@ -477,7 +477,7 @@
   </div>
 
   <script type="module">
-    import * as smdModule from "./smd.js";
+    import * as smdModule from "./vendor/smd.js";
     window.smd = smdModule;
   </script>
 
@@ -890,7 +890,7 @@
       chatHistory.scrollTop = chatHistory.scrollHeight;
     }
 
-    async function* streamPrompt(res, responseContainer) {
+    async function* streamPrompt(res) {
       if (res.status === 403) {
         const data = await res.json();
         blockConversation(data.blocking_message_id);
@@ -899,10 +899,6 @@
       }
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
-      selectedConversationId = res.headers.get('X-Conversation-ID');
-      const title = document.createElement('h2');
-      title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
-      responseContainer.prepend(title);
       let buffer = '';
       while (true) {
         const { value, done } = await reader.read();
@@ -930,11 +926,16 @@
       }
     }
 
-    async function processStream(res, responseContainer) {
+    async function processStream(res, responseContainer, onConversationStart = null) {
       const continueBtn = document.getElementById('continueBtn');
       continueBtn.disabled = true;
       const renderer = new ChatStreamRenderer(responseContainer);
-      for await (const val of streamPrompt(res, responseContainer)) {
+      
+      const rawConvId = res.headers.get('X-Conversation-ID');
+      const convId = parseInt(rawConvId);
+      if (onConversationStart) onConversationStart(convId);
+
+      for await (const val of streamPrompt(res)) {
         console.log(val);
         if (val.type === 'finalized') {
           renderer.finalizeState(val.id);
@@ -971,6 +972,7 @@
       const promptText = document.getElementById('prompt').value;
       if (!promptText.trim()) return;
 
+      const isNewConversation = !selectedConversationId;
       renderSingleMessage(responseContainer, { id: null, role: 'user', element: { type: 'message', content: promptText } });
       document.getElementById('prompt').value = '';
 
@@ -990,7 +992,17 @@
         highlightBlockingMessage(data.blocking_message_id);
         return;
       }
-      await processStream(res, responseContainer);
+      await processStream(res, responseContainer, (convId) => {
+        if (convId !== selectedConversationId) {
+          selectedConversationId = convId;
+          loadConversations();
+          if (isNewConversation) {
+            const title = document.createElement('h2');
+            title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
+            responseContainer.prepend(title);
+          }
+        }
+      });
     }
 
     async function executeDecision(msgId, decision, comment = "") {
