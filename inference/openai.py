@@ -1,116 +1,94 @@
 import os
 import openai
-from dataclasses import dataclass
-from typing import Dict, Optional, Any, Union, List
+from typing import Optional, Any, List
 
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 
 from inference.engine import *
 
+from domain import (
+    Message,
+    Thinking,
+    ToolCallFinishedOrBlocked,
+    ToolCallResult,
+    ToolCallDecision,
+    ConversationElement,
+)
+
 # LLM Configuration
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
 completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
 
-def _to_oai_elements(message_id: int, element: Union[FinishedElement, dict]) -> list[dict[str, Any]]:
-    if isinstance(element, dict):
-        elem_type = element['type']
-        if elem_type == 'message':
-            return [{'role': element['author'], 'content': element['content']}]
-        elif elem_type == 'thinking':
-            return []
-        elif elem_type == 'tool_call':
-            tool_call = {
-                'role': 'assistant',
-                'content': '',
-                'tool_calls': [{
-                    'id': str(message_id),
-                    'type': 'function',
-                    'function': {
-                        'name': element['name'],
-                        'arguments': element['parameters'],
-                    },
-                }]
-            }
-            res = [tool_call]
-            if element['status'] == 'completed':
-                res.append({
-                    'role': 'tool',
-                    'tool_call_id': str(message_id),
-                    'content': str(element.get('result', ''))
-                })
-            return res
-        elif elem_type == 'tool_call_result':
-            return [{
-                'role': 'tool',
-                'tool_call_id': str(element['original_message_id']),
-                'content': str(element.get('result', ''))
-            }]
-        elif elem_type == 'tool_decision' and element['decision'] == 'reject':
-            comment = element.get('comment')
-            if comment:
-                content = f"User rejected this tool call with comment: {comment}".strip()
-            else:
-                content = "User rejected this tool call"
-            return [{
-                'role': 'tool',
-                'tool_call_id': str(element['original_message_id']),
-                'content': content
-            }]
-        elif elem_type == 'tool_call_decision':
-            # Explicitly ignored
-            pass
-        else:
-            print(f'Unhandled element {elem_type}')
-        return []
 
-    match element:
-        case FinishedMessage(content=content):
-            return [{'role': 'assistant', 'content': content}]
-        case FinishedThinking():
-            return []
-        case FinishedToolCall(name=name, parameters=params):
-            return [{
-                'role': 'assistant',
-                'content': '',
-                'tool_calls': [{
-                    'id': str(message_id),
-                    'type': 'function',
-                    'function': {'name': name, 'arguments': params},
-                }]
-            }]
-        case FinishedToolCallResult(name=name, parameters=params, result=result):
-            return [
-                {
+def _to_oai_messages(elements: list[tuple[int, ConversationElement]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    pending_thinking: Optional[str] = None
+
+    for message_id, element in elements:
+        match element:
+            case Thinking():
+                pending_thinking = element.content
+
+            case Message():
+                msg: dict[str, Any] = {'role': element.author, 'content': element.content}
+                if element.author == 'assistant' and pending_thinking is not None:
+                    msg['reasoning_content'] = pending_thinking
+                    pending_thinking = None
+                    print(f'[DEBUG]: Added thinking: {msg}')
+                result.append(msg)
+
+            case ToolCallFinishedOrBlocked():
+                tc: dict[str, Any] = {
                     'role': 'assistant',
-                    'content': '',
                     'tool_calls': [{
                         'id': str(message_id),
                         'type': 'function',
-                        'function': {'name': name, 'arguments': params},
+                        'function': {
+                            'name': element.name,
+                            'arguments': element.parameters,
+                        },
                     }]
-                },
-                {
-                    'role': 'tool',
-                    'tool_call_id': str(message_id),
-                    'content': result
                 }
-            ]
-        case _:
-            print(f'Unhandled element {type(element)}')
-    return []
+                if pending_thinking is not None:
+                    tc['reasoning_content'] = pending_thinking
+                    tc['content'] = ''
+                    pending_thinking = None
+                result.append(tc)
+                if element.status == 'completed':
+                    result.append({
+                        'role': 'tool',
+                        'tool_call_id': str(message_id),
+                        'content': str(element.result)
+                    })
 
-class ChatContext:
-    def __init__(self, messages: List[Dict[str, Any]] = []):
-        self._messages = messages
+            case ToolCallResult():
+                pending_thinking = None  # drop trailing thinking, defensive
+                result.append({
+                    'role': 'tool',
+                    'tool_call_id': str(element.original_message_id),
+                    'content': str(element.result)
+                })
 
-    def append_from_db(self, message_id: int, element: dict):
-        self._messages.extend(_to_oai_elements(message_id, element))
+            case ToolCallDecision():
+                if element.decision == 'reject':
+                    pending_thinking = None  # drop trailing thinking, defensive
+                    comment_text = element.comment
+                    if comment_text:
+                        content = f"User rejected this tool call with comment: {comment_text}".strip()
+                    else:
+                        content = "User rejected this tool call"
+                    result.append({
+                        'role': 'tool',
+                        'tool_call_id': str(element.original_message_id),
+                        'content': content
+                    })
+                else:
+                    # approve decisions: explicitly ignored, drop pending thinking if any
+                    pending_thinking = None
 
-    def append_finalized(self, message_id: int, element: FinishedElement):
-        self._messages.extend(_to_oai_elements(message_id, element))
+    # trailing thinking with no following element is silently dropped
+    return result
 
-    def to_list(self) -> List[Dict[str, Any]]:
-        return self._messages
 
 class DeltaProcessor:
     def __init__(self):
@@ -152,13 +130,15 @@ class DeltaProcessor:
                 self.buffered_element = new_elem
         return new_elem, finalized
 
-def run_chat_completion_stream(model_id: str, context: ChatContext, functions: List[Any]):
+
+def run_chat_completion_stream(model_id: str, context: list[tuple[int, ConversationElement]], functions: List[Any]):
     return completions_endpoint.chat.completions.create(
         model=model_id,
-        messages=context.to_list(),
+        messages=_to_oai_messages(context),
         stream=True,
         tools=functions,
     )
+
 
 def list_models():
     return completions_endpoint.models.list()

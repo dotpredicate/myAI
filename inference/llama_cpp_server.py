@@ -5,7 +5,8 @@ import httpx
 import openai
 from typing import List, Any, Dict
 
-from .openai import ChatContext, DeltaProcessor
+from domain import ConversationElement
+from .openai import DeltaProcessor
 
 # LLM Configuration
 LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
@@ -21,8 +22,6 @@ def _start_server(port: str, args: List[str]):
             print(f"Starting server on port {port}: {' '.join(cmd)}")
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
                 preexec_fn=os.setsid
             )
             _server_processes[port] = proc
@@ -47,7 +46,7 @@ def _wait_for_server(port: str, timeout: int = 15):
     raise TimeoutError(f"Server on port {port} did not start within {timeout} seconds.")
 
 def _ensure_server_started():
-    _start_server("1234", ["--offline", "--jinja"])
+    _start_server("1234", ["--offline", "--jinja", "--chat-template-kwargs", '{"preserve_thinking":true}'])
 
 def ensure_embedding_server_started():
     _start_server("2345", ["--embedding", "-hf", "unsloth/embeddinggemma-300m-GGUF"])
@@ -61,11 +60,12 @@ def stop():
         process.wait()
         del _server_processes[port]
 
-def run_chat_completion_stream(model_id: str, context: ChatContext, functions: List[Any]):
+def run_chat_completion_stream(model_id: str, context: list[tuple[int, ConversationElement]], functions: List[Any]):
+    from .openai import _to_oai_messages
     _ensure_server_started()
     return completions_endpoint.chat.completions.create(
         model=model_id,
-        messages=context.to_list(),
+        messages=_to_oai_messages(context),
         reasoning_effort='high',
         stream=True,
         tools=functions,
