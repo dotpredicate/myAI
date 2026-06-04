@@ -1,6 +1,7 @@
 import os
+import subprocess
 from pathlib import Path
-from typing import NamedTuple, Optional, List
+from typing import NamedTuple, Optional, List, Tuple
 
 # Paths and configuration
 REPOSITORIES_DIR = os.getenv('REPOSITORIES_DIR', os.path.expanduser('~/.myai/repositories'))
@@ -16,6 +17,43 @@ def get_repositories() -> List[str]:
         return [d.name for d in os.scandir(REPOSITORIES_DIR) if d.is_dir() and not d.name.startswith('.')]
     except Exception:
         return []
+
+
+def _get_repo_file_paths(repo_name: str) -> List[Tuple[str, Path]]:
+    """Returns list of (relative_path, full_path) for every file in a repository.
+    Supports both git repos (using ls-files) and non-git repos (os.walk)."""
+    repo_path = Path(REPOSITORIES_DIR) / repo_name
+    if not repo_path.is_dir():
+        return []
+
+    try:
+        git_check = subprocess.run(
+            ["git", "-C", str(repo_path), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True
+        )
+        if git_check.returncode == 0:
+            result = subprocess.run(
+                ["git", "-C", str(repo_path), "ls-files"],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                return []
+            rel_names = [f for f in result.stdout.splitlines() if f]
+        else:
+            rel_names = []
+            for root, _, fnames in os.walk(str(repo_path)):
+                for fname in fnames:
+                    rel = Path(root) / fname
+                    rel_names.append(str(rel.relative_to(repo_path)))
+
+        return [(name, repo_path / name) for name in sorted(rel_names)]
+    except Exception:
+        return []
+
+
+def get_repository_files(repo_name: str) -> List[str]:
+    """List file names in a repository directory (relative paths)."""
+    return [rel for rel, _ in _get_repo_file_paths(repo_name)]
 
 def is_safe_vpath(vpath: Path, expected_vroot: Path, allowed_scopes: Optional[List[str]] = None) -> tuple[bool, str]:
     try:

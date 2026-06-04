@@ -257,6 +257,24 @@
       cursor: pointer;
     }
     .copy-btn:hover { background: #ddd; }
+
+    /* Repositories view */
+    .repo-panels { display: grid; grid-template-columns: 240px 1fr; height: 100%; overflow: hidden; }
+    .repo-sidebar { padding: 12px; overflow-y: auto; border-right: 1px solid #e0e0e0; background: #fafafa; }
+    .repo-sidebar h3 { margin: 0 0 10px 0; font-size: 15px; }
+    .repo-sidebar h3.small { font-size: 13px; margin-bottom: 8px; }
+    .repo-detail { padding: 12px; overflow-y: auto; }
+    .repo-detail h3 { margin: 0 0 12px 0; font-size: 16px; }
+    .repo-detail h4 { margin: 0 0 6px 0; font-size: 13px; color: #555; }
+    .repo-search-row { margin-bottom: 12px; }
+    .repo-search-row input { width: 100%; }
+    .repo-search-row .btn { margin-top: 6px; }
+    .repo-filelist { border: 1px solid #e0e0e0; border-radius: 4px; padding: 8px; max-height: 400px; overflow-y: auto; font-size: 13px; }
+    .repo-file-item { padding: 3px 0; border-bottom: 1px solid #f0f0f0; font-family: monospace; font-size: 12px; }
+    .repo-file-item:last-child { border-bottom: none; }
+    .repo-result-item { padding: 6px; margin-bottom: 4px; background: #f9f9f9; border-radius: 4px; font-size: 12px; }
+    .repo-placeholder { color: #888; text-align: center; margin-top: 40px; }
+    .repo-search-results { margin-bottom: 12px; }
   </style>
 </head>
 
@@ -351,15 +369,26 @@
 
     <!-- Repositories -->
     <div id="repositoriesView" class="view">
-      <div style="padding:20px;overflow-y:auto">
-        <h3>Upload Documents</h3>
-        <input type="file" id="fileInput" multiple accept=".txt,.md">
-        <button id="uploadBtn" class="btn btn-primary" style="margin-top:8px">Upload</button>
-        <hr>
-        <h3>Search</h3>
-        <input type="text" id="searchInput" placeholder="Search query">
-        <button id="searchBtn" class="btn btn-primary" style="margin-top:8px">Search</button>
-        <div id="searchResultContainer" style="margin-top:20px"></div>
+      <div class="repo-panels">
+        <div class="repo-sidebar">
+          <h3>Repositories</h3>
+          <div id="repoList"></div>
+        </div>
+        <div class="repo-detail" id="repoDetail">
+          <div class="repo-placeholder" id="repoDetailPlaceholder">
+            Select a repository to browse files
+          </div>
+          <div id="repoDetailContent" style="display:none">
+            <h3 id="repoDetailName"></h3>
+            <div class="repo-search-row">
+              <input type="text" id="repoSearchInput" placeholder="Semantic search in this repo...">
+              <button id="repoSearchBtn" class="btn btn-primary">Search</button>
+            </div>
+            <div class="repo-search-results" id="repoSearchResults"></div>
+            <h4>Files</h4>
+            <div class="repo-filelist" id="repoFileList"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -478,7 +507,77 @@
           if (repo && !activeScopes.includes(repo)) { activeScopes.push(repo); renderScopePills(); }
           select.value = '';
         });
+        renderRepoList();
       } catch (e) { console.error("Failed to load repositories", e); }
+    }
+
+    function renderRepoList() {
+      const container = document.getElementById('repoList');
+      container.innerHTML = '';
+      allRepositories.forEach(r => {
+        const item = document.createElement('div');
+        item.className = 'menu-item';
+        item.textContent = r;
+        item.addEventListener('click', () => selectRepo(r));
+        container.appendChild(item);
+      });
+    }
+
+    async function selectRepo(name) {
+      document.getElementById('repoDetailPlaceholder').style.display = 'none';
+      document.getElementById('repoDetailContent').style.display = 'block';
+      document.getElementById('repoDetailName').textContent = name;
+      document.getElementById('repoSearchResults').innerHTML = '';
+      document.getElementById('repoSearchInput').value = '';
+
+      const fileList = document.getElementById('repoFileList');
+      fileList.innerHTML = '<div class="repo-placeholder">Loading files...</div>';
+      try {
+        const res = await fetch(`/api/repositories/${encodeURIComponent(name)}/files`);
+        const data = await res.json();
+        fileList.innerHTML = '';
+        if (!data.files || data.files.length === 0) {
+          fileList.innerHTML = '<div style="color:#888">No files found</div>';
+          return;
+        }
+        data.files.forEach(f => {
+          const el = document.createElement('div');
+          el.className = 'repo-file-item';
+          el.textContent = f;
+          fileList.appendChild(el);
+        });
+      } catch {
+        fileList.innerHTML = '<div style="color:#c00">Error loading files</div>';
+      }
+    }
+
+    async function searchInRepo() {
+      const repoName = document.getElementById('repoDetailName').textContent;
+      const query = document.getElementById('repoSearchInput').value;
+      if (!query.trim()) return;
+      const resultsContainer = document.getElementById('repoSearchResults');
+      resultsContainer.innerHTML = '<div class="repo-placeholder">Searching...</div>';
+      try {
+        const res = await fetch('/api/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query, top_k: 10, scopes: [repoName] })
+        });
+        const data = await res.json();
+        resultsContainer.innerHTML = '<h4 style="margin:0 0 6px 0">Search Results</h4>';
+        if (!data.results || data.results.length === 0) {
+          resultsContainer.innerHTML += '<div style="color:#888">No results</div>';
+          return;
+        }
+        data.results.forEach(r => {
+          const div = document.createElement('div');
+          div.className = 'repo-result-item';
+          div.innerHTML = `<strong>${r.title}</strong> (score ${r.score.toFixed(4)})<br>${r.snippet}`;
+          resultsContainer.appendChild(div);
+        });
+      } catch {
+        resultsContainer.innerHTML = '<div style="color:#c00">Search error</div>';
+      }
     }
 
     function renderScopePills() {
@@ -831,6 +930,8 @@
       inp.focus();
     }
 
+    document.getElementById('repoSearchBtn').addEventListener('click', searchInRepo);
+
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
     document.getElementById('newBtnSide').addEventListener('click', () => {
       switchView('chat');
@@ -848,35 +949,6 @@
     loadCachedModels();
     loadConversations();
     loadRepositories();
-
-    document.getElementById('uploadBtn').addEventListener('click', async () => {
-      const files = document.getElementById('fileInput').files;
-      if (!files.length) return;
-      const fd = new FormData();
-      for (const f of files) fd.append('files', f);
-      const res = await fetch('/api/ingest', { method: 'POST', body: fd });
-      const d = await res.json();
-      alert('Uploaded ' + d.ids.length + ' documents.');
-    });
-
-    document.getElementById('searchBtn').addEventListener('click', async () => {
-      const q = document.getElementById('searchInput').value;
-      if (!q) return;
-      const res = await fetch('/api/search', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: q, top_k: 10 })
-      });
-      const d = await res.json();
-      const c = document.getElementById('searchResultContainer');
-      c.innerHTML = '<h3>Search Results</h3>';
-      d.results.forEach(r => {
-        const div = document.createElement('div');
-        div.innerHTML = `<strong>${r.title}</strong> (score ${r.score.toFixed(4)}): ${r.snippet}`;
-        c.appendChild(div);
-      });
-    });
-
     document.getElementById('estimateBtnModels').addEventListener('click', async () => {
       const select = document.getElementById('modelsEstimateSelect');
       const input = document.getElementById('modelsEstimateInput');

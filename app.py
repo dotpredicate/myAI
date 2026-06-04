@@ -67,6 +67,26 @@ async def get_repositories():
     return JSONResponse(content={"repositories": repos})
 
 
+@app.get('/api/repositories/{repo_name}/files')
+async def get_repository_files(repo_name: str):
+    files = system.get_repository_files(repo_name)
+    return JSONResponse(content={"files": files})
+
+
+@app.post('/api/search')
+async def search(payload: dict = Body(...)):
+    query_text: str = payload.get('query', '')
+    top_k: int = int(payload.get('top_k', 3))
+    scopes: Optional[list[str]] = payload.get('scopes')
+    if not query_text:
+        return JSONResponse(status_code=400, content={'error': 'query required'})
+    results = []
+    for hit in await index.semantic_search(query_text, top_k, scopes=scopes):
+        snippet = hit.text[:200] + ('...' if len(hit.text) > 200 else '')
+        results.append({'id': hit.document_id, 'title': f"{hit.file_path} ({hit.chunk_index})", 'snippet': snippet, 'score': hit.score})
+    return JSONResponse(content={'results': results})
+
+
 @app.post('/api/conversations/prompt')
 async def prompt_model(request: Request):
     payload: dict[str, object] = await request.json()
@@ -92,11 +112,13 @@ async def prompt_model(request: Request):
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
 
+
 @app.get('/api/conversations')
 async def get_conversations():
     conn = mk_conn()
     conversations = fetch_conversations(conn)
     return JSONResponse(content=conversations)
+
 
 @app.get('/api/conversations/{conv_id}')
 async def get_conversation(conv_id: int):
@@ -105,6 +127,7 @@ async def get_conversation(conv_id: int):
     if not details:
         return JSONResponse(status_code=404, content={'error': 'Not found'})
     return JSONResponse(content=details)
+
 
 @app.delete('/api/conversations/{conv_id}')
 async def delete_conversation_endpoint(conv_id: int):
@@ -117,32 +140,24 @@ async def delete_conversation_endpoint(conv_id: int):
     except Exception as e:
         return JSONResponse(status_code=500, content={'error': str(e)})
 
-@app.post('/api/search')
-async def search(payload: dict = Body(...)):
-    query_text: str = payload.get('query', '')
-    top_k: int = int(payload.get('top_k', 3))
-    if not query_text:
-        return JSONResponse(status_code=400, content={'error': 'query required'})
-    results = []
-    for hit in await index.semantic_search(query_text, top_k):
-        snippet = hit.text[:200] + ('...' if len(hit.text) > 200 else '')
-        results.append({'id': hit.document_id, 'title': f"{hit.file_path} ({hit.chunk_index})", 'snippet': snippet, 'score': hit.score})
-    return JSONResponse(content={'results': results})
 
 @app.get('/api/estimate')
 async def estimate_model(model_id: str, n_ctx: int = 2048, device_metric: Optional[str] = None):
     data = await estimator.estimate_vram_remote(model_id, n_ctx=n_ctx, device_metric=device_metric)
     return JSONResponse(content=data)
 
+
 @app.get('/api/gpu-stats')
 async def gpu_stats():
     stats = estimator.get_gpu_stats()
     return JSONResponse(content={"free": stats.free_bytes, "total": stats.total_bytes})
 
+
 @app.post("/api/sync")
 async def sync(background_tasks: BackgroundTasks):
     background_tasks.add_task(index.synchronize)
     return JSONResponse({"status": "sync started"})
+
 
 @app.post('/api/conversations/{conv_id}/tool_calls/{msg_id}/decide')
 async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request):
@@ -176,6 +191,7 @@ async def continue_conversation_endpoint(conversation_id: int, request: Request)
         continue_conversation(conn, conversation_id, model_id, available_tools),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
+
 
 @app.get('/api/gpu-benchmark')
 async def run_gpu_benchmark(

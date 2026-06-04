@@ -1,17 +1,22 @@
-import os
 import hashlib
-import subprocess
 from pathlib import Path
 from typing import NamedTuple, List, Optional
 
 import database
 import documents
+from system import get_repositories, _get_repo_file_paths
 from inference.llama_cpp_server import LlamaCppEmbeddingServer
 from log_config import get_logger
 
 EMBEDDING_MODEL = "unsloth/embeddinggemma-300m-GGUF"
 embedding_server = LlamaCppEmbeddingServer(EMBEDDING_MODEL)
 logger = get_logger(__name__)
+
+INDEXED_EXTENSIONS = {
+    ".properties", ".md", ".txt", ".json", ".xml", ".csv", ".yml", ".yaml",
+    ".mill", ".java", ".c", ".cpp", ".html", ".hbs", ".js", ".ts",
+    ".py", ".sh", ".sql",
+}
 
 class SearchHit(NamedTuple):
     document_id: int
@@ -75,45 +80,11 @@ async def semantic_search(query: str, top_k: int, scopes: Optional[List[str]] = 
         return results
 
 async def synchronize():
-    """Incrementally sync repositories folder."""
-    from system import REPOSITORIES_DIR
-    for repo_dir in os.listdir(REPOSITORIES_DIR):
-        repo_full_path = str(Path(REPOSITORIES_DIR) / repo_dir)
-        is_git_result = subprocess.run(
-            ["git", "-C", repo_full_path, "rev-parse", "--is-inside-work-tree"],
-            capture_output=True,
-            text=True
-        )
-        is_git = is_git_result.returncode == 0
-
-        if is_git:
-            ls_git_result = subprocess.run(
-                ["git", "-C", repo_full_path, "ls-files"],
-                capture_output=True,
-                text=True
-            )
-            if ls_git_result.returncode != 0:
-                logger.error("Couldn't list directories of Git repo %s at %s: %s", repo_dir, repo_full_path, ls_git_result.stderr)
-                continue
-            files = ls_git_result.stdout.splitlines()
-        else:
-            files: list[str] = []
-            for root, _, fnames in os.walk(repo_full_path):
-                for fname in fnames:
-                    f = Path(root) / fname
-                    f = f.relative_to(repo_full_path)
-                    files.append(f)
-
-        for fname in files:
-            full_path = Path(repo_full_path) / fname
-            relative_path = str(full_path.relative_to(REPOSITORIES_DIR))
-
-            if fext := Path(fname).suffix.lower() not in {
-                ".properties", ".md", ".txt", ".json", ".xml", ".csv", ".yml", ".yaml", 
-                ".mill", ".java", ".c", ".cpp", ".html", ".hbs", ".js", ".ts",
-                ".py", ".sh", ".sql",
-            }:
-                logger.debug("%s - skipping unhandled extension %s", relative_path, fext)
+    """Incrementally sync repositories folder using system helpers."""
+    for repo_dir in get_repositories():
+        for relative_path, full_path in _get_repo_file_paths(repo_dir):
+            if Path(relative_path).suffix.lower() not in INDEXED_EXTENSIONS:
+                logger.debug("%s - skipping unhandled extension", relative_path)
                 continue
 
             try:
