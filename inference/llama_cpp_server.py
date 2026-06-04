@@ -3,7 +3,7 @@ import os
 import subprocess
 import httpx
 import openai
-from typing import AsyncGenerator, AsyncIterator, Optional
+from typing import AsyncIterator, Optional
 
 from domain import ConversationElement
 from inference.engine import InferenceProvider, Model, Tool, StreamingElement, FinishedElement
@@ -14,19 +14,6 @@ logger = get_logger(__name__)
 
 
 _server_processes: dict[str, subprocess.Popen] = {}
-
-async def _lazy_start_server(port: str, args: list[str]) -> None:
-    if port in _server_processes:
-        return
-    try:
-        cmd = ["llama-server", "--port", port, "--sleep-idle-seconds", "30"] + args
-        logger.info("Starting server on port %s: %s", port, ' '.join(cmd))
-        proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
-        _server_processes[port] = proc
-    except FileNotFoundError:
-        logger.error("llama-server not found in PATH.")
-        raise
-    await _wait_for_server(port, 10)
 
 async def _wait_for_server(port: str, timeout: int) -> None:
     url = f"http://localhost:{port}/v1/models"
@@ -49,13 +36,50 @@ async def _wait_for_server(port: str, timeout: int) -> None:
     except asyncio.TimeoutError:
         raise TimeoutError(f"Server on port {port} did not start within {timeout} seconds.")
 
-def stop_llama_servers() -> None:
-    """Terminate all managed llama-server processes."""
-    for port, process in list(_server_processes.items()):
+async def _lazy_start_server(port: str, args: list[str]) -> None:
+    if port in _server_processes:
+        return
+    try:
+        cmd = ["llama-server", "--port", port] + args
+        logger.info("Starting server on port %s: %s", port, ' '.join(cmd))
+        proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
+        _server_processes[port] = proc
+    except FileNotFoundError:
+        logger.error("llama-server not found in PATH.")
+        raise
+    await _wait_for_server(port, 60)
+
+async def stop_llama_servers() -> None:
+    """Terminate all managed llama-server processes concurrently.
+
+    Each process gets up to 10 seconds to shut down gracefully (SIGTERM).
+    If a process does not terminate within that time, it is killed with SIGKILL.
+    """
+    async def _stop_one(port: str, process: subprocess.Popen) -> None:
         logger.info("Terminating llama-server process %s on port %s", process.pid, port)
         process.terminate()
-        process.wait()
-        del _server_processes[port]
+        loop = asyncio.get_running_loop()
+        try:
+            await asyncio.wait_for(
+                loop.run_in_executor(None, process.wait),
+                timeout=10,
+            )
+            logger.info("Process %s terminated gracefully.", process.pid)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Process %s did not terminate within 20s, sending SIGKILL.",
+                process.pid,
+            )
+            process.kill()
+            await loop.run_in_executor(None, process.wait)
+            logger.info("Process %s killed.", process.pid)
+
+    tasks = [
+        _stop_one(port, process)
+        for port, process in list(_server_processes.items())
+    ]
+    await asyncio.gather(*tasks)
+    _server_processes.clear()
 
 class LlamaCppServerProvider(InferenceProvider):
     """Inference provider backed by a local llama.cpp server process."""
@@ -101,8 +125,8 @@ class LlamaCppEmbeddingServer:
     def __init__(self, model: str, port: str = "2345"):
         self.port = port
         self.model = model
-        endpoint = os.getenv('LLAMA_CPP_ENDPOINT', f'http://localhost:{port}')
-        self._client = openai.Client(api_key='dummy', base_url=endpoint + '/v1')
+        self.endpoint = f'http://localhost:{port}'
+        self._client = openai.Client(api_key='dummy', base_url=self.endpoint + '/v1')
 
     async def _lazy_start(self):
         await _lazy_start_server(self.port, ["--embedding", "-hf", self.model])
@@ -120,7 +144,7 @@ class LlamaCppEmbeddingServer:
         # HACK: The first request exceeds the default timeout because the model is being loaded
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
-                f"http://localhost:{self.port}/tokenize",
+                f"{self.endpoint}/tokenize",
                 json={"content": text, "with_pieces": True}
             )
         return response.json()["tokens"]

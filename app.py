@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
     init_database()
     asyncio.create_task(index.synchronize())
     yield
-    llama_cpp_server.stop_llama_servers()
+    await llama_cpp_server.stop_llama_servers()
 
 app = FastAPI(title="MyAI FastAPI", lifespan=lifespan)
 

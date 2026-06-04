@@ -1,16 +1,20 @@
+import asyncio
 import hashlib
 from pathlib import Path
 from typing import NamedTuple, List, Optional
 
 import database
 import documents
-from system import get_repositories, _get_repo_file_paths
+from system import get_repositories, get_repo_documents
 from inference.llama_cpp_server import LlamaCppEmbeddingServer
 from log_config import get_logger
+
+_sync_lock = asyncio.Lock()
 
 EMBEDDING_MODEL = "unsloth/embeddinggemma-300m-GGUF"
 embedding_server = LlamaCppEmbeddingServer(EMBEDDING_MODEL)
 logger = get_logger(__name__)
+# logger.setLevel("DEBUG")
 
 INDEXED_EXTENSIONS = {
     ".properties", ".md", ".txt", ".json", ".xml", ".csv", ".yml", ".yaml",
@@ -25,8 +29,14 @@ class SearchHit(NamedTuple):
     score: float
     text: str
 
-async def get_token_chunks(text: str, max_tokens: int = 400, overlap: int = 50) -> tuple[list[list[int]], list[str]]:
-    all_tokens = await embedding_server.tokenize(text)
+async def get_token_chunks(text: str, max_tokens: int = 400, overlap: int = 50, char_chunk_size: int = 100_000) -> tuple[list[list[int]], list[str]]:
+    # Split the text into character-sized chunks before tokenizing to avoid
+    # sending enormous documents to the tokenizer in one request.
+    all_tokens: list[dict] = []
+    for i in range(0, len(text), char_chunk_size):
+        sub_text = text[i : i + char_chunk_size]
+        sub_tokens = await embedding_server.tokenize(sub_text)
+        all_tokens.extend(sub_tokens)
 
     token_ids: list[list[int]] = []
     text_chunks: list[str] = []
@@ -81,31 +91,39 @@ async def semantic_search(query: str, top_k: int, scopes: Optional[List[str]] = 
 
 async def synchronize():
     """Incrementally sync repositories folder using system helpers."""
-    for repo_dir in get_repositories():
-        for relative_path, full_path in _get_repo_file_paths(repo_dir):
-            if Path(relative_path).suffix.lower() not in INDEXED_EXTENSIONS:
-                logger.debug("%s - skipping unhandled extension", relative_path)
-                continue
+    if _sync_lock.locked():
+        logger.info("Indexing is already running, skipping")
+        return
+    async with _sync_lock:
+        logger.info("Indexing started")
+        for repo_dir in get_repositories():
+            for relative_path, full_path in get_repo_documents(repo_dir):
+                logger.debug("Indexing %s", full_path)
+                if Path(relative_path).suffix.lower() not in INDEXED_EXTENSIONS:
+                    logger.debug("%s - skipping unhandled extension", relative_path)
+                    continue
+                
+                try:
+                    file_bytes = full_path.read_bytes()
+                    file_text = file_bytes.decode()
+                except Exception as exc:
+                    logger.warning("%s - unreadable file: %s", relative_path, exc)
+                    continue
 
-            try:
-                file_bytes = full_path.read_bytes()
-                file_text = file_bytes.decode()
-            except Exception as exc:
-                logger.warning("%s - unreadable file: %s", relative_path, exc)
-                continue
+                file_hash = hashlib.sha256(file_bytes).hexdigest()
+                with database.mk_conn() as conn:
+                    existing = documents.get_document_by_path(conn, relative_path)
+                if existing and existing[1] == file_hash:
+                    logger.debug("%s - unchanged checksum %s", relative_path, file_hash)
+                    continue
 
-            file_hash = hashlib.sha256(file_bytes).hexdigest()
-            with database.mk_conn() as conn:
-                existing = documents.get_document_by_path(conn, relative_path)
-            if existing and existing[1] == file_hash:
-                logger.debug("%s - unchanged checksum %s", relative_path, file_hash)
-                continue
+                token_ids, chunk_texts = await get_token_chunks(file_text)
+                embeddings = await embedding_server.embed(EMBEDDING_MODEL, token_ids)
+                assert len(embeddings) == len(chunk_texts)
 
-            token_ids, chunk_texts = await get_token_chunks(file_text)
-            embeddings = await embedding_server.embed(EMBEDDING_MODEL, token_ids)
-            assert len(embeddings) == len(chunk_texts)
-
-            with database.mk_conn() as conn:
-                doc_id = documents.upsert_document(conn, relative_path, file_hash, file_text)
-                documents.replace_document_chunks(conn, doc_id, chunk_texts, embeddings)
+                with database.mk_conn() as conn:
+                    doc_id = documents.upsert_document(conn, relative_path, file_hash, file_text)
+                    documents.replace_document_chunks(conn, doc_id, chunk_texts, embeddings)
+                    conn.commit()
                 logger.info("%s - generated %s embeddings", relative_path, len(embeddings))
+    print("Indexing finished")

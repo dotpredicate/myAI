@@ -19,7 +19,7 @@ def get_repositories() -> List[str]:
         return []
 
 
-def _get_repo_file_paths(repo_name: str) -> List[Tuple[str, Path]]:
+def get_repo_documents(repo_name: str) -> List[Tuple[str, Path]]:
     """Returns list of (relative_path, full_path) for every file in a repository.
     Supports both git repos (using ls-files) and non-git repos (os.walk)."""
     repo_path = Path(REPOSITORIES_DIR) / repo_name
@@ -53,7 +53,7 @@ def _get_repo_file_paths(repo_name: str) -> List[Tuple[str, Path]]:
 
 def get_repository_files(repo_name: str) -> List[str]:
     """List file names in a repository directory (relative paths)."""
-    return [rel for rel, _ in _get_repo_file_paths(repo_name)]
+    return [rel for rel, _ in get_repo_documents(repo_name)]
 
 def is_safe_vpath(vpath: Path, expected_vroot: Path, allowed_scopes: Optional[List[str]] = None) -> tuple[bool, str]:
     try:

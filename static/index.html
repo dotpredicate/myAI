@@ -17,6 +17,7 @@
       color: #222;
     }
 
+    /* Sidebar */
     #sidebar {
       background: #f5f5f5;
       display: flex;
@@ -25,13 +26,10 @@
       height: 100vh;
       overflow: hidden;
     }
-
     #sidebarHeader { text-align: center; flex-shrink: 0; padding: 10px 0; }
     #sidebarHeader h2 { margin: 0; font-size: 18px; }
-
     #sidebarNav { flex: 1; overflow-y: auto; min-height: 0; }
     #sidebarFooter { flex-shrink: 0; }
-
     .menu-item {
       display: flex;
       justify-content: space-between;
@@ -47,7 +45,6 @@
     }
     .menu-item:hover { background: #f8f8f8; border-color: #bbb; }
     .menu-item.selected { border-color: #444; }
-
     .conv-delete-btn {
       background: none;
       border: none;
@@ -71,28 +68,24 @@
     .view { display: none; flex: 1; flex-direction: column; overflow: hidden; }
     .view.active { display: flex; }
 
+    /* Chat window */
     #chatHistory { flex: 1; padding: 10px; overflow: auto; background: #fff; }
     #inputArea { padding: 10px; background: #fff; border-top: 1px solid #eee; }
-
     textarea {
       font-size: 1.25em;
       width: 100%;
       box-sizing: border-box;
     }
-
     textarea:disabled, button:disabled { opacity: 0.5; cursor: not-allowed; }
-
+    /* Chat - messages */
     .msg-label { font-weight: bold; margin-top: 1em; }
     .msg-body { margin-top: .5em; overflow-wrap: break-word; word-break: break-word; }
-
     .msg-body table { border-collapse: collapse; width: 100%; margin-top: 0.5em; }
     .msg-body th, .msg-body td { border: 1px solid #ddd; padding: 4px; }
     .msg-body th { background: #f9f9f9; }
-
     .blocked { background-color: #ffe6e6; border-left: 4px solid #f00; }
-
     .msg-header { display: flex; justify-content: space-between; align-items: center; }
-
+    /* Chat - tool calls */
     .diff-view {
       background: #f8f8f8;
       padding: 10px;
@@ -104,7 +97,18 @@
       margin-top: 10px;
       overflow-x: auto;
     }
-
+    .reject-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 10px;
+      padding: 10px;
+      background: #fdf2f2;
+      border: 1px solid #f5c6cb;
+      border-radius: 4px;
+    }
+    .reject-input-row { display: flex; gap: 8px; }
+    /* Chat - scope selection */
     #scopeSelectorContainer { margin-bottom: 10px; }
     #scopePills { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
     .scope-pill {
@@ -118,19 +122,6 @@
     }
     .scope-pill .remove-btn { cursor: pointer; font-weight: bold; color: #888; }
     .scope-pill .remove-btn:hover { color: #f00; }
-
-    /* Reject panel */
-    .reject-panel {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      margin-top: 10px;
-      padding: 10px;
-      background: #fdf2f2;
-      border: 1px solid #f5c6cb;
-      border-radius: 4px;
-    }
-    .reject-input-row { display: flex; gap: 8px; }
 
     .card {
       background: #fff;
@@ -163,7 +154,6 @@
     .btn-reject:hover:not(:disabled) { background: #666; border-color: #666; }
     .btn-block { width: 100%; }
 
-    /* Inputy */
     input, select {
       font-size: 13px;
       padding: 5px 8px;
@@ -173,13 +163,12 @@
     }
     input:focus, select:focus, textarea:focus { outline: none; border-color: #007bff; }
 
-    /* Field row — para label + input w poziomie */
     .field-row { display: flex; gap: 10px; margin-bottom: 10px; }
     .field { flex: 1; }
     .field label { display: block; font-size: 0.85em; color: #666; margin-bottom: 4px; }
     .field input, .field select { width: 100%; }
 
-    /* Stat grid — siatka 2x2 dla wyników */
+    /* Inference - system */
     .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
     .stat {
       background: #f9f9f9;
@@ -203,14 +192,12 @@
     }
     .tab:hover { color: #333; background: #f0f0f0; }
     .tab.active { color: #007bff; border-bottom-color: #007bff; }
-
     .tab-pane { display: none; flex: 1; overflow-y: auto; padding: 20px; }
     .tab-pane.active { display: block; }
 
-    /* Grid layout dla tab-pane */
     .pane-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 
-    /* Lista modeli */
+    /* Models */
     .model-list {
       background: #f9f9f9;
       border: 1px solid #e0e0e0;
@@ -223,7 +210,6 @@
     .model-item { padding: 4px 8px; border-bottom: 1px solid #eee; }
     .model-item:last-child { border-bottom: none; }
 
-    /* Result box */
     .result-box {
       margin-top: 12px;
       padding: 10px;
@@ -234,7 +220,6 @@
     }
     .result-box.error { border-color: #f5c6cb; background: #fdf2f2; }
 
-    /* Loading spinner */
     @keyframes spin { to { transform: rotate(360deg); } }
     .spinner {
       display: inline-block;
@@ -247,7 +232,6 @@
       margin-right: 8px;
     }
 
-    /* Copy button */
     .copy-btn {
       background: #eee;
       border: 1px solid #ccc;
@@ -372,6 +356,7 @@
       <div class="repo-panels">
         <div class="repo-sidebar">
           <h3>Repositories</h3>
+          <button id="updateIndexBtn" class="btn btn-primary btn-block" style="margin-bottom:10px">Update index</button>
           <div id="repoList"></div>
         </div>
         <div class="repo-detail" id="repoDetail">
@@ -931,6 +916,10 @@
     }
 
     document.getElementById('repoSearchBtn').addEventListener('click', searchInRepo);
+
+    document.getElementById('updateIndexBtn').addEventListener('click', () => {
+      fetch('/api/sync', { method: 'POST' }).catch(e => console.error('Sync failed', e));
+    });
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
     document.getElementById('newBtnSide').addEventListener('click', () => {
