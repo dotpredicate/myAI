@@ -1,76 +1,126 @@
+import asyncio
 import os
 import subprocess
-import time
 import httpx
 import openai
-from typing import List, Any, Dict
+from typing import AsyncGenerator, AsyncIterator, Optional
 
 from domain import ConversationElement
-from .openai import DeltaProcessor
+from inference.engine import InferenceProvider, Model, Tool, StreamingElement, FinishedElement
+from .openai import DeltaProcessor, _to_oai_messages, _to_oai_tools
+from log_config import get_logger
 
-# LLM Configuration
-LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
-completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
+logger = get_logger(__name__)
 
-_server_processes: Dict[str, subprocess.Popen] = {}
 
-def _start_server(port: str, args: List[str]):
-    global _server_processes
-    if port not in _server_processes:
-        try:
-            cmd = ["llama-server", "--port", port] + args
-            print(f"Starting server on port {port}: {' '.join(cmd)}")
-            proc = subprocess.Popen(
-                cmd,
-                preexec_fn=os.setsid
-            )
-            _server_processes[port] = proc
-        except FileNotFoundError:
-            print("Error: llama-server not found in PATH.")
-            raise
+_server_processes: dict[str, subprocess.Popen] = {}
 
-def _wait_for_server(port: str, timeout: int = 15):
-    """Wait for the server to respond to HTTP requests."""
+async def _lazy_start_server(port: str, args: list[str]) -> None:
+    if port in _server_processes:
+        return
+    try:
+        cmd = ["llama-server", "--port", port, "--sleep-idle-seconds", "30"] + args
+        logger.info("Starting server on port %s: %s", port, ' '.join(cmd))
+        proc = subprocess.Popen(cmd, preexec_fn=os.setsid)
+        _server_processes[port] = proc
+    except FileNotFoundError:
+        logger.error("llama-server not found in PATH.")
+        raise
+    await _wait_for_server(port, 10)
+
+async def _wait_for_server(port: str, timeout: int) -> None:
     url = f"http://localhost:{port}/v1/models"
-    start_time = time.time()
-    print(f"Waiting for server on port {port} to be ready...")
-    while time.time() - start_time < timeout:
-        try:
-            response = httpx.get(url, timeout=1.0)
-            if response.status_code in (200, 401):  # 401 is also valid for dummy API key
-                print(f"Server on port {port} is ready.")
-                return
-        except Exception:
-            pass
-        time.sleep(1.0)
-    raise TimeoutError(f"Server on port {port} did not start within {timeout} seconds.")
+    logger.info("Waiting for server on port %s to be ready...", port)
 
-def _ensure_server_started():
-    _start_server("1234", ["--offline", "--jinja", "--chat-template-kwargs", '{"preserve_thinking":true}'])
+    async def _poll() -> None:
+        async with httpx.AsyncClient(timeout=1.0) as client:
+            while True:
+                try:
+                    response = await client.get(url)
+                    if response.status_code in (200, 401):
+                        return
+                except httpx.ConnectError:
+                    pass
+                await asyncio.sleep(1)
 
-def ensure_embedding_server_started():
-    _start_server("2345", ["--embedding", "-hf", "unsloth/embeddinggemma-300m-GGUF"])
-    _wait_for_server("2345")
+    try:
+        await asyncio.wait_for(_poll(), timeout=timeout)
+        logger.info("Server on port %s is ready.", port)
+    except asyncio.TimeoutError:
+        raise TimeoutError(f"Server on port {port} did not start within {timeout} seconds.")
 
-def stop():
-    global _server_processes
+def stop_llama_servers() -> None:
+    """Terminate all managed llama-server processes."""
     for port, process in list(_server_processes.items()):
-        print(f"Terminating llama-server process {process.pid} on port {port}")
+        logger.info("Terminating llama-server process %s on port %s", process.pid, port)
         process.terminate()
         process.wait()
         del _server_processes[port]
 
-def run_chat_completion_stream(model_id: str, context: list[tuple[int, ConversationElement]], functions: List[Any]):
-    from .openai import _to_oai_messages
-    _ensure_server_started()
-    return completions_endpoint.chat.completions.create(
-        model=model_id,
-        messages=_to_oai_messages(context),
-        reasoning_effort='high',
-        stream=True,
-        tools=functions,
-    )
+class LlamaCppServerProvider(InferenceProvider):
+    """Inference provider backed by a local llama.cpp server process."""
 
-def list_models():
-    _ensure_server_started()
-    return completions_endpoint.models.list()
+    def __init__(self, port: str = "1234", embedding_port: str = "2345"):
+        self.port = port
+        self.embedding_port = embedding_port
+        endpoint = os.getenv('LLAMA_CPP_ENDPOINT', f'http://localhost:{port}')
+        self._client = openai.Client(api_key='dummy', base_url=endpoint)
+
+    async def _lazy_start(self):
+        await _lazy_start_server(self.port, ["--offline", "--jinja", "--chat-template-kwargs", '{"preserve_thinking":true}'])
+
+    async def run_chat_completion_stream(
+        self,
+        model_id: str,
+        context: list[tuple[int, ConversationElement]],
+        tools: list[Tool],
+    ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
+        await self._lazy_start()
+        raw_stream = self._client.chat.completions.create(  # type: ignore[call-overload]
+            model=model_id,
+            messages=_to_oai_messages(context),
+            reasoning_effort='high',
+            stream=True,
+            tools=_to_oai_tools(tools),
+        )
+        processor = DeltaProcessor()
+        for chunk in raw_stream:
+            yield processor.process(chunk)
+
+    async def list_models(self) -> list[Model]:
+        await self._lazy_start()
+        raw_models = self._client.models.list()
+        return [
+            Model(id=m.id, created=m.created, owned_by=m.owned_by)
+            for m in raw_models
+        ]
+
+class LlamaCppEmbeddingServer:
+    """Manages a local llama.cpp server process for embeddings."""
+
+    def __init__(self, model: str, port: str = "2345"):
+        self.port = port
+        self.model = model
+        endpoint = os.getenv('LLAMA_CPP_ENDPOINT', f'http://localhost:{port}')
+        self._client = openai.Client(api_key='dummy', base_url=endpoint + '/v1')
+
+    async def _lazy_start(self):
+        await _lazy_start_server(self.port, ["--embedding", "-hf", self.model])
+
+    async def embed(self, model: str, input: str | list[str] | list[int] | list[list[int]]) -> list[list[float]]:
+        if model != self.model:
+        # FIXME
+            raise ValueError(f"This llama.cpp server only supports {self.model}, wanted to embed with {model}")
+        await self._lazy_start()
+        resp = self._client.embeddings.create(model=model, input=input)
+        return [e.embedding for e in resp.data]
+
+    async def tokenize(self, text: str) -> list[dict[str, object]]:
+        await self._lazy_start()
+        # HACK: The first request exceeds the default timeout because the model is being loaded
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"http://localhost:{self.port}/tokenize",
+                json={"content": text, "with_pieces": True}
+            )
+        return response.json()["tokens"]

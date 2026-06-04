@@ -1,4 +1,4 @@
-from typing import Dict, Literal, Optional, Any, Generator, List
+from typing import AsyncGenerator, Literal, Optional, Any, Generator, List
 import json
 from psycopg2.extensions import connection
 
@@ -19,12 +19,14 @@ from inference.engine import (
     FinishedToolCall,
     FinishedToolCallResult,
     FinishedElement,
+    Tool,
 )
 
-from inference.llama_cpp_server import (
-    DeltaProcessor,
-    run_chat_completion_stream
-)
+from inference import default_provider
+from log_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class ConversationBlockedError(Exception):
     def __init__(self, blocking_message_id: int):
@@ -129,17 +131,15 @@ def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[list[
     return ctx, scopes
 
 
-def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: List[Any]) -> Generator[bytes, None, None]:
+async def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: list[Tool]) -> AsyncGenerator[bytes, None]:
     from tools import run_tool_call
     context, scopes = get_messages_for_continuation(conn, conv_id)
 
     run_next_loop = True
     while run_next_loop:
-        processor = DeltaProcessor()
-        chat_gen_inner = run_chat_completion_stream(model_id, context, functions)
+        chat_gen_inner = default_provider.run_chat_completion_stream(model_id, context, functions)
         run_next_loop = False
-        for chunk in chat_gen_inner:
-            (delta, aggregated_element) = processor.process(chunk)
+        async for delta, aggregated_element in chat_gen_inner:
             if aggregated_element is not None:
                 match aggregated_element:
                     case FinishedMessage() | FinishedThinking():
@@ -148,14 +148,15 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
                         context.append((msg_id, result))
                         yield json.dumps({'type': 'finalized', 'id': msg_id}).encode() + b'\n'
                     case FinishedToolCall():
+                        assert isinstance(aggregated_element, FinishedToolCall)
                         # Pass the extracted scopes to the tool call
-                        result = run_tool_call(aggregated_element, scopes=scopes)
-                        result_element = to_conv_elem(result)
+                        tool_result = run_tool_call(aggregated_element, scopes=scopes)
+                        result_element = to_conv_elem(tool_result)
                         msg_id = insert_message(conn, conv_id, 'assistant', result_element)
                         conn.commit()
                         yield result_element.model_dump_json().encode() + b'\n'
                         context.append((msg_id, result_element))
-                        if result.is_blocking:
+                        if tool_result.is_blocking:
                             cur = conn.cursor()
                             cur.execute(
                                 "UPDATE conversations SET blocking_message_id = %s WHERE id = %s",
@@ -171,17 +172,17 @@ def continue_conversation(conn: connection, conv_id: int, model_id: str, functio
                 elif isinstance(delta, StreamingThinking):
                     yield json.dumps({'type': 'thinking', 'content': delta.content}).encode() + b'\n'
     conn.commit()
-    print("Stream finished")
+    logger.info("Stream finished")
 
 
-def get_conversations(conn: connection) -> List[Dict[str, Any]]:
+def get_conversations(conn: connection) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")
         rows = cur.fetchall()
     return [{'id': r[0], 'title': r[1], 'created_at': r[2].isoformat()} for r in rows]
 
 
-def get_conversation_details(conn: connection, conv_id: int) -> Optional[Dict[str, Any]]:
+def get_conversation_details(conn: connection, conv_id: int) -> Optional[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute("SELECT id, title, created_at, blocking_message_id FROM conversations WHERE id = %s", (conv_id,))
         row = cur.fetchone()
@@ -202,7 +203,7 @@ def get_conversation_details(conn: connection, conv_id: int) -> Optional[Dict[st
         }
 
 
-def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: Literal['approve'] | Literal['reject'], comment: str = "") -> bool:
+def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> bool:
     cur = conn.cursor()
     cur.execute('SELECT elements FROM messages WHERE id = %s AND conversation_id = %s', (msg_id, conv_id))
     row = cur.fetchone()

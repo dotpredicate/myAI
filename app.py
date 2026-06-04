@@ -1,10 +1,11 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, FastAPI, Request, Body
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from database import mk_conn, init_database
-from typing import Optional, Any
+from typing import cast, Optional
 from conversation import (
     prepare_conversation_with_prompt,
     ConversationBlockedError,
@@ -14,19 +15,22 @@ from conversation import (
     continue_conversation,
     delete_conversation
 )
+from log_config import get_logger, setup_logging
 import index
-from inference import list_models, llama_cpp_server, estimator
+from inference import default_provider, estimator, llama_cpp_server
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from tools import TOOL_REGISTRY
 import system
-FUNCTIONS = [t['schema'] for t in TOOL_REGISTRY]
+
+logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    setup_logging()
     init_database()
-    # await index.synchronize()
+    asyncio.create_task(index.synchronize())
     yield
-    llama_cpp_server.stop()
+    llama_cpp_server.stop_llama_servers()
 
 app = FastAPI(title="MyAI FastAPI", lifespan=lifespan)
 
@@ -39,10 +43,9 @@ async def read_index():
 @app.get('/api/models')
 async def get_models():
     try:
-        res = list_models()
-        models = list(res)
+        models = await default_provider.list_models()
     except Exception as e:
-        print(f"Error fetching models: {e}")
+        logger.error("Error fetching models: %s", e)
         models = []
     return JSONResponse(content={"models": [{'id': m.id, 'name': m.id} for m in models]})
 
@@ -55,13 +58,13 @@ async def get_repositories():
 
 @app.post('/api/conversations/prompt')
 async def prompt_model(request: Request):
-    payload: dict[str, Any] = await request.json()
-    prompt: str = payload.get('prompt', '')
-    model_id: Optional[str] = payload.get('model_id')
-    scopes: Optional[list[str]] = payload.get('scopes')
+    payload: dict[str, object] = await request.json()
+    prompt = cast(str, payload.get('prompt', ''))
+    model_id = cast(Optional[str], payload.get('model_id'))
+    scopes = cast(Optional[list[str]], payload.get('scopes'))
     if model_id is None:
         return JSONResponse(status_code=400, content={'error': 'model_id required'})
-    conversation_id: Optional[int] = payload.get('conversation_id')
+    conversation_id = cast(Optional[int], payload.get('conversation_id'))
 
     try:
         conn = mk_conn()
@@ -72,8 +75,9 @@ async def prompt_model(request: Request):
             content={"error": "Action required", "blocking_message_id": e.blocking_message_id}
         )
 
+    available_tools = TOOL_REGISTRY
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, FUNCTIONS),
+        continue_conversation(conn, conversation_id, model_id, available_tools),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
 
@@ -109,7 +113,7 @@ async def search(payload: dict = Body(...)):
     if not query_text:
         return JSONResponse(status_code=400, content={'error': 'query required'})
     results = []
-    for hit in index.semantic_search(query_text, top_k):
+    for hit in await index.semantic_search(query_text, top_k):
         snippet = hit.text[:200] + ('...' if len(hit.text) > 200 else '')
         results.append({'id': hit.document_id, 'title': f"{hit.file_path} ({hit.chunk_index})", 'snippet': snippet, 'score': hit.score})
     return JSONResponse(content={'results': results})
@@ -156,8 +160,9 @@ async def continue_conversation_endpoint(conversation_id: int, request: Request)
     details = get_conversation_details(conn, conversation_id)
     if not details:
         return JSONResponse(status_code=404, content={'error': 'conversation not found'})
+    available_tools = TOOL_REGISTRY
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, FUNCTIONS),
+        continue_conversation(conn, conversation_id, model_id, available_tools),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
 

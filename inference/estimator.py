@@ -2,6 +2,10 @@ import subprocess
 import json
 from typing import TypedDict, NamedTuple, Optional
 from .hf_gguf import resolve_hf_alias
+from log_config import get_logger
+
+logger = get_logger(__name__)
+
 
 class EstimateResult(TypedDict, total=False):
     ram: int
@@ -50,7 +54,7 @@ async def estimate_vram_remote(
         output = json.loads(result.stdout)
         
         # Log for debugging
-        print(f"GGUF Parser output: {output}")
+        logger.info("GGUF Parser output: %s", output)
 
         estimate = output.get("estimate", {})
         items = estimate.get("items", [])
@@ -77,8 +81,7 @@ async def estimate_vram_remote(
             "kv_cache_bytes": total_ram
         }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
+        logger.exception("Estimation failed")
         return {"error": f"Estimation failed: {str(e)}"}
 
 class GpuStats(NamedTuple):

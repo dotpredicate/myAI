@@ -2,12 +2,12 @@ import json
 import subprocess
 import difflib
 from pathlib import Path
-from typing import Callable, Any, Optional, List, TypedDict
-from conversation import FinishedToolCall, FinishedToolCallResult
+from typing import Optional
+from inference.engine import FinishedToolCall, FinishedToolCallResult, Tool
 import system
 import index
 
-def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
+def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     params = json.loads(tool_call.parameters)
     command: str = params['command']
     if not isinstance(command, str):
@@ -18,7 +18,7 @@ def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, sco
     output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
     return FinishedToolCallResult(tool_call.name, tool_call.parameters, output_str)
 
-def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
+def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     params = json.loads(tool_call.parameters)
     prompt: str = params["prompt"]
     top_k: int = int(params.get("top_k", 5))
@@ -37,7 +37,7 @@ def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, s
         result=json.dumps({"results": json.dumps(results)})
     )
 
-def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
+def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, REPOSITORIES_DIR, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -108,7 +108,7 @@ def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, s
         return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
-def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[List[str]] = None) -> FinishedToolCallResult:
+def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, REPOSITORIES_DIR, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -169,29 +169,20 @@ def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scop
         return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": str(e)}))
 
-class Tool(TypedDict):
-    name: str
-    schema: Any
-    executor: Callable[[FinishedToolCall, bool, List[str]], FinishedToolCallResult]
 
 
-TOOL_REGISTRY: List[Tool] = [
+TOOL_REGISTRY: list[Tool] = [
     {
         "name": "run_shell_command",
         "schema": {
             "name": "run_shell_command",
             "description": "Execute a shell command and return the output.",
-            "type": "function",
-            "function": {
-                "name": "run_shell_command",
-                "description": "Execute a shell command and return the output.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {"type": "string", "description": "Command to execute"},
-                    },
-                    "required": ["command"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Command to execute"},
                 },
+                "required": ["command"],
             },
         },
         "executor": run_shell_command
@@ -204,29 +195,21 @@ TOOL_REGISTRY: List[Tool] = [
                 "Search the repositories for the most relevant documents "
                 "based on a natural-language prompt."
             ),
-            "type": "function",
-            "function": {
-                "name": "run_semantic_search",
-                "description": (
-                    "Search the repositories for the most relevant documents "
-                    "based on a natural-language prompt."
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "prompt": {
-                            "type": "string",
-                            "description": "Natural-language query to search for",
-                        },
-                        "top_k": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 20,
-                            "description": "Number of documents to return",
-                        },
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Natural-language query to search for",
                     },
-                    "required": ["prompt"],
+                    "top_k": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
+                        "description": "Number of documents to return",
+                    },
                 },
+                "required": ["prompt"],
             },
         },
         "executor": run_semantic_search
@@ -236,18 +219,13 @@ TOOL_REGISTRY: List[Tool] = [
         "schema": {
             "name": "propose_replace",
             "description": "Propose replacing a target file in the repositories folder with a source file from the workspace.",
-            "type": "function",
-            "function": {
-                "name": "propose_replace",
-                "description": "Replace a file in repositories with a file from workspace. Provide absolute paths: target='/repositories/foo/bar.txt', source='/workspace/baz/qux.txt'. Do not use '..'.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
-                        "source": {"type": "string", "description": "Absolute path to source file in workspace folder (e.g., '/workspace/baz/qux.txt')"},
-                    },
-                    "required": ["target", "source"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
+                    "source": {"type": "string", "description": "Absolute path to source file in workspace folder (e.g., '/workspace/baz/qux.txt')"},
                 },
+                "required": ["target", "source"],
             },
         },
         "executor": run_propose_replace
@@ -257,25 +235,20 @@ TOOL_REGISTRY: List[Tool] = [
         "schema": {
             "name": "propose_diff",
             "description": "Propose applying a diff file from the workspace to a target file in the repositories.",
-            "type": "function",
-            "function": {
-                "name": "propose_diff",
-                "description": "Apply a diff from workspace to a target file in repositories. Provide absolute paths: target='/repositories/foo/bar.txt', diff_path='/workspace/patch.diff'. Do not use '..'.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
-                        "diff_path": {"type": "string", "description": "Absolute path to diff file in workspace folder (e.g., '/workspace/patch.diff')"},
-                    },
-                    "required": ["target", "diff_path"],
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {"type": "string", "description": "Absolute path to target file in repositories folder (e.g., '/repositories/foo/bar.txt')"},
+                    "diff_path": {"type": "string", "description": "Absolute path to diff file in workspace folder (e.g., '/workspace/patch.diff')"},
                 },
+                "required": ["target", "diff_path"],
             },
         },
         "executor": run_propose_diff
     }
 ]
 
-def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: List[str] = []) -> FinishedToolCallResult:
+def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: list[str] = []) -> FinishedToolCallResult:
     for entry in TOOL_REGISTRY:
         if entry["name"] == call.name:
             try:

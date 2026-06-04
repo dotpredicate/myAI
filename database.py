@@ -5,6 +5,9 @@ import os
 import glob
 import hashlib
 import binascii
+from log_config import get_logger
+
+logger = get_logger(__name__)
 
 def mk_conn():
     ret = psycopg2.connect(
@@ -40,7 +43,7 @@ def init_database():
         with mk_conn() as conn, conn.cursor() as cur:
             cur.execute("SELECT 1 FROM migrations WHERE name = %s", (migration_name,))
             if cur.fetchone():
-                print(f'Skipping already executed migration: {migration_name}')
+                logger.info("Skipping already executed migration: %s", migration_name)
                 continue
             with open(migration_file, 'r') as f:
                 sql = f.read()
@@ -57,5 +60,5 @@ def init_database():
                 (migration_name, hash_str, start_time, end_time)
             )
             conn.commit()
-        print(f'Applied migration: {migration_file}')
-    print('Migrations completed')
+        logger.info("Applied migration: %s", migration_file)
+    logger.info("Migrations completed")

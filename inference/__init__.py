@@ -1,4 +1,5 @@
 from .engine import (
+    InferenceProvider,
     StreamingMessage,
     StreamingThinking,
     StreamingToolCall,
@@ -9,8 +10,8 @@ from .engine import (
     StreamingElement,
     FinishedElement,
 )
-from .llama_cpp_server import (
-    DeltaProcessor,
-    run_chat_completion_stream,
-    list_models
-)
+from .llama_cpp_server import LlamaCppServerProvider, LlamaCppEmbeddingServer
+from .openai import DeltaProcessor
+
+# Default provider instance for the built-in llama.cpp server
+default_provider: LlamaCppServerProvider = LlamaCppServerProvider()

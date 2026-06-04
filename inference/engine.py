@@ -1,34 +1,84 @@
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Literal, Optional, Union
+from typing import AsyncGenerator, AsyncIterator, Callable, Generator, Iterator, Optional, TypedDict, Union
+
+from domain import ConversationElement
+
+class Tool(TypedDict):
+    name: str
+    schema: FunctionDefinition
+    executor: Callable[[FinishedToolCall, bool, list[str]], FinishedToolCallResult]
+
+FunctionParameters = dict[str, object]
+
+class FunctionDefinition(TypedDict):
+    name: str
+    description: str
+    parameters: FunctionParameters
+
+
+class InferenceProvider(ABC):
+    """Abstract interface for an inference provider.
+
+    Only the two core inference operations are part of the contract.
+    Lifecycle management (start/stop server etc.) is implementation-specific.
+    """
+
+    @abstractmethod
+    def run_chat_completion_stream(
+        self,
+        model_id: str,
+        context: list[tuple[int, ConversationElement]],
+        functions: list[Tool],
+    ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
+        ...
+
+    @abstractmethod
+    async def list_models(self) -> list[Model]:
+        ...
+
+
+@dataclass(frozen=True)
+class Model:
+    id: str
+    created: int
+    owned_by: str
 
 
 @dataclass(frozen=True)
 class StreamingMessage:
     content: str
 
+
 @dataclass(frozen=True)
 class StreamingThinking:
     content: str
+
 
 @dataclass(frozen=True)
 class StreamingToolCall:
     name: Optional[str]
     parameters: Optional[str]
 
+
 StreamingElement = Union[StreamingMessage, StreamingThinking, StreamingToolCall]
+
 
 @dataclass(frozen=True)
 class FinishedMessage:
     content: str
 
+
 @dataclass(frozen=True)
 class FinishedThinking:
     content: str
+
 
 @dataclass(frozen=True)
 class FinishedToolCall:
     name: str
     parameters: str
+
 
 @dataclass(frozen=True)
 class FinishedToolCallResult:
@@ -37,33 +87,5 @@ class FinishedToolCallResult:
     result: str
     is_blocking: bool = False
 
+
 FinishedElement = Union[FinishedMessage, FinishedThinking, FinishedToolCall, FinishedToolCallResult]
-
-@dataclass(frozen=True)
-class ContextMessage:
-    author: Literal['user'] | Literal['assistant']
-    content: str
-
-@dataclass(frozen=True)
-class ContextThinking:
-    content: str
-
-@dataclass(frozen=True)
-class ContextToolCall:
-    id: str
-    name: str
-    parameters: str
-    status: Literal['pending']
-
-@dataclass(frozen=True)
-class ContextToolDecision:
-    original_message_id: str
-    decision: Literal['accept'] | Literal['reject']
-    comment: Optional[str]
-
-@dataclass(frozen=True)
-class ContextToolResult:
-    original_message_id: str
-    result: str
-
-ContextElement = Union[ContextMessage, ContextThinking, ContextToolCall, ContextToolDecision, ContextToolResult]

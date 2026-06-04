@@ -1,10 +1,20 @@
-import os
-import openai
-from typing import Optional, Any, List
+from typing import Optional, cast
 
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
+from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
+from openai.types.shared_params.function_definition import FunctionDefinition
 
-from inference.engine import *
+from inference.engine import (
+    StreamingMessage,
+    StreamingThinking,
+    StreamingToolCall,
+    StreamingElement,
+    FinishedMessage,
+    FinishedThinking,
+    FinishedToolCall,
+    FinishedElement,
+    Tool,
+)
 
 from domain import (
     Message,
@@ -14,14 +24,12 @@ from domain import (
     ToolCallDecision,
     ConversationElement,
 )
+from log_config import get_logger
 
-# LLM Configuration
-LLAMA_CPP_ENDPOINT = os.getenv('LLAMA_CPP_ENDPOINT', 'http://localhost:1234')
-completions_endpoint = openai.Client(api_key='dummy', base_url=LLAMA_CPP_ENDPOINT)
+logger = get_logger(__name__)
 
-
-def _to_oai_messages(elements: list[tuple[int, ConversationElement]]) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+def _to_oai_messages(elements: list[tuple[int, ConversationElement]]) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
     pending_thinking: Optional[str] = None
 
     for message_id, element in elements:
@@ -30,15 +38,15 @@ def _to_oai_messages(elements: list[tuple[int, ConversationElement]]) -> list[di
                 pending_thinking = element.content
 
             case Message():
-                msg: dict[str, Any] = {'role': element.author, 'content': element.content}
+                msg: dict[str, object] = {'role': element.author, 'content': element.content}
                 if element.author == 'assistant' and pending_thinking is not None:
                     msg['reasoning_content'] = pending_thinking
                     pending_thinking = None
-                    print(f'[DEBUG]: Added thinking: {msg}')
+                    logger.debug("Added thinking: %s", msg)
                 result.append(msg)
 
             case ToolCallFinishedOrBlocked():
-                tc: dict[str, Any] = {
+                tc: dict[str, object] = {
                     'role': 'assistant',
                     'tool_calls': [{
                         'id': str(message_id),
@@ -89,9 +97,11 @@ def _to_oai_messages(elements: list[tuple[int, ConversationElement]]) -> list[di
     # trailing thinking with no following element is silently dropped
     return result
 
+def _to_oai_tools(tools: list[Tool]) -> list[ChatCompletionToolUnionParam]:
+    return [{"type": "function", "function": cast(FunctionDefinition, t["schema"])} for t in tools]
 
 class DeltaProcessor:
-    def __init__(self):
+    def __init__(self) -> None:
         self.buffered_element: Optional[StreamingElement] = None
 
     def process(self, chunk: ChatCompletionChunk) -> tuple[Optional[StreamingElement], Optional[FinishedElement]]:
@@ -101,7 +111,10 @@ class DeltaProcessor:
         new_elem: Optional[StreamingElement] = None
         if delta.tool_calls:
             func = delta.tool_calls[0].function
-            new_elem = StreamingToolCall(func.name, func.arguments)
+            if func:
+                name = func.name
+                arguments = func.arguments or ""
+                new_elem = StreamingToolCall(name, arguments)
         elif hasattr(delta, 'reasoning_content') and delta.reasoning_content is not None:
              new_elem = StreamingThinking(delta.reasoning_content)
         elif delta.content is not None:
@@ -116,29 +129,30 @@ class DeltaProcessor:
             case (StreamingThinking(c1), StreamingThinking(c2)):
                 self.buffered_element = StreamingThinking(c1 + c2)
             case (StreamingToolCall(n1, p1), StreamingToolCall(n2, p2)) if n2 is None:
-                self.buffered_element = StreamingToolCall(n1, p1 + p2)
+                self.buffered_element = StreamingToolCall(n1, (p1 or "") + (p2 or ""))
             case _:
                 if self.buffered_element:
-                    print(f'Finalized element: {self.buffered_element}')
+                    logger.debug("Finalized element: %s", self.buffered_element)
                     match self.buffered_element:
                         case StreamingMessage(content=c):
                             finalized = FinishedMessage(content=c)
                         case StreamingThinking(content=c):
                             finalized = FinishedThinking(content=c)
                         case StreamingToolCall(name=n1, parameters=p):
-                            finalized = FinishedToolCall(name=n1, parameters=p)
+                            finalized = FinishedToolCall(name=n1 or "", parameters=p or "")
                 self.buffered_element = new_elem
         return new_elem, finalized
 
 
-def run_chat_completion_stream(model_id: str, context: list[tuple[int, ConversationElement]], functions: List[Any]):
-    return completions_endpoint.chat.completions.create(
-        model=model_id,
-        messages=_to_oai_messages(context),
-        stream=True,
-        tools=functions,
-    )
-
-
-def list_models():
-    return completions_endpoint.models.list()
+# TODO: This will become OpenAICompatibleProvider extending InferenceProvider
+# def run_chat_completion_stream(model_id: str, context: list[tuple[int, ConversationElement]], functions: List[object]):
+#     return completions_endpoint.chat.completions.create(
+#         model=model_id,
+#         messages=_to_oai_messages(context),
+#         stream=True,
+#         tools=functions,
+#     )
+#
+#
+# def list_models():
+#     return completions_endpoint.models.list()

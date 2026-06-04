@@ -36,4 +36,4 @@ class ToolCallDecision(BaseModel):
 
 
 ConversationElement = Union[Message, Thinking, ToolCallFinishedOrBlocked, ToolCallResult, ToolCallDecision]
-stored_element_adapter = TypeAdapter(ConversationElement)
+stored_element_adapter: TypeAdapter[ConversationElement] = TypeAdapter(ConversationElement)

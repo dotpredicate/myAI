@@ -4,6 +4,9 @@ from typing import List, Tuple, Optional
 from huggingface_hub import HfApi
 from huggingface_hub import hf_hub_url
 import httpx
+from log_config import get_logger
+
+logger = get_logger(__name__)
 
 
 # Llama.cpp model cache and Huggingface download algorithm is based on:
@@ -74,7 +77,7 @@ def resolve_hf_alias(alias: str, api: Optional[HfApi] = None) -> Tuple[str, str]
     raise FileNotFoundError(f"Couldn't find matching repo file for {alias} in {repo_id}")
 
 async def download_file_slice(repo_id: str, filename: str, start: int, bytes_to_read: int) -> bytes:
-    print(f"Downloading bytes {start}-{bytes_to_read-1} of {repo_id}/{filename} ")
+    logger.info("Downloading bytes %s-%s of %s/%s", start, bytes_to_read - 1, repo_id, filename)
     url = hf_hub_url(repo_id, filename)
     headers = {"Range": f"bytes={start}-{bytes_to_read - 1}"}
     async with httpx.AsyncClient(follow_redirects=True) as client:
