@@ -19,6 +19,7 @@ from log_config import get_logger, setup_logging
 import index
 from inference import default_provider, estimator, llama_cpp_server
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
+from inference.hf_gguf import list_cached_models
 from tools import TOOL_REGISTRY
 import system
 
@@ -48,6 +49,16 @@ async def get_models():
         logger.error("Error fetching models: %s", e)
         models = []
     return JSONResponse(content={"models": [{'id': m.id, 'name': m.id} for m in models]})
+
+
+@app.get('/api/cached-models')
+async def get_cached_models():
+    try:
+        models = list_cached_models()
+        return JSONResponse(content={"models": models})
+    except Exception as e:
+        logger.error("Error fetching cached models: %s", e)
+        return JSONResponse(content={"models": []})
 
 
 @app.get('/api/repositories')

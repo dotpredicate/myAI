@@ -10,14 +10,14 @@ logger = get_logger(__name__)
 
 
 # Llama.cpp model cache and Huggingface download algorithm is based on:
-# https://github.com/ggml-org/llama.cpp/blob/4eac5b45095a4e8a1ff1cce4f6d030e0872fb4ad/common/download.cpp
+# https://github.com/ggml-org/llama.cpp/blob/e3ba22d6cc4dec84e59a909c7f96e1689c7384a9/common/download.cpp
 # https://github.com/ggml-org/llama.cpp/blob/master/common/download.cpp
 
 DEFAULT_CACHE = Path.home() / ".cache" / "huggingface" / "hub"
 
 def get_gguf_split_info(filename: str) -> dict:
     re_split = re.compile(r"^(.+)-([0-9]{5})-of-([0-9]{5})$", re.IGNORECASE)
-    re_tag = re.compile(r"\.([A-Z0-9_]+)\.gguf$", re.IGNORECASE)
+    re_tag = re.compile(r"[.-]([A-Z0-9_]+)\.gguf$", re.IGNORECASE)
 
     info = {"prefix": filename, "index": 1, "count": 1, "tag": ""}
     basename = filename
@@ -30,7 +30,7 @@ def get_gguf_split_info(filename: str) -> dict:
 
     m_tag = re_tag.search(basename)
     if m_tag:
-        info["tag"] = m_tag.group(1)
+        info["tag"] = m_tag.group(1).upper()
         info["prefix"] = basename[:m_tag.start()]
 
     return info
@@ -47,17 +47,17 @@ def list_cached_models(cache_dir: Path = DEFAULT_CACHE) -> List[str]:
 
         for f in repo_dir.rglob("*.gguf"):
             info = get_gguf_split_info(f.name)
-            if info["index"] == 1 and "mmproj" not in info["prefix"].lower():
+            if info["index"] == 1 and "mmproj" not in info["prefix"].lower() and "imatrix" not in info["prefix"].lower() and "mtp-" not in info["prefix"].lower():
                 tag = info["tag"] or f.name
                 cached.add(f"{repo_id}:{tag}")
 
     return sorted(list(cached))
 
 def resolve_hf_alias(alias: str, api: Optional[HfApi] = None) -> Tuple[str, str]:
-    if ":" in alias:
-        repo_id, tag = alias.rsplit(":", 1)
-    else:
-        repo_id, tag = alias, "Q4_K_M" # Default tag
+    if ":" not in alias:
+        # Difference from llama.cpp behavior - we require an explicit tag
+        raise ValueError(f"Alias must include a tag (e.g. repo/model:tag), got: {alias}")
+    repo_id, tag = alias.rsplit(":", 1)
 
     api = api or HfApi()
     files = api.list_repo_files(repo_id=repo_id)
@@ -70,9 +70,6 @@ def resolve_hf_alias(alias: str, api: Optional[HfApi] = None) -> Tuple[str, str]
             info = get_gguf_split_info(f)
             if info["index"] == 1:
                 return repo_id, f
-
-    if gguf_files:
-        return repo_id, gguf_files[0]
 
     raise FileNotFoundError(f"Couldn't find matching repo file for {alias} in {repo_id}")
 

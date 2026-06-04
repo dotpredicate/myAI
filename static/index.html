@@ -5,101 +5,48 @@
   <meta charset="utf-8">
   <title>myAI</title>
   <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
     body {
       display: grid;
       grid-template-columns: 200px 1fr;
-      grid-template-rows: auto 1fr;
-      grid-template-areas: "sidebar main";
       height: 100vh;
       margin: 0;
-      font-family: sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px;
+      color: #222;
     }
 
     #sidebar {
-      grid-area: sidebar;
       background: #f5f5f5;
       display: flex;
       flex-direction: column;
       padding: 10px;
       height: 100vh;
       overflow: hidden;
-      box-sizing: border-box;
     }
 
-    #sidebarHeader {
-      text-align: center;
-      flex-shrink: 0;
-      padding: 10px 0;
-    }
-    
-    #sidebarHeader h2 {
-      margin: 0
-    }
+    #sidebarHeader { text-align: center; flex-shrink: 0; padding: 10px 0; }
+    #sidebarHeader h2 { margin: 0; font-size: 18px; }
 
-    #sidebarNav {
-      flex: 1;
-      overflow-y: auto;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-    }
-
-    #sidebarFooter {
-      flex-shrink: 0;
-    }
-
-    #main {
-      grid-area: main;
-      display: flex;
-      flex-direction: column;
-      min-height: 0;
-      min-width: 0;
-      overflow: hidden;
-    }
-
-    #chatHistory {
-      flex: 1;
-      padding: 10px;
-      overflow: auto;
-      background: #fff;
-      min-height: 0;
-    }
-
-    #inputArea {
-      padding: 10px;
-      background: #fff;
-    }
-
-    textarea {
-      font-size: 1.25em;
-      width: 100%;
-      box-sizing: border-box;
-    }
+    #sidebarNav { flex: 1; overflow-y: auto; min-height: 0; }
+    #sidebarFooter { flex-shrink: 0; }
 
     .menu-item {
-      box-sizing: border-box;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
       width: 100%;
       padding: 8px;
+      margin-bottom: 4px;
       background: #fff;
       border: 1px solid #ddd;
       border-radius: 4px;
       cursor: pointer;
-      margin-bottom: 4px;
       font-size: 14px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
     }
-
-    .menu-item:hover {
-      background: #f8f8f8;
-      border-color: #bbb;
-    }
-
-    .menu-item.selected {
-      background: #fff;
-      border-color: #444;
-    }
+    .menu-item:hover { background: #f8f8f8; border-color: #bbb; }
+    .menu-item.selected { border-color: #444; }
 
     .conv-delete-btn {
       background: none;
@@ -112,81 +59,39 @@
       line-height: 1;
       margin-left: 8px;
     }
+    .conv-delete-btn:hover { color: #f00; background: #fee; border-radius: 3px; }
 
-    .conv-delete-btn:hover {
-      color: #ff0000;
-      background: #fee;
-      border-radius: 3px;
+    #main {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
     }
 
-    .msg-label {
-      font-weight: bold;
-      margin-top: 1em;
-    }
+    .view { display: none; flex: 1; flex-direction: column; overflow: hidden; }
+    .view.active { display: flex; }
 
-    .msg-body {
-      margin-top: .5em;
-      overflow-wrap: break-word;
-      word-break: break-word;
-    }
+    #chatHistory { flex: 1; padding: 10px; overflow: auto; background: #fff; }
+    #inputArea { padding: 10px; background: #fff; border-top: 1px solid #eee; }
 
-    .msg-body table {
-      border-collapse: collapse;
+    textarea {
+      font-size: 1.25em;
       width: 100%;
-      margin-top: 0.5em;
+      box-sizing: border-box;
     }
 
-    .msg-body th,
-    .msg-body td {
-      border: 1px solid #ddd;
-      padding: 4px;
-    }
+    textarea:disabled, button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-    .msg-body th {
-      background: #f9f9f9;
-    }
+    .msg-label { font-weight: bold; margin-top: 1em; }
+    .msg-body { margin-top: .5em; overflow-wrap: break-word; word-break: break-word; }
 
-    .blocked {
-      background-color: #ffe6e6;
-      border-left: 4px solid #ff0000;
-    }
+    .msg-body table { border-collapse: collapse; width: 100%; margin-top: 0.5em; }
+    .msg-body th, .msg-body td { border: 1px solid #ddd; padding: 4px; }
+    .msg-body th { background: #f9f9f9; }
 
-    textarea:disabled,
-    button:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
+    .blocked { background-color: #ffe6e6; border-left: 4px solid #f00; }
 
-    #scopeSelectorContainer {
-      margin-bottom: 10px;
-    }
-
-    #scopePills {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 5px;
-      margin-top: 5px;
-    }
-
-    .scope-pill {
-      background: #e0e0e0;
-      padding: 2px 8px;
-      border-radius: 12px;
-      font-size: 0.85em;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-    }
-
-    .scope-pill .remove-btn {
-      cursor: pointer;
-      font-weight: bold;
-      color: #888;
-    }
-
-    .scope-pill .remove-btn:hover {
-      color: #ff0000;
-    }
+    .msg-header { display: flex; justify-content: space-between; align-items: center; }
 
     .diff-view {
       background: #f8f8f8;
@@ -200,47 +105,21 @@
       overflow-x: auto;
     }
 
-    .view-container {
-      display: none;
-      flex-direction: column;
-      flex: 1;
-      overflow: hidden;
-    }
-
-    .view-container.active {
+    #scopeSelectorContainer { margin-bottom: 10px; }
+    #scopePills { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+    .scope-pill {
+      background: #e0e0e0;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.85em;
       display: flex;
+      align-items: center;
+      gap: 5px;
     }
+    .scope-pill .remove-btn { cursor: pointer; font-weight: bold; color: #888; }
+    .scope-pill .remove-btn:hover { color: #f00; }
 
-    #modelsView {
-      padding: 20px;
-      overflow-y: auto;
-    }
-
-    #modelsView.active {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-    }
-
-    .models-list-container {
-      background: #f9f9f9;
-      border: 1px solid #ddd;
-      padding: 10px;
-      border-radius: 4px;
-      max-height: 400px;
-      overflow-y: auto;
-      margin-bottom: 20px;
-    }
-
-    .model-item {
-      padding: 4px 8px;
-      border-bottom: 1px solid #eee;
-    }
-
-    .model-item:last-child {
-      border-bottom: none;
-    }
-  
+    /* Reject panel */
     .reject-panel {
       display: flex;
       flex-direction: column;
@@ -251,44 +130,124 @@
       border: 1px solid #f5c6cb;
       border-radius: 4px;
     }
+    .reject-input-row { display: flex; gap: 8px; }
 
-    .reject-input-row {
-      display: flex;
-      gap: 8px;
+    .card {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      padding: 16px;
     }
+    .card h3 { margin: 0 0 12px 0; font-size: 15px; }
 
-    .reject-input {
-      flex: 1;
-      padding: 4px 8px;
-      font-size: 14px;
-      border-radius: 4px;
-      border: 1px solid #ccc;
-    }
-
-    .btn-confirm {
-      background-color: #dc3545;
-      color: white;
-      border: none;
-      padding: 4px 12px;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-
-    .btn-cancel {
-      background-color: #6c737a;
-      color: white;
-      border: none;
-      padding: 4px 12px;
-      border-radius: 4px;
-      cursor: pointer;
-    }
-
-    .msg-header {
-      display: flex;
-      justify-content: space-between;
+    .btn {
+      display: inline-flex;
       align-items: center;
+      justify-content: center;
+      padding: 5px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      line-height: 1.2;
+      background: #fff;
+      color: #333;
+    }
+    .btn:hover:not(:disabled) { background: #f0f0f0; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-primary { background: #555; color: #fff; border-color: #555; }
+    .btn-primary:hover:not(:disabled) { background: #444; border-color: #444; }
+    .btn-approve { background: #2a8a4a; color: #fff; border-color: #2a8a4a; }
+    .btn-approve:hover:not(:disabled) { background: #1e6e38; border-color: #1e6e38; }
+    .btn-reject { background: #888; color: #fff; border-color: #888; }
+    .btn-reject:hover:not(:disabled) { background: #666; border-color: #666; }
+    .btn-block { width: 100%; }
+
+    /* Inputy */
+    input, select {
+      font-size: 13px;
+      padding: 5px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #fff;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: #007bff; }
+
+    /* Field row — para label + input w poziomie */
+    .field-row { display: flex; gap: 10px; margin-bottom: 10px; }
+    .field { flex: 1; }
+    .field label { display: block; font-size: 0.85em; color: #666; margin-bottom: 4px; }
+    .field input, .field select { width: 100%; }
+
+    /* Stat grid — siatka 2x2 dla wyników */
+    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+    .stat {
+      background: #f9f9f9;
+      padding: 8px 10px;
+      border-radius: 4px;
+    }
+    .stat .label { font-size: 0.8em; color: #666; display: block; }
+    .stat .value { font-size: 1.1em; font-weight: 600; color: #222; }
+
+    /* Tabs */
+    .tabs { display: flex; border-bottom: 1px solid #e0e0e0; background: #fafafa; flex-shrink: 0; }
+    .tab {
+      padding: 10px 20px;
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      font-size: 14px;
+      color: #666;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+    }
+    .tab:hover { color: #333; background: #f0f0f0; }
+    .tab.active { color: #007bff; border-bottom-color: #007bff; }
+
+    .tab-pane { display: none; flex: 1; overflow-y: auto; padding: 20px; }
+    .tab-pane.active { display: block; }
+
+    /* Grid layout dla tab-pane */
+    .pane-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+    /* Lista modeli */
+    .model-list {
+      background: #f9f9f9;
+      border: 1px solid #e0e0e0;
+      padding: 8px;
+      border-radius: 4px;
+      max-height: 300px;
+      overflow-y: auto;
+      margin-bottom: 16px;
+    }
+    .model-item { padding: 4px 8px; border-bottom: 1px solid #eee; }
+    .model-item:last-child { border-bottom: none; }
+
+    /* Result box */
+    .result-box {
+      margin-top: 12px;
+      padding: 10px;
+      border: 1px solid #e0e0e0;
+      border-radius: 4px;
+      white-space: pre-wrap;
+      display: none;
+    }
+    .result-box.error { border-color: #f5c6cb; background: #fdf2f2; }
+
+    /* Loading spinner */
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-radius: 50%;
+      border-top-color: #fff;
+      animation: spin .8s linear infinite;
+      margin-right: 8px;
     }
 
+    /* Copy button */
     .copy-btn {
       background: #eee;
       border: 1px solid #ccc;
@@ -297,112 +256,27 @@
       font-size: 11px;
       cursor: pointer;
     }
-
-    .copy-btn:hover {
-      background: #ddd;
-    }
-
-
-    .gpu-status-card {
-      background: #f9f9f9;
-      border: 1px solid #ddd;
-      border-radius: 4px;
-      padding: 10px;
-      margin-bottom: 20px;
-    }
-    .gpu-status-card h3 {
-      margin: 0 0 8px 0;
-    }
-    .gpu-status-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4px;
-    }
-    .gpu-status-item {
-      display: flex;
-      justify-content: space-between;
-    }
-
-    /* NEW STYLES FOR BENCHMARK */
-    .benchmark-card {
-      background: #f0f4f8;
-      border: 1px solid #d1d9e6;
-      border-radius: 8px;
-      padding: 15px;
-      margin-top: 20px;
-    }
-    .benchmark-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 15px;
-      margin-top: 10px;
-    }
-    .benchmark-stat {
-      background: white;
-      padding: 10px;
-      border-radius: 4px;
-      border: 1px solid #eee;
-    }
-    .benchmark-stat .label {
-      font-size: 0.8em;
-      color: #666;
-      display: block;
-    }
-    .benchmark-stat .value {
-      font-size: 1.2em;
-      font-weight: bold;
-      color: #2c3e50;
-    }
-    .run-btn {
-      width: 100%;
-      padding: 10px;
-      background-color: #007bff;
-      color: white;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      margin-top: 10px;
-    }
-    .run-btn:disabled {
-      background-color: #ccc;
-    }
-    .loading-spinner {
-      display: inline-block;
-      width: 20px;
-      height: 20px;
-      border: 3px solid rgba(255,255,255,.3);
-      border-radius: 50%;
-      border-top-color: #fff;
-      animation: spin 1s ease-in-out infinite;
-      margin-right: 10px;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-
-</style>
+    .copy-btn:hover { background: #ddd; }
+  </style>
 </head>
 
-<body id="body">
+<body>
   <div id="sidebar">
-    <div id="sidebarHeader">
-      <h2>myAI</h2>
-    </div>
+    <div id="sidebarHeader"><h2>myAI</h2></div>
     <div id="sidebarNav">
       <button id="newBtnSide" class="menu-item">+ New</button>
       <div id="conversationList"></div>
     </div>
     <div id="sidebarFooter">
-      <button id="modelsBtnSide" class="menu-item">Inference</button>
+      <button id="inferenceBtnSide" class="menu-item">Inference</button>
       <button id="reposBtnSide" class="menu-item">Repositories</button>
     </div>
   </div>
+
   <div id="main">
-    <!-- Chat View -->
-    <div id="chatView" class="view-container active">
-      <div id="chatHistory">
-        <div id="response"></div>
-      </div>
+    <!-- Chat -->
+    <div id="chatView" class="view active">
+      <div id="chatHistory"><div id="response"></div></div>
       <div id="inputArea">
         <div id="scopeSelectorContainer">
           <label>Scopes:</label>
@@ -412,66 +286,80 @@
         <textarea id="prompt" rows="5" placeholder="Enter prompt here"></textarea>
         <label for="modelSelect">Select Model:</label>
         <select id="modelSelect"></select>
-        <button id="sendBtn">Send</button>
-        <button id="continueBtn">Continue</button>
+        <button id="sendBtn" class="btn btn-primary" style="margin-top:8px">Send</button>
+        <button id="continueBtn" class="btn" style="margin-top:8px">Continue</button>
       </div>
     </div>
 
-    <!-- Models View -->
-    <div id="modelsView" class="view-container">
-      <div class="models-left">
-        <h2>Local Models</h2>
-        <div id="modelsList" class="models-list-container"></div>
-        <p><a href="https://huggingface.co/models?search=gguf" target="_blank">Search for GGUF models on HuggingFace</a></p>
+    <!-- Inference -->
+    <div id="inferenceView" class="view">
+      <div class="tabs">
+        <button class="tab active" data-tab="system">System</button>
+        <button class="tab" data-tab="models">Models</button>
       </div>
 
-      <div class="models-right">
-        <h2>Estimation Tool</h2>
-        <div id="gpuStatusCard" class="gpu-status-card">
-          <h3>GPU Status</h3>
-          <div id="gpuStatusGrid" class="gpu-status-grid"></div>
+      <div id="systemTab" class="tab-pane active">
+        <div class="pane-grid">
+          <div class="card">
+            <h3>GPU Status</h3>
+            <div id="gpuStatusGrid" class="stat-grid"></div>
+          </div>
+          <div class="card">
+            <h3>GPU Performance Benchmark</h3>
+            <div class="field-row">
+              <div class="field">
+                <label>TFLOPS Matrix Size</label>
+                <input type="number" id="tflopsSizeInput" value="4096">
+              </div>
+              <div class="field">
+                <label>Bandwidth Size</label>
+                <input type="number" id="bwSizeInput" value="8192">
+              </div>
+            </div>
+            <button id="runBenchmarkBtn" class="btn btn-primary btn-block">Run Benchmark</button>
+            <div id="benchmarkResult" class="stat-grid" style="display:none"></div>
+          </div>
         </div>
-        <label for="modelsEstimateSelect">Select Model (or HF alias):</label>
-        <div style="display:flex; gap: 5px;">
-           <select id="modelsEstimateSelect" style="flex: 1;"></select>
-           <input type="text" id="modelsEstimateInput" style="flex: 1;" placeholder="OR paste HF Model Alias...">
-        </div>
-        
-        <label style="display: block; margin-top: 10px;">Hardware Profile (TFLOPS;Bandwidth):</label>
-        <input type="text" id="modelsDeviceMetricInput" placeholder="e.g. 35TFLOPS;900GBps" style="width: 100%; margin-bottom: 10px;">
-        <button id="estimateBtnModels" style="width: 100%;">Estimate</button>
-        
-        <div id="estimateResultModels" style="margin-top: 15px; padding: 10px; border: 1px solid #ddd; border-radius: 4px; display: none; white-space: pre-wrap;"></div>
       </div>
 
-      <div class="benchmark-card">
-        <h3>GPU Performance Benchmark</h3>
-        <div style="display: flex; gap: 10px; margin-bottom: 10px;">
-          <div style="flex:1;">
-            <label style="font-size: 0.8em;">TFLOPS Matrix Size:</label>
-            <input type="number" id="tflopsSizeInput" value="4096" style="width: 100%;">
+      <div id="modelsTab" class="tab-pane">
+        <div class="pane-grid">
+          <div>
+            <h2 style="margin-top:0">Cached HuggingFace Models</h2>
+            <div id="cachedModelsList" class="model-list"></div>
+            <p><a href="https://huggingface.co/models?search=gguf" target="_blank">Search for GGUF models on HuggingFace</a></p>
           </div>
-          <div style="flex:1;">
-            <label style="font-size: 0.8em;">Bandwidth Size:</label>
-            <input type="number" id="bwSizeInput" value="8192" style="width: 100%;">
+          <div>
+            <h2 style="margin-top:0">Estimation Tool</h2>
+            <div class="field">
+              <label>Select Model (or HF alias)</label>
+              <div class="field-row">
+                <select id="modelsEstimateSelect" style="flex:1"></select>
+                <input type="text" id="modelsEstimateInput" style="flex:1" placeholder="OR paste HF Model Alias...">
+              </div>
+            </div>
+            <div class="field" style="margin-top:10px">
+              <label>Hardware Profile (TFLOPS;Bandwidth)</label>
+              <input type="text" id="modelsDeviceMetricInput" placeholder="e.g. 35TFLOPS;900GBps">
+            </div>
+            <button id="estimateBtnModels" class="btn btn-primary btn-block" style="margin-top:10px">Estimate</button>
+            <div id="estimateResultModels" class="result-box"></div>
           </div>
         </div>
-        <button id="runBenchmarkBtn" class="run-btn">Run Benchmark</button>
-        <div id="benchmarkResult" class="benchmark-grid" style="display: none;"></div>
       </div>
     </div>
 
-    <!-- Repositories View -->
-    <div id="repositoriesView" class="view-container">
-      <div style="padding: 20px; overflow-y: auto;">
+    <!-- Repositories -->
+    <div id="repositoriesView" class="view">
+      <div style="padding:20px;overflow-y:auto">
         <h3>Upload Documents</h3>
         <input type="file" id="fileInput" multiple accept=".txt,.md">
-        <button id="uploadBtn">Upload</button>
+        <button id="uploadBtn" class="btn btn-primary" style="margin-top:8px">Upload</button>
         <hr>
         <h3>Search</h3>
         <input type="text" id="searchInput" placeholder="Search query">
-        <button id="searchBtn">Search</button>
-        <div id="searchResultContainer" style="margin-top: 20px;"></div>
+        <button id="searchBtn" class="btn btn-primary" style="margin-top:8px">Search</button>
+        <div id="searchResultContainer" style="margin-top:20px"></div>
       </div>
     </div>
   </div>
@@ -489,97 +377,89 @@
     let currentView = 'chat';
     let gpuStatusInterval = null;
 
-    function switchView(viewName) {
-      currentView = viewName;
-      document.getElementById('chatView').classList.remove('active');
-      document.getElementById('modelsView').classList.remove('active');
-      document.getElementById('repositoriesView').classList.remove('active');
-      
-      if (viewName === 'chat') {
+    function switchView(name) {
+      currentView = name;
+      document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+      if (name === 'chat') {
         document.getElementById('chatView').classList.add('active');
-      } else if (viewName === 'models') {
-        document.getElementById('modelsView').classList.add('active');
-        updateGpuStatus();
-        if (!gpuStatusInterval) {
-          gpuStatusInterval = setInterval(updateGpuStatus, 5000);
-        }
-      } else if (viewName === 'repositories') {
+        clearGpuInterval();
+      } else if (name === 'inference') {
+        document.getElementById('inferenceView').classList.add('active');
+        const activeTab = document.querySelector('.tab.active');
+        if (activeTab) switchInferenceTab(activeTab.dataset.tab);
+        startGpuInterval();
+      } else if (name === 'repositories') {
         document.getElementById('repositoriesView').classList.add('active');
-      }
-
-      if (viewName !== 'models') {
-        if (gpuStatusInterval) {
-          clearInterval(gpuStatusInterval);
-          gpuStatusInterval = null;
-        }
+        clearGpuInterval();
       }
     }
 
+    function startGpuInterval() {
+      if (!gpuStatusInterval) { updateGpuStatus(); gpuStatusInterval = setInterval(updateGpuStatus, 5000); }
+    }
+    function clearGpuInterval() {
+      if (gpuStatusInterval) { clearInterval(gpuStatusInterval); gpuStatusInterval = null; }
+    }
+
+    function switchInferenceTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-pane').forEach(t => t.classList.remove('active'));
+      document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+      document.getElementById(name + 'Tab').classList.add('active');
+      if (name === 'system') { updateGpuStatus(); startGpuInterval(); } else clearGpuInterval();
+    }
+
     async function updateGpuStatus() {
-      const card = document.getElementById('gpuStatusCard');
       const grid = document.getElementById('gpuStatusGrid');
       try {
         const res = await fetch('/api/gpu-stats');
-        const data = await res.json();
-        
-        const freeGB = (data.free / (1024**3)).toFixed(2);
-        const totalGB = (data.total / (1024**3)).toFixed(2);
+        const d = await res.json();
+        const freeGB = (d.free / (1024**3)).toFixed(2);
+        const totalGB = (d.total / (1024**3)).toFixed(2);
         const usedGB = (parseFloat(totalGB) - parseFloat(freeGB)).toFixed(2);
-        const percent = totalGB > 0 ? ((usedGB / totalGB) * 100).toFixed(1) : 0;
-
-        card.style.display = 'block';
+        const pct = totalGB > 0 ? ((usedGB / totalGB) * 100).toFixed(1) : 0;
         grid.innerHTML = `
-          <div class="gpu-status-item"><span>Free:</span> <span>${freeGB} GB</span></div>
-          <div class="gpu-status-item"><span>Total:</span> <span>${totalGB} GB</span></div>
-          <div class="gpu-status-item"><span>Used:</span> <span>${usedGB} GB</span></div>
-          <div class="gpu-status-item"><span>Usage:</span> <span>${percent}%</span></div>
-        `;
-      } catch (err) {
-        console.error("Failed to fetch GPU stats", err);
-        card.style.display = 'none';
-      }
+          <div class="stat"><span class="label">Free</span><span class="value">${freeGB} GB</span></div>
+          <div class="stat"><span class="label">Total</span><span class="value">${totalGB} GB</span></div>
+          <div class="stat"><span class="label">Used</span><span class="value">${usedGB} GB</span></div>
+          <div class="stat"><span class="label">Usage</span><span class="value">${pct}%</span></div>`;
+      } catch { grid.innerHTML = '<div class="stat"><span class="label">Error</span><span class="value">—</span></div>'; }
     }
 
     async function loadModels() {
       const res = await fetch('/api/models');
       const data = await res.json();
-      
       const chatSelect = document.getElementById('modelSelect');
       chatSelect.innerHTML = '';
       data.models.forEach(m => {
         const opt = document.createElement('option');
-        opt.value = m.id;
-        opt.textContent = m.name;
-        chatSelect.appendChild(opt);
+        opt.value = m.id; opt.textContent = m.name; chatSelect.appendChild(opt);
       });
-      const savedModel = localStorage.getItem('selectedModel');
-      if (savedModel) chatSelect.value = savedModel;
-      chatSelect.addEventListener('change', () => {
-        localStorage.setItem('selectedModel', chatSelect.value);
-      });
-
-      const listDiv = document.getElementById('modelsList');
-      listDiv.innerHTML = '';
-      data.models.forEach(m => {
-        const div = document.createElement('div');
-        div.className = 'model-item';
-        div.textContent = m.name;
-        listDiv.appendChild(div);
-      });
+      const saved = localStorage.getItem('selectedModel');
+      if (saved) chatSelect.value = saved;
+      chatSelect.addEventListener('change', () => localStorage.setItem('selectedModel', chatSelect.value));
 
       const estSelect = document.getElementById('modelsEstimateSelect');
       estSelect.innerHTML = '<option value="" disabled selected>Select from cache...</option>';
       data.models.forEach(m => {
         const opt = document.createElement('option');
-        opt.value = m.id;
-        opt.textContent = m.name;
-        estSelect.appendChild(opt);
+        opt.value = m.id; opt.textContent = m.name; estSelect.appendChild(opt);
       });
-
       const savedMetrics = localStorage.getItem('deviceMetrics');
-      if (savedMetrics) {
-        document.getElementById('modelsDeviceMetricInput').value = savedMetrics;
-      }
+      if (savedMetrics) document.getElementById('modelsDeviceMetricInput').value = savedMetrics;
+    }
+
+    async function loadCachedModels() {
+      try {
+        const res = await fetch('/api/cached-models');
+        const data = await res.json();
+        const div = document.getElementById('cachedModelsList');
+        div.innerHTML = '';
+        data.models.forEach(m => {
+          const el = document.createElement('div');
+          el.className = 'model-item'; el.textContent = m; div.appendChild(el);
+        });
+      } catch (e) { console.error("Failed to load cached models", e); }
     }
 
     async function loadRepositories() {
@@ -589,91 +469,62 @@
         allRepositories = data.repositories || [];
         const select = document.getElementById('scopeSelect');
         select.innerHTML = '<option value="" disabled selected>Select a scope...</option>';
-        allRepositories.forEach(repo => {
+        allRepositories.forEach(r => {
           const opt = document.createElement('option');
-          opt.value = repo;
-          opt.textContent = repo;
-          select.appendChild(opt);
+          opt.value = r; opt.textContent = r; select.appendChild(opt);
         });
-        select.addEventListener('change', (e) => {
+        select.addEventListener('change', e => {
           const repo = e.target.value;
-          if (repo && !activeScopes.includes(repo)) {
-            activeScopes.push(repo);
-            renderScopePills();
-          }
-          select.value = "";
+          if (repo && !activeScopes.includes(repo)) { activeScopes.push(repo); renderScopePills(); }
+          select.value = '';
         });
-      } catch (err) {
-        console.error("Failed to load repositories", err);
-      }
+      } catch (e) { console.error("Failed to load repositories", e); }
     }
 
     function renderScopePills() {
-      const container = document.getElementById('scopePills');
-      container.innerHTML = '';
-      activeScopes.forEach(scope => {
+      const c = document.getElementById('scopePills');
+      c.innerHTML = '';
+      activeScopes.forEach(s => {
         const pill = document.createElement('div');
         pill.className = 'scope-pill';
-        pill.innerHTML = `<span>${scope}</span><span class="remove-btn" data-scope="${scope}">&times;</span>`;
-        pill.querySelector('.remove-btn').addEventListener('click', (e) => {
-          const scopeToRemove = e.target.dataset.scope;
-          activeScopes = activeScopes.filter(s => s !== scopeToRemove);
+        pill.innerHTML = `<span>${s}</span><span class="remove-btn" data-scope="${s}">&times;</span>`;
+        pill.querySelector('.remove-btn').addEventListener('click', e => {
+          activeScopes = activeScopes.filter(x => x !== e.target.dataset.scope);
           renderScopePills();
         });
-        container.appendChild(pill);
+        c.appendChild(pill);
       });
     }
 
     function highlightBlockingMessage(id) {
       blockingMessageId = id;
-      const elem = document.querySelector(`details[data-message-id='${id}']`);
-      elem.classList.add('blocked');
-      elem.scrollIntoView({ behavior: 'smooth' });
+      const el = document.querySelector(`details[data-message-id='${id}']`);
+      if (el) { el.classList.add('blocked'); el.scrollIntoView({ behavior: 'smooth' }); }
     }
 
-    function blockConversation(messageId) {
-      blockingMessageId = messageId;
-      const promptArea = document.getElementById('prompt');
-      const sendBtn = document.getElementById('sendBtn');
-      if (promptArea) promptArea.disabled = true;
-      if (sendBtn) sendBtn.disabled = true;
+    function blockConversation(id) {
+      blockingMessageId = id;
+      document.getElementById('prompt').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
     }
 
     function clearBlock() {
       blockingMessageId = null;
-      const promptArea = document.getElementById('prompt');
-      const sendBtn = document.getElementById('sendBtn');
-      if (promptArea) promptArea.disabled = false;
-      if (sendBtn) sendBtn.disabled = false;
-      const blockedElems = document.querySelectorAll('details[data-message-id]');
-      blockedElems.forEach(e => e.classList.remove('blocked'));
+      document.getElementById('prompt').disabled = false;
+      document.getElementById('sendBtn').disabled = false;
+      document.querySelectorAll('details[data-message-id]').forEach(e => e.classList.remove('blocked'));
     }
 
-    async function deleteConversation(convId, event) {
-      event.stopPropagation();
-      if (!confirm('Delete this conversation?')) {
-        return;
-      }
-      
+    async function deleteConversation(id, ev) {
+      ev.stopPropagation();
+      if (!confirm('Delete this conversation?')) return;
       try {
-        const res = await fetch(`/api/conversations/${convId}`, {
-          method: 'DELETE'
-        });
-        
+        const res = await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
         if (res.ok) {
-          if (selectedConversationId === convId) {
-            selectedConversationId = null;
-            document.getElementById('response').innerHTML = '';
-          }
+          if (selectedConversationId === id) { selectedConversationId = null; document.getElementById('response').innerHTML = ''; }
           loadConversations();
-        } else {
-          const data = await res.json();
-          alert('Error deleting conversation: ' + (data.error || 'Unknown error'));
-        }
-      } catch (err) {
-        console.error('Failed to delete conversation', err);
-        alert('Failed to delete conversation');
-      }
+        } else { alert('Error deleting conversation'); }
+      } catch { alert('Failed to delete conversation'); }
     }
 
     async function loadConversations() {
@@ -683,24 +534,14 @@
       list.innerHTML = '';
       data.forEach(conv => {
         const div = document.createElement('div');
-        const titleSpan = document.createElement('span');
-        titleSpan.textContent = conv.title || ("Conversation #" + conv.id);
-        
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'conv-delete-btn';
-        deleteBtn.innerHTML = '&times;';
-        deleteBtn.title = 'Delete conversation';
-        deleteBtn.addEventListener('click', (e) => {
-          deleteConversation(conv.id, e);
-        });
-        
-        div.appendChild(titleSpan);
-        div.appendChild(deleteBtn);
-        div.className = 'menu-item';
-        div.dataset.id = conv.id;
-        if (selectedConversationId === conv.id) {
-          div.classList.add('selected');
-        }
+        const span = document.createElement('span');
+        span.textContent = conv.title || ("Conversation #" + conv.id);
+        const del = document.createElement('button');
+        del.className = 'conv-delete-btn'; del.innerHTML = '&times;'; del.title = 'Delete';
+        del.addEventListener('click', e => deleteConversation(conv.id, e));
+        div.appendChild(span); div.appendChild(del);
+        div.className = 'menu-item'; div.dataset.id = conv.id;
+        if (selectedConversationId === conv.id) div.classList.add('selected');
         div.addEventListener('click', () => {
           switchView('chat');
           document.querySelectorAll('.menu-item').forEach(t => t.classList.remove('selected'));
@@ -713,369 +554,281 @@
     }
 
     class ChatStreamRenderer {
-      constructor(responseContainer) {
-        this.responseContainer = responseContainer;
-        this.streamState = { type: null };
+      constructor(container) {
+        this.container = container;
+        this.state = { type: null };
       }
 
-      initializeState(newType, role) {
+      init(type, role) {
         const wrapper = document.createElement('div');
         wrapper.className = 'message-wrapper';
-
-        this.responseContainer.appendChild(wrapper);
-        this.messageWrapper = wrapper;
+        this.container.appendChild(wrapper);
+        this.wrapper = wrapper;
 
         const header = document.createElement('div');
         header.className = 'msg-header';
-
         const label = document.createElement('div');
         label.className = 'msg-label';
         label.textContent = role + ':';
         header.appendChild(label);
+        this.state = { type };
 
-        const newStream = { type: newType };
-        this.streamState = newStream;
-
-        const createCopyButton = (textHolder) => {
-          const copyBtn = document.createElement('button');
-          copyBtn.className = 'copy-btn';
-          copyBtn.textContent = 'Copy';
-          copyBtn.onclick = () => {
-            navigator.clipboard.writeText(textHolder.content).then(() => {
-              const originalText = copyBtn.textContent;
-              copyBtn.textContent = 'Copied!';
-              setTimeout(() => copyBtn.textContent = originalText, 2000);
+        const makeCopy = (holder) => {
+          const btn = document.createElement('button');
+          btn.className = 'copy-btn'; btn.textContent = 'Copy';
+          btn.onclick = () => {
+            navigator.clipboard.writeText(holder.content).then(() => {
+              btn.textContent = 'Copied!';
+              setTimeout(() => btn.textContent = 'Copy', 2000);
             });
           };
-          header.appendChild(copyBtn);
-        }
+          header.appendChild(btn);
+        };
         wrapper.appendChild(header);
 
-        if (newType === 'thinking') {
-          const container = document.createElement('details');
-          const summary = document.createElement('summary');
-          summary.textContent = 'Reasoning';
-          container.appendChild(summary);
-          container.dataset.mode = 'thinking';
-          wrapper.appendChild(container);
-          const smdRenderer = smd.default_renderer(container);
-          this.streamState.parser = smd.parser(smdRenderer);
-          this.streamState.writeElem = container;
-          this.streamState.fullText = {'content': ''};
-          createCopyButton(this.streamState.fullText);
-        } else if (newType === 'message') {
-          const msgDiv = document.createElement('div');
-          msgDiv.className = 'msg-body';
-          const smdRenderer = smd.default_renderer(msgDiv);
-          wrapper.appendChild(msgDiv);
-          this.streamState.parser = smd.parser(smdRenderer);
-          this.streamState.fullText = {'content': ''};
-          createCopyButton(this.streamState.fullText);
-        } else if (newType === 'tool_call') {
-          this.streamState.type = 'tool_call';
-          this.streamState.blocking = false;
+        if (type === 'thinking') {
+          const det = document.createElement('details');
+          det.innerHTML = '<summary>Reasoning</summary>';
+          det.dataset.mode = 'thinking';
+          wrapper.appendChild(det);
+          const r = smd.default_renderer(det);
+          this.state.parser = smd.parser(r);
+          this.state.full = { content: '' };
+          makeCopy(this.state.full);
+        } else if (type === 'message') {
+          const div = document.createElement('div');
+          div.className = 'msg-body';
+          wrapper.appendChild(div);
+          const r = smd.default_renderer(div);
+          this.state.parser = smd.parser(r);
+          this.state.full = { content: '' };
+          makeCopy(this.state.full);
+        } else if (type === 'tool_call') {
+          this.state.blocking = false;
         } else {
-          this.streamState.type = 'unknown';
-          const infoDiv = document.createElement('div');
-          infoDiv.textContent = `Unknown: ${newType}`;
-          wrapper.appendChild(infoDiv);
+          const div = document.createElement('div');
+          div.textContent = 'Unknown: ' + type;
+          wrapper.appendChild(div);
         }
       }
 
-      handleStreamChunk(chunk) {
-        if (this.streamState.type === 'thinking') {
-          smd.parser_write(this.streamState.parser, chunk.content);
-          this.streamState.fullText.content += chunk.content;
-        } else if (this.streamState.type === 'message') {
-          smd.parser_write(this.streamState.parser, chunk.content);
-          this.streamState.fullText.content += chunk.content;
-        } else if (this.streamState.type === 'tool_call') {
-          const container = document.createElement('details');
-          container.dataset.mode = 'function_call';
-          const summary = document.createElement('summary');
-          summary.textContent = `Function Call: ${chunk.name}`;
-          container.appendChild(summary);
-          const contentDiv = document.createElement('div');
-          contentDiv.className = 'msg-body';
-          const paramsPre = document.createElement('pre');
-          const paramsText = typeof chunk.parameters === 'object' ? JSON.stringify(chunk.parameters, null, 2) : chunk.parameters;
-          paramsPre.textContent = `Input:\n${paramsText}`;
-          contentDiv.appendChild(paramsPre);
-          const resultDiv = document.createElement('div');
-          resultDiv.style.marginTop = '1em';
-          resultDiv.innerHTML = '<strong>Output:</strong>';
+      write(chunk) {
+        if (this.state.type === 'thinking' || this.state.type === 'message') {
+          smd.parser_write(this.state.parser, chunk.content);
+          this.state.full.content += chunk.content;
+        } else if (this.state.type === 'tool_call') {
+          const det = document.createElement('details');
+          det.dataset.mode = 'function_call';
+          det.innerHTML = `<summary>Function Call: ${chunk.name}</summary>`;
+          const body = document.createElement('div');
+          body.className = 'msg-body';
+          const pre = document.createElement('pre');
+          const txt = typeof chunk.parameters === 'object' ? JSON.stringify(chunk.parameters, null, 2) : chunk.parameters;
+          pre.textContent = 'Input:\n' + txt;
+          body.appendChild(pre);
+          const out = document.createElement('div');
+          out.style.marginTop = '1em';
+          out.innerHTML = '<strong>Output:</strong>';
           if (chunk.result) {
-            const resData = JSON.parse(chunk.result);
-            if (resData.type === 'replace_proposal') {
-              const diffDiv = document.createElement('div');
-              diffDiv.className = 'diff-view';
-              diffDiv.innerHTML = `<strong>Diff (${resData.target})</strong><br>`;
-              diffDiv.append(resData.diff);
-              resultDiv.appendChild(diffDiv);
-            } else if (resData.type === 'diff_proposal') {
-              const diffDiv = document.createElement('div');
-              diffDiv.className = 'diff-view';
-              diffDiv.innerHTML = `<strong>Diff (${resData.target})</strong><br>`;
-              diffDiv.append(resData.diff);
-              resultDiv.appendChild(diffDiv);
+            const rd = JSON.parse(chunk.result);
+            if (rd.type === 'replace_proposal' || rd.type === 'diff_proposal') {
+              const d = document.createElement('div');
+              d.className = 'diff-view';
+              d.innerHTML = `<strong>Diff (${rd.target})</strong><br>`;
+              d.append(rd.diff);
+              out.appendChild(d);
             } else {
-              const resultPre = document.createElement('pre');
-              resultPre.textContent = chunk.result;
-              resultDiv.appendChild(resultPre);
+              const p = document.createElement('pre');
+              p.textContent = chunk.result;
+              out.appendChild(p);
             }
           } else if (chunk.status === 'pending') {
-            const pendingMsg = document.createElement('div');
-            pendingMsg.textContent = ' (Pending...)';
-            pendingMsg.style.fontStyle = 'italic';
-            resultDiv.appendChild(pendingMsg);
+            const p = document.createElement('div');
+            p.textContent = ' (Pending...)'; p.style.fontStyle = 'italic';
+            out.appendChild(p);
           } else {
-            const noResultMsg = document.createElement('div');
-            noResultMsg.textContent = ' (No result yet)';
-            resultDiv.appendChild(noResultMsg);
+            const p = document.createElement('div');
+            p.textContent = ' (No result yet)';
+            out.appendChild(p);
           }
-          contentDiv.appendChild(resultDiv);
-          container.appendChild(contentDiv);
-          if (chunk.is_blocking) {
-            this.streamState.blocking = true;
-          }
-          this.messageWrapper.appendChild(container);
+          body.appendChild(out);
+          det.appendChild(body);
+          if (chunk.is_blocking) this.state.blocking = true;
+          this.wrapper.appendChild(det);
         }
       }
 
-      finalizeState(id) {
-        this.messageWrapper.dataset.messageId = id;
-        if (this.streamState.type === 'tool_call' && this.streamState.blocking) {
-          const container = this.messageWrapper.querySelector('details[data-mode="function_call"]');
-          const actionPanel = document.createElement('div');
-          actionPanel.className = 'action-panel';
-          const btnApprove = document.createElement('button');
-          btnApprove.textContent = 'Approve';
-          btnApprove.addEventListener('click', () => handleDecision(id, 'approve'));
-          const btnReject = document.createElement('button');
-          btnReject.textContent = 'Reject';
-          btnReject.addEventListener('click', () => handleDecision(id, 'reject'));
-          actionPanel.appendChild(btnApprove);
-          actionPanel.appendChild(btnReject);
-          container.appendChild(actionPanel);
+      finalize(id) {
+        this.wrapper.dataset.messageId = id;
+        if (this.state.type === 'tool_call' && this.state.blocking) {
+          const c = this.wrapper.querySelector('details[data-mode="function_call"]');
+          const p = document.createElement('div');
+          p.className = 'action-panel';
+          const a = document.createElement('button');
+          a.className = 'btn btn-approve'; a.textContent = 'Approve';
+          a.addEventListener('click', () => handleDecision(id, 'approve'));
+          const r = document.createElement('button');
+          r.className = 'btn btn-reject'; r.textContent = 'Reject';
+          r.addEventListener('click', () => handleDecision(id, 'reject'));
+          p.appendChild(a); p.appendChild(r);
+          c.appendChild(p);
           blockingMessageId = id;
-        } else {
-          blockingMessageId = null;
-        }
-        if (this.streamState.type === 'message') {
-          smd.parser_end(this.streamState.parser);
-        }
-        this.streamState = { type: null };
+        } else blockingMessageId = null;
+        if (this.state.type === 'message') smd.parser_end(this.state.parser);
+        this.state = { type: null };
       }
     }
 
-    async function loadConversation(conv_id) {
-      const res = await fetch(`/api/conversations/${conv_id}`);
+    async function loadConversation(id) {
+      const res = await fetch(`/api/conversations/${id}`);
       const data = await res.json();
       blockingMessageId = data.blocking_message_id;
-      const continueBtn = document.getElementById('continueBtn');
-      continueBtn.disabled = blockingMessageId !== null;
-      const responseContainer = document.getElementById('response');
-      responseContainer.innerHTML = '';
-      const title = document.createElement('h2');
-      const displayTitle = data.title || ("Conversation (" + data.id + ")");
-      title.textContent = displayTitle + ' (' + new Date(data.created_at).toLocaleString() + ')';
-      responseContainer.appendChild(title);
-      const renderer = new ChatStreamRenderer(responseContainer);
+      document.getElementById('continueBtn').disabled = blockingMessageId !== null;
+      const rc = document.getElementById('response');
+      rc.innerHTML = '';
+      const t = document.createElement('h2');
+      t.textContent = (data.title || ("Conversation (" + data.id + ")")) + ' (' + new Date(data.created_at).toLocaleString() + ')';
+      rc.appendChild(t);
+      const r = new ChatStreamRenderer(rc);
       for (const msg of data.messages) {
-        renderer.initializeState(msg.element.type, msg.role);
-        renderer.handleStreamChunk(msg.element);
-        renderer.finalizeState(msg.id);
+        r.init(msg.element.type, msg.role);
+        r.write(msg.element);
+        r.finalize(msg.id);
       }
-      const chatHistory = document.getElementById('chatHistory');
-      chatHistory.scrollTop = chatHistory.scrollHeight;
+      document.getElementById('chatHistory').scrollTop = document.getElementById('chatHistory').scrollHeight;
     }
 
     async function* streamPrompt(res) {
       if (res.status === 403) {
-        const data = await res.json();
-        blockConversation(data.blocking_message_id);
-        highlightBlockingMessage(data.blocking_message_id);
+        const d = await res.json();
+        blockConversation(d.blocking_message_id);
+        highlightBlockingMessage(d.blocking_message_id);
         return;
       }
       const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
+      const dec = new TextDecoder();
+      let buf = '';
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed) {
-            try {
-              yield JSON.parse(trimmed);
-            } catch (e) {
-              console.error("JSON parse error", e);
-            }
-          }
+          const t = line.trim();
+          if (t) { try { yield JSON.parse(t); } catch (e) { console.error("JSON parse error", e); } }
         }
       }
-      if (buffer.trim()) {
-        try {
-          yield JSON.parse(buffer.trim());
-        } catch (e) {
-          console.error("JSON parse error", e);
-        }
-      }
+      if (buf.trim()) { try { yield JSON.parse(buf.trim()); } catch (e) { console.error("JSON parse error", e); } }
     }
 
-    async function processStream(res, responseContainer, onConversationStart = null) {
-      const continueBtn = document.getElementById('continueBtn');
-      continueBtn.disabled = true;
-      const renderer = new ChatStreamRenderer(responseContainer);
-      
-      const rawConvId = res.headers.get('X-Conversation-ID');
-      const convId = parseInt(rawConvId);
-      if (onConversationStart) onConversationStart(convId);
-
-      for await (const val of streamPrompt(res)) {
-        console.log(val);
-        if (val.type === 'finalized') {
-          renderer.finalizeState(val.id);
-        } else if (val.type !== renderer.streamState.type) {
-          renderer.initializeState(val.type, 'assistant');
-        }
-        renderer.handleStreamChunk(val);
+    async function processStream(res, container, onConvStart) {
+      document.getElementById('continueBtn').disabled = true;
+      const r = new ChatStreamRenderer(container);
+      const raw = res.headers.get('X-Conversation-ID');
+      const cid = parseInt(raw);
+      if (onConvStart) onConvStart(cid);
+      for await (const v of streamPrompt(res)) {
+        if (v.type === 'finalized') r.finalize(v.id);
+        else if (v.type !== r.state.type) r.init(v.type, 'assistant');
+        r.write(v);
       }
-      continueBtn.disabled = false;
+      document.getElementById('continueBtn').disabled = false;
     }
 
-    async function resumeConversation(conversationId) {
-      const modelId = document.getElementById('modelSelect').value;
-      const res = await fetch(`/api/conversations/${conversationId}/continue?model_id=${encodeURIComponent(modelId)}`);
-      const responseContainer = document.getElementById('response');
-      await processStream(res, responseContainer);
+    async function resumeConversation(id) {
+      const mid = document.getElementById('modelSelect').value;
+      const res = await fetch(`/api/conversations/${id}/continue?model_id=${encodeURIComponent(mid)}`);
+      await processStream(res, document.getElementById('response'));
     }
 
     document.getElementById('continueBtn').addEventListener('click', () => {
-      if (selectedConversationId) {
-        resumeConversation(selectedConversationId);
-      }
+      if (selectedConversationId) resumeConversation(selectedConversationId);
     });
 
     function renderSingleMessage(container, msg) {
-      const renderer = new ChatStreamRenderer(container);
-      renderer.initializeState(msg.element.type, msg.role);
-      renderer.handleStreamChunk(msg.element);
-      renderer.finalizeState(msg.id);
+      const r = new ChatStreamRenderer(container);
+      r.init(msg.element.type, msg.role);
+      r.write(msg.element);
+      r.finalize(msg.id);
     }
 
     async function sendPrompt() {
-      const responseContainer = document.getElementById('response');
-      const promptText = document.getElementById('prompt').value;
-      if (!promptText.trim()) return;
-
-      const isNewConversation = !selectedConversationId;
-      renderSingleMessage(responseContainer, { id: null, role: 'user', element: { type: 'message', content: promptText } });
+      const rc = document.getElementById('response');
+      const text = document.getElementById('prompt').value;
+      if (!text.trim()) return;
+      const isNew = !selectedConversationId;
+      renderSingleMessage(rc, { id: null, role: 'user', element: { type: 'message', content: text } });
       document.getElementById('prompt').value = '';
-
       const res = await fetch('/api/conversations/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           model_id: document.getElementById('modelSelect').value,
-          prompt: promptText,
+          prompt: text,
           conversation_id: selectedConversationId,
           scopes: activeScopes
         })
       });
       if (res.status === 403) {
-        const data = await res.json();
-        blockConversation(data.blocking_message_id);
-        highlightBlockingMessage(data.blocking_message_id);
+        const d = await res.json();
+        blockConversation(d.blocking_message_id);
+        highlightBlockingMessage(d.blocking_message_id);
         return;
       }
-      await processStream(res, responseContainer, (convId) => {
-        if (convId !== selectedConversationId) {
-          selectedConversationId = convId;
+      await processStream(res, rc, (cid) => {
+        if (cid !== selectedConversationId) {
+          selectedConversationId = cid;
           loadConversations();
-          if (isNewConversation) {
-            const title = document.createElement('h2');
-            title.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
-            responseContainer.prepend(title);
+          if (isNew) {
+            const t = document.createElement('h2');
+            t.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
+            rc.prepend(t);
           }
         }
       });
     }
 
-    async function executeDecision(msgId, decision, comment = "") {
+    async function executeDecision(msgId, decision, comment) {
       const res = await fetch(`/api/conversations/${selectedConversationId}/tool_calls/${msgId}/decide`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision, comment })
+        body: JSON.stringify({ decision, comment: comment || '' })
       });
       if (res.ok) {
-        const wrapper = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
-        if (wrapper) {
-          const actionPanel = wrapper.querySelector('.action-panel');
-          if (actionPanel) actionPanel.remove();
-          const rejectPanel = wrapper.querySelector('.reject-panel');
-          if (rejectPanel) rejectPanel.remove();
-        }
+        const w = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
+        if (w) { const a = w.querySelector('.action-panel'); if (a) a.remove(); const r = w.querySelector('.reject-panel'); if (r) r.remove(); }
         clearBlock();
         await resumeConversation(selectedConversationId);
       }
     }
 
-    async function handleDecision(msgId, decision) {
-      if (decision === 'approve') {
-        await executeDecision(msgId, 'approve');
-      } else {
-        showRejectInput(msgId);
-      }
+    async function handleDecision(id, decision) {
+      if (decision === 'approve') await executeDecision(id, 'approve');
+      else showRejectInput(id);
     }
 
-    function showRejectInput(msgId) {
-      const container = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
-      if (!container) return;
-
-      const actionPanel = container.querySelector('.action-panel');
-      if (actionPanel) actionPanel.style.display = 'none';
-
+    function showRejectInput(id) {
+      const c = document.querySelector(`.message-wrapper[data-message-id='${id}']`);
+      if (!c) return;
+      const ap = c.querySelector('.action-panel');
+      if (ap) ap.style.display = 'none';
       const panel = document.createElement('div');
       panel.className = 'reject-panel';
-
-      const inputRow = document.createElement('div');
-      inputRow.className = 'reject-input-row';
-
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.placeholder = 'Reason for rejection...';
-      input.className = 'reject-input';
-
-      const confirmBtn = document.createElement('button');
-      confirmBtn.textContent = 'Confirm';
-      confirmBtn.className = 'btn-confirm';
-
-      const cancelBtn = document.createElement('button');
-      cancelBtn.textContent = 'Cancel';
-      cancelBtn.className = 'btn-cancel';
-
-      inputRow.appendChild(input);
-      inputRow.appendChild(confirmBtn);
-      inputRow.appendChild(cancelBtn);
-
-      panel.appendChild(inputRow);
-
-      confirmBtn.onclick = async () => {
-        const comment = input.value.trim();
-        await executeDecision(msgId, 'reject', comment);
-      };
-
-      cancelBtn.onclick = () => {
-        panel.remove();
-        if (actionPanel) actionPanel.style.display = '';
-      };
-
-      container.appendChild(panel);
-      input.focus();
+      const row = document.createElement('div');
+      row.className = 'reject-input-row';
+      const inp = document.createElement('input');
+      inp.type = 'text'; inp.placeholder = 'Reason for rejection...'; inp.className = 'reject-input';
+      const conf = document.createElement('button');
+      conf.className = 'btn'; conf.textContent = 'Confirm';
+      const cancel = document.createElement('button');
+      cancel.className = 'btn'; cancel.textContent = 'Cancel';
+      row.appendChild(inp); row.appendChild(conf); row.appendChild(cancel);
+      panel.appendChild(row);
+      conf.onclick = async () => { await executeDecision(id, 'reject', inp.value.trim()); };
+      cancel.onclick = () => { panel.remove(); if (ap) ap.style.display = ''; };
+      c.appendChild(panel);
+      inp.focus();
     }
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
@@ -1086,123 +839,91 @@
       selectedConversationId = null;
       loadConversations();
     });
-    document.getElementById('modelsBtnSide').addEventListener('click', () => {
-      switchView('models');
-    });
-    document.getElementById('reposBtnSide').addEventListener('click', () => {
-      switchView('repositories');
-    });
+
+    document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchInferenceTab(t.dataset.tab)));
+    document.getElementById('inferenceBtnSide').addEventListener('click', () => switchView('inference'));
+    document.getElementById('reposBtnSide').addEventListener('click', () => switchView('repositories'));
 
     loadModels();
+    loadCachedModels();
     loadConversations();
     loadRepositories();
 
     document.getElementById('uploadBtn').addEventListener('click', async () => {
       const files = document.getElementById('fileInput').files;
       if (!files.length) return;
-      const formData = new FormData();
-      for (const f of files) formData.append('files', f);
-      const res = await fetch('/api/ingest', { method: 'POST', body: formData });
-      const data = await res.json();
-      alert(`Uploaded ${data.ids.length} documents.`);
+      const fd = new FormData();
+      for (const f of files) fd.append('files', f);
+      const res = await fetch('/api/ingest', { method: 'POST', body: fd });
+      const d = await res.json();
+      alert('Uploaded ' + d.ids.length + ' documents.');
     });
 
     document.getElementById('searchBtn').addEventListener('click', async () => {
-      const query = document.getElementById('searchInput').value;
-      if (!query) return;
+      const q = document.getElementById('searchInput').value;
+      if (!q) return;
       const res = await fetch('/api/search', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query, top_k: 10 })
+        body: JSON.stringify({ query: q, top_k: 10 })
       });
-      const data = await res.json();
-      const container = document.getElementById('searchResultContainer');
-      container.innerHTML = '<h3>Search Results</h3>';
-      data.results.forEach(r => {
+      const d = await res.json();
+      const c = document.getElementById('searchResultContainer');
+      c.innerHTML = '<h3>Search Results</h3>';
+      d.results.forEach(r => {
         const div = document.createElement('div');
         div.innerHTML = `<strong>${r.title}</strong> (score ${r.score.toFixed(4)}): ${r.snippet}`;
-        container.appendChild(div);
+        c.appendChild(div);
       });
     });
 
     document.getElementById('estimateBtnModels').addEventListener('click', async () => {
       const select = document.getElementById('modelsEstimateSelect');
       const input = document.getElementById('modelsEstimateInput');
-      const deviceMetric = document.getElementById('modelsDeviceMetricInput').value;
-      
-      const modelId = input.value || select.value;
-      if (!modelId) return;
-
-      localStorage.setItem('deviceMetrics', deviceMetric);
-      
-      const gpuRes = await fetch('/api/gpu-stats');
-      const gpuData = await gpuRes.json();
-      
-      let url = `/api/estimate?model_id=${encodeURIComponent(modelId)}`;
-      if (deviceMetric) url += `&device_metric=${encodeURIComponent(deviceMetric)}`;
+      const dm = document.getElementById('modelsDeviceMetricInput').value;
+      const mid = input.value || select.value;
+      if (!mid) return;
+      localStorage.setItem('deviceMetrics', dm);
+      let url = `/api/estimate?model_id=${encodeURIComponent(mid)}`;
+      if (dm) url += '&device_metric=' + encodeURIComponent(dm);
       const res = await fetch(url);
       const data = await res.json();
-      const resultDiv = document.getElementById('estimateResultModels');
-      
-      resultDiv.style.display = 'block';
+      const box = document.getElementById('estimateResultModels');
+      box.style.display = 'block';
       if (data.error) {
-        resultDiv.textContent = `Error: ${data.error}`;
-        resultDiv.style.borderColor = '#ffcccc';
+        box.textContent = 'Error: ' + data.error;
+        box.className = 'result-box error';
       } else {
-        const vramGB = (data.vram / (1024**3)).toFixed(2);
-        const ramGB = (data.ram / (1024**3)).toFixed(2);
-        const tps = data.tps ? data.tps.toFixed(2) : "N/A";
-        const gpuFreeGB = (gpuData.free / (1024**3)).toFixed(2);
-        const gpuTotalGB = (gpuData.total / (1024**3)).toFixed(2);
-        const gpuUsedBytes = (parseFloat(vramGB) + parseFloat(ramGB)) * (1024**3);
-        const gpuUsedPercent = gpuData.total ? ((gpuUsedBytes / gpuData.total) * 100).toFixed(1) : 0;
-        resultDiv.textContent = `Weights Size: ${vramGB} GB\nKV Cache Size: ${ramGB} GB\nTotal: ${(parseFloat(vramGB) + parseFloat(ramGB)).toFixed(2)} GB\nTPS Estimate: ${tps}\nGPU Free: ${gpuFreeGB} GB\nGPU Total: ${gpuTotalGB} GB\nUtilization: ${gpuUsedPercent}%`;
-        resultDiv.style.borderColor = '#ddd';
+        const v = (data.vram / (1024**3)).toFixed(2);
+        const r = (data.ram / (1024**3)).toFixed(2);
+        const t = data.tps ? data.tps.toFixed(2) : 'N/A';
+        box.textContent = 'Weights Size: ' + v + ' GB\nKV Cache Size: ' + r + ' GB\nTotal: ' + (parseFloat(v) + parseFloat(r)).toFixed(2) + ' GB\nTPS Estimate: ' + t;
+        box.className = 'result-box';
       }
     });
 
-    // Sync input with select
-    document.getElementById('modelsEstimateSelect').addEventListener('change', (e) => {
-      document.getElementById('modelsEstimateInput').value = '';
-    });
-    document.getElementById('modelsEstimateInput').addEventListener('input', (e) => {
-      if (e.target.value) {
-        document.getElementById('modelsEstimateSelect').value = '';
-      }
-    });
+    document.getElementById('modelsEstimateSelect').addEventListener('change', e => { document.getElementById('modelsEstimateInput').value = ''; });
+    document.getElementById('modelsEstimateInput').addEventListener('input', e => { if (e.target.value) document.getElementById('modelsEstimateSelect').value = ''; });
 
-    // NEW: BENCHMARK LOGIC
     document.getElementById('runBenchmarkBtn').addEventListener('click', async () => {
       const btn = document.getElementById('runBenchmarkBtn');
-      const resultDiv = document.getElementById('benchmarkResult');
-      const tSize = document.getElementById('tflopsSizeInput').value || 4096;
-      const bSize = document.getElementById('bwSizeInput').value || 8192;
-
-      btn.disabled = true;
-      btn.textContent = "Running Test...";
-      resultDiv.style.display = 'block';
-      resultDiv.innerHTML = 'Running benchmark... Please wait.';
-
+      const box = document.getElementById('benchmarkResult');
+      const ts = document.getElementById('tflopsSizeInput').value || 4096;
+      const bs = document.getElementById('bwSizeInput').value || 8192;
+      btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Running...';
+      box.style.display = 'grid'; box.innerHTML = '<div class="stat"><span class="label">Running</span><span class="value">Please wait...</span></div>';
       try {
-        const res = await fetch(`/api/gpu-benchmark?tflops_size=${tSize}&bw_size=${bSize}`);
-        const data = await res.json();
-
-        if (data.status === 'success') {
-          resultDiv.innerHTML = `
-            <div class="benchmark-stat"><span class="label">FP32 TFLOPS</span><span class="value">${data.tflops.fp32.tflops.toFixed(2)}</span></div>
-            <div class="benchmark-stat"><span class="label">FP16 TFLOPS</span><span class="value">${data.tflops.fp16.tflops ? data.tflops.fp16.tflops.toFixed(2) : 'Error'}</span></div>
-            <div class="benchmark-stat"><span class="label">INT8 TFLOPS</span><span class="value">${data.tflops.int8.tflops ? data.tflops.int8.tflops.toFixed(2) : 'Error'}</span></div>
-            <div class="benchmark-stat"><span class="label">Bandwidth</span><span class="value">${data.bandwidth.gb_s.toFixed(2)} GB/s</span></div>
-          `;
-        } else {
-          resultDiv.innerHTML = `<span style="color:red">Error: ${data.message}</span>`;
-        }
-      } catch (err) {
-        resultDiv.innerHTML = `<span style="color:red">Error: ${err.message}</span>`;
-      } finally {
-        btn.disabled = false;
-        btn.textContent = "Run Benchmark";
-      }
+        const res = await fetch(`/api/gpu-benchmark?tflops_size=${ts}&bw_size=${bs}`);
+        const d = await res.json();
+        if (d.status === 'success') {
+          box.innerHTML = `
+            <div class="stat"><span class="label">FP32 TFLOPS</span><span class="value">${d.tflops.fp32.tflops.toFixed(2)}</span></div>
+            <div class="stat"><span class="label">FP16 TFLOPS</span><span class="value">${d.tflops.fp16.tflops ? d.tflops.fp16.tflops.toFixed(2) : 'Error'}</span></div>
+            <div class="stat"><span class="label">INT8 TFLOPS</span><span class="value">${d.tflops.int8.tflops ? d.tflops.int8.tflops.toFixed(2) : 'Error'}</span></div>
+            <div class="stat"><span class="label">Bandwidth</span><span class="value">${d.bandwidth.gb_s.toFixed(2)} GB/s</span></div>`;
+        } else box.innerHTML = '<div class="stat"><span class="label">Error</span><span class="value">' + d.message + '</span></div>';
+      } catch (e) { box.innerHTML = '<div class="stat"><span class="label">Error</span><span class="value">' + e.message + '</span></div>'; }
+      finally { btn.disabled = false; btn.textContent = 'Run Benchmark'; }
     });
   </script>
 </body>
