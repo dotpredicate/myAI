@@ -5,7 +5,7 @@ from typing import NamedTuple, List, Optional
 
 import database
 import documents
-from system import get_repositories, get_repo_documents
+from system import get_repositories, get_repo_documents, RepositoryConfig
 from inference.llama_cpp_server import LlamaCppEmbeddingServer
 from log_config import get_logger
 
@@ -96,8 +96,8 @@ async def synchronize():
         return
     async with _sync_lock:
         logger.info("Indexing started")
-        for repo_dir in get_repositories():
-            for relative_path, full_path in get_repo_documents(repo_dir):
+        for repo in get_repositories():
+            for relative_path, full_path in get_repo_documents(repo.internal_name):
                 logger.debug("Indexing %s", full_path)
                 if Path(relative_path).suffix.lower() not in INDEXED_EXTENSIONS:
                     logger.debug("%s - skipping unhandled extension", relative_path)

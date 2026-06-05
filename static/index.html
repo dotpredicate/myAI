@@ -167,7 +167,8 @@
     .field-row { display: flex; gap: 10px; margin-bottom: 10px; }
     .field { flex: 1; }
     .field label { display: block; font-size: 0.85em; color: #666; margin-bottom: 4px; }
-    .field input, .field select { width: 100%; }
+    .field input { width: 100%; }
+    .field select { width: auto; }
 
     /* Inference - system */
     .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
@@ -234,7 +235,7 @@
     }
 
     /* Repositories view */
-    .repo-panels { display: grid; grid-template-columns: 240px 1fr; height: 100%; overflow: hidden; }
+    .repo-panels { display: flex; height: 100%; overflow: hidden; }
     .repo-sidebar { padding: 12px; overflow-y: auto; border-right: 1px solid #e0e0e0; background: #fafafa; }
     .repo-sidebar h3 { margin: 0 0 10px 0; font-size: 15px; }
     .repo-sidebar h3.small { font-size: 13px; margin-bottom: 8px; }
@@ -250,6 +251,26 @@
     .repo-result-item { padding: 6px; margin-bottom: 4px; background: #f9f9f9; border-radius: 4px; font-size: 12px; }
     .repo-placeholder { color: #888; text-align: center; margin-top: 40px; }
     .repo-search-results { margin-bottom: 12px; }
+    .badge { font-size: 10px; padding: 1px 5px; border-radius: 3px; margin-left: 4px; font-weight: 600; }
+    .badge-plain { background: #e8f5e9; color: #2e7d32; }
+    .badge-git { background: #e3f2fd; color: #1565c0; }
+    .badge-ro { background: #fce4ec; color: #c62828; }
+    .badge-pw { background: #fff3e0; color: #e65100; }
+    .badge-w { background: #e8f5e9; color: #2e7d32; }
+    .repo-form { background: #f9f9f9; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; }
+    .repo-form .field { margin-bottom: 8px; }
+    .repo-form .field-row { margin-bottom: 8px; }
+    .repo-form .btn-row { margin-top: 12px; display: flex; gap: 8px; }
+    .repo-form .path-input-wrap { display: flex; gap: 6px; }
+    .repo-form .path-input-wrap input { flex: 1; }
+    .repo-form .hidden-input { display: none; }
+    .browse-overlay { border: 1px solid #ddd; border-radius: 4px; padding: 8px; margin-top: 8px; background: #fff; max-height: 200px; overflow-y: auto; font-size: 13px; }
+    .browse-crumb { cursor: pointer; color: #007bff; }
+    .browse-crumb:hover { text-decoration: underline; }
+    .browse-entry { cursor: pointer; padding: 3px 4px; border-radius: 3px; }
+    .browse-entry:hover { background: #f0f0f0; }
+    .browse-header { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
+    .browse-select-btn { margin-left: auto; }
   </style>
 </head>
 
@@ -348,6 +369,16 @@
         <div class="repo-sidebar">
           <h3>Repositories</h3>
           <button id="updateIndexBtn" class="btn btn-primary btn-block" style="margin-bottom:10px">Update index</button>
+          <div class="repo-form" id="addRepoFormContainer">
+            <div class="field"><label>Name</label><input id="addRepoName" class="input" placeholder="Display name"></div>
+            <div class="field"><label>Path</label><div class="path-input-wrap"><input id="addRepoPath" class="input" placeholder="Full path to folder"><button class="btn" id="addRepoBrowse" title="Pick a folder">Browse</button></div></div>
+            <div class="field"><label>Key</label><input id="addRepoKey" class="input" placeholder="Technical identifier"></div>
+            <div class="field-row">
+              <div class="field"><label>Type</label><select id="addRepoType"><option value="">auto-detect</option><option value="plain">plain</option><option value="git">git</option></select></div>
+              <div class="field"><label>Security</label><select id="addRepoSecurity"><option value="read-only">read-only</option><option value="privileged-write">privileged-write</option><option value="write">write</option></select></div>
+            </div>
+            <div class="btn-row"><button class="btn btn-primary" id="addRepoConfirm">Add</button><button class="btn" id="addRepoCancel">Cancel</button></div>
+          </div>
           <div id="repoList"></div>
         </div>
         <div class="repo-detail" id="repoDetail">
@@ -467,6 +498,13 @@
       } catch (e) { console.error("Failed to load cached models", e); }
     }
 
+    function badgeHtml(r) {
+      const typeCls = r.repo_type === 'git' ? 'badge-git' : 'badge-plain';
+      const secMap = { 'read-only': 'badge-ro', 'privileged-write': 'badge-pw', 'write': 'badge-w' };
+      const secLabel = { 'read-only': 'RO', 'privileged-write': 'PW', 'write': 'W' };
+      return `<span class="badge ${typeCls}">${r.repo_type}</span><span class="badge ${secMap[r.security_policy]}">${secLabel[r.security_policy]}</span>`;
+    }
+
     async function loadRepositories() {
       try {
         const res = await fetch('/api/repositories');
@@ -476,7 +514,9 @@
         select.innerHTML = '<option value="" disabled selected>Select a scope...</option>';
         allRepositories.forEach(r => {
           const opt = document.createElement('option');
-          opt.value = r; opt.textContent = r; select.appendChild(opt);
+          opt.value = r.internal_name;
+          opt.textContent = r.display_name || r.internal_name;
+          select.appendChild(opt);
         });
         select.addEventListener('change', e => {
           const repo = e.target.value;
@@ -493,19 +533,168 @@
       allRepositories.forEach(r => {
         const item = document.createElement('div');
         item.className = 'menu-item';
-        item.textContent = r;
-        item.addEventListener('click', () => selectRepo(r));
+        const label = r.display_name || r.internal_name;
+        item.innerHTML = `<span>${label}</span><span>${badgeHtml(r)}</span>`;
+        const actions = document.createElement('span');
+        actions.className = 'conv-delete-btn';
+        actions.textContent = '×';
+        actions.title = 'Delete';
+        actions.addEventListener('click', e => { e.stopPropagation(); deleteRepo(r); });
+        item.querySelector('span:last-child').appendChild(actions);
+        item.addEventListener('click', () => selectRepo(r.internal_name));
         container.appendChild(item);
       });
     }
 
+    function _slugify(text) {
+      return text.toLowerCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    }
+
+    let _browseBackStack = [];
+    let _browseEl = null;
+
+    async function _browseRefresh(path) {
+      const overlay = _browseEl;
+      if (!overlay) return;
+      overlay.innerHTML = '<div class="repo-placeholder">Loading...</div>';
+      try {
+        const res = await fetch(`/api/browse?path=${encodeURIComponent(path)}&include=folders`);
+        if (!res.ok) { 
+          overlay.innerHTML = '<div class="repo-placeholder">Error loading</div>';
+          return; 
+        }
+        const data = await res.json();
+
+        let crumbs = '';
+        const parts = data.path.split('/').filter(Boolean);
+        let acc = '';
+        crumbs += '<span class="browse-crumb" data-path="/">~</span>';
+        parts.forEach(p => {
+          acc += '/' + p;
+          crumbs += ` / <span class="browse-crumb" data-path="${acc}">${p}</span>`;
+        });
+        crumbs += ' <button class="btn browse-select-btn" id="browseSelectHere">Select</button>';
+
+        let html = `<div class="browse-header">${crumbs}</div>`;
+        data.entries.forEach(e => {
+          html += `<div class="browse-entry" data-path="${e.path}">📁 ${e.name}</div>`;
+        });
+        overlay.innerHTML = html;
+
+        overlay.querySelectorAll('.browse-entry').forEach(el => {
+          el.addEventListener('click', () => {
+            _browseBackStack.push(data.path);
+            _browseRefresh(el.dataset.path);
+          });
+        });
+        overlay.querySelectorAll('.browse-crumb').forEach(el => {
+          el.addEventListener('click', () => _browseRefresh(el.dataset.path));
+        });
+        document.getElementById('browseSelectHere').onclick = () => {
+          document.getElementById('addRepoPath').value = data.path;
+          const folderName = data.path.split('/').pop();
+          document.getElementById('addRepoName').value = folderName;
+          document.getElementById('addRepoKey').value = _slugify(folderName);
+          overlay.remove();
+          _browseEl = null;
+          _browseBackStack = [];
+        };
+      } catch { 
+        overlay.innerHTML = '<div class="repo-placeholder">Error loading</div>'; 
+      }
+    }
+
+    function initAddRepoForm() {
+      document.getElementById('addRepoBrowse').onclick = async () => {
+        const existing = document.getElementById('browseOverlay');
+        if (existing) { 
+          existing.remove();
+          _browseEl = null; 
+          _browseBackStack = []; 
+          return;
+        }
+        const pathInput = document.getElementById('addRepoPath');
+        const homeDir = await fetch('/api/browse?path=~&include=folders')
+          .then(r => r.json())
+          .then(d => d.path)
+          .catch(() => '/home');
+        const startPath = pathInput.value.trim() || homeDir;
+        const overlay = document.createElement('div');
+        overlay.id = 'browseOverlay';
+        overlay.className = 'browse-overlay';
+        document.getElementById('addRepoFormContainer').appendChild(overlay);
+        _browseEl = overlay;
+        _browseBackStack = [];
+        _browseRefresh(startPath);
+      };
+
+      document.getElementById('addRepoConfirm').onclick = async () => {
+        const display_name = document.getElementById('addRepoName').value.trim();
+        const internal_name = document.getElementById('addRepoKey').value.trim();
+        const path = document.getElementById('addRepoPath').value.trim();
+        if (!display_name || !internal_name || !path) { 
+          alert('Name, key and path are required');
+          return; 
+        }
+        const type = document.getElementById('addRepoType').value || undefined;
+        const security = document.getElementById('addRepoSecurity').value;
+        const res = await fetch('/api/repositories', { 
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ display_name, internal_name, path, type, security }) 
+        });
+        if (!res.ok) { 
+          const e = await res.json();
+          alert(e.error);
+          return; 
+        }
+        document.getElementById('addRepoName').value = '';
+        document.getElementById('addRepoPath').value = '';
+        document.getElementById('addRepoKey').value = '';
+        document.getElementById('addRepoType').value = '';
+        document.getElementById('addRepoSecurity').value = 'read-only';
+        loadRepositories();
+      };
+    }
+
+    async function deleteRepo(r) {
+      const confirmed = confirm(`Delete "${r.display_name || r.internal_name}"? Files on disk stay untouched.`);
+      if (!confirmed) {
+        return;
+      }
+      const res = await fetch(`/api/repositories/${encodeURIComponent(r.internal_name)}`, { method: 'DELETE' });
+      if (!res.ok) { 
+        const e = await res.json(); 
+        alert(e.error); 
+        return; 
+      }
+      loadRepositories();
+    }
+
     async function selectRepo(name) {
+      const repo = allRepositories.find(r => r.internal_name === name);
       document.getElementById('repoDetailPlaceholder').style.display = 'none';
       document.getElementById('repoDetailContent').style.display = 'block';
-      document.getElementById('repoDetailName').textContent = name;
+      const detailName = document.getElementById('repoDetailName');
+      if (repo) {
+        const label = repo.display_name || repo.internal_name;
+        detailName.innerHTML = `${label} ${badgeHtml(repo)}`;
+        const meta = document.getElementById('repoMeta') || (() => {
+          const m = document.createElement('div');
+          m.id = 'repoMeta';
+          m.className = 'repo-meta';
+          detailName.after(m);
+          return m;
+        })();
+        meta.textContent = `Key: ${repo.internal_name}  |  Path: ${repo.path}`;
+      } else {
+        detailName.textContent = name;
+      }
       document.getElementById('repoSearchResults').innerHTML = '';
       document.getElementById('repoSearchInput').value = '';
-
       const fileList = document.getElementById('repoFileList');
       fileList.innerHTML = '<div class="repo-placeholder">Loading files...</div>';
       try {
@@ -513,7 +702,7 @@
         const data = await res.json();
         fileList.innerHTML = '';
         if (!data.files || data.files.length === 0) {
-          fileList.innerHTML = '<div style="color:#888">No files found</div>';
+          fileList.innerHTML = '<div class="repo-placeholder">No files found</div>';
           return;
         }
         data.files.forEach(f => {
@@ -523,7 +712,7 @@
           fileList.appendChild(el);
         });
       } catch {
-        fileList.innerHTML = '<div style="color:#c00">Error loading files</div>';
+        fileList.innerHTML = '<div class="repo-placeholder">Error loading files</div>';
       }
     }
 
@@ -596,10 +785,17 @@
       try {
         const res = await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
         if (res.ok) {
-          if (selectedConversationId === id) { selectedConversationId = null; document.getElementById('response').innerHTML = ''; }
+          if (selectedConversationId === id) { 
+            selectedConversationId = null;
+            document.getElementById('response').innerHTML = '';
+          }
           loadConversations();
-        } else { alert('Error deleting conversation'); }
-      } catch { alert('Failed to delete conversation'); }
+        } else { 
+          alert('Error deleting conversation'); 
+        }
+      } catch { 
+        alert('Failed to delete conversation'); 
+      }
     }
 
     async function loadConversations() {
@@ -616,7 +812,9 @@
         del.addEventListener('click', e => deleteConversation(conv.id, e));
         div.appendChild(span); div.appendChild(del);
         div.className = 'menu-item'; div.dataset.id = conv.id;
-        if (selectedConversationId === conv.id) div.classList.add('selected');
+        if (selectedConversationId === conv.id) {
+          div.classList.add('selected');
+        }
         div.addEventListener('click', () => {
           switchView('chat');
           document.querySelectorAll('.menu-item').forEach(t => t.classList.remove('selected'));
@@ -729,7 +927,9 @@
           }
           body.appendChild(out);
           det.appendChild(body);
-          if (chunk.is_blocking) this.state.blocking = true;
+          if (chunk.is_blocking) {
+            this.state.blocking = true;
+          }
           this.wrapper.appendChild(det);
         }
       }
@@ -746,7 +946,8 @@
           const r = document.createElement('button');
           r.className = 'btn btn-reject'; r.textContent = 'Reject';
           r.addEventListener('click', () => handleDecision(id, 'reject'));
-          p.appendChild(a); p.appendChild(r);
+          p.appendChild(a); 
+          p.appendChild(r);
           c.appendChild(p);
           blockingMessageId = id;
         } else blockingMessageId = null;
@@ -792,10 +993,22 @@
         buf = lines.pop() || '';
         for (const line of lines) {
           const t = line.trim();
-          if (t) { try { yield JSON.parse(t); } catch (e) { console.error("JSON parse error", e); } }
+          if (t) { 
+            try { 
+              yield JSON.parse(t); 
+            } catch (e) { 
+              console.error("JSON parse error", e); 
+            } 
+          }
         }
       }
-      if (buf.trim()) { try { yield JSON.parse(buf.trim()); } catch (e) { console.error("JSON parse error", e); } }
+      if (buf.trim()) { 
+        try {
+          yield JSON.parse(buf.trim());
+        } catch (e) {
+          console.error("JSON parse error", e); 
+        } 
+      }
     }
 
     async function processStream(res, container, onConvStart) {
@@ -805,8 +1018,11 @@
       const cid = parseInt(raw);
       if (onConvStart) onConvStart(cid);
       for await (const v of streamPrompt(res)) {
-        if (v.type === 'finalized') r.finalize(v.id);
-        else if (v.type !== r.state.type) r.init(v.type, 'assistant');
+        if (v.type === 'finalized') {
+          r.finalize(v.id);
+        } else if (v.type !== r.state.type) {
+          r.init(v.type, 'assistant');
+        }
         r.write(v);
       }
       document.getElementById('continueBtn').disabled = false;
@@ -819,7 +1035,9 @@
     }
 
     document.getElementById('continueBtn').addEventListener('click', () => {
-      if (selectedConversationId) resumeConversation(selectedConversationId);
+      if (selectedConversationId) {
+        resumeConversation(selectedConversationId);
+      }
     });
 
     function renderSingleMessage(container, msg) {
@@ -858,7 +1076,7 @@
           loadConversations();
           if (isNew) {
             const t = document.createElement('h2');
-            t.textContent = 'New Conversation (' + new Date().toLocaleString() + ')';
+            t.textContent = `New Conversation (${new Date().toLocaleString()})`;
             rc.prepend(t);
           }
         }
@@ -873,15 +1091,23 @@
       });
       if (res.ok) {
         const w = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
-        if (w) { const a = w.querySelector('.action-panel'); if (a) a.remove(); const r = w.querySelector('.reject-panel'); if (r) r.remove(); }
+        if (w) { 
+          const a = w.querySelector('.action-panel');
+          if (a) a.remove();
+          const r = w.querySelector('.reject-panel');
+          if (r) r.remove(); 
+        }
         clearBlock();
         await resumeConversation(selectedConversationId);
       }
     }
 
     async function handleDecision(id, decision) {
-      if (decision === 'approve') await executeDecision(id, 'approve');
-      else showRejectInput(id);
+      if (decision === 'approve') {
+        await executeDecision(id, 'approve');
+      } else {
+        showRejectInput(id);
+      }
     }
 
     function showRejectInput(id) {
@@ -894,15 +1120,28 @@
       const row = document.createElement('div');
       row.className = 'reject-input-row';
       const inp = document.createElement('input');
-      inp.type = 'text'; inp.placeholder = 'Reason for rejection...'; inp.className = 'reject-input';
+      inp.type = 'text';
+      inp.placeholder = 'Reason for rejection...';
+      inp.className = 'reject-input';
       const conf = document.createElement('button');
-      conf.className = 'btn'; conf.textContent = 'Confirm';
+      conf.className = 'btn';
+      conf.textContent = 'Confirm';
       const cancel = document.createElement('button');
-      cancel.className = 'btn'; cancel.textContent = 'Cancel';
-      row.appendChild(inp); row.appendChild(conf); row.appendChild(cancel);
+      cancel.className = 'btn';
+      cancel.textContent = 'Cancel';
+      row.appendChild(inp);
+      row.appendChild(conf);
+      row.appendChild(cancel);
       panel.appendChild(row);
-      conf.onclick = async () => { await executeDecision(id, 'reject', inp.value.trim()); };
-      cancel.onclick = () => { panel.remove(); if (ap) ap.style.display = ''; };
+      conf.onclick = async () => { 
+        await executeDecision(id, 'reject', inp.value.trim());
+      };
+      cancel.onclick = () => { 
+        panel.remove();
+        if (ap) {
+          ap.style.display = ''; 
+        }
+      };
       c.appendChild(panel);
       inp.focus();
     }
@@ -910,7 +1149,8 @@
     document.getElementById('repoSearchBtn').addEventListener('click', searchInRepo);
 
     document.getElementById('updateIndexBtn').addEventListener('click', () => {
-      fetch('/api/sync', { method: 'POST' }).catch(e => console.error('Sync failed', e));
+      fetch('/api/sync', { method: 'POST' })
+        .catch(e => console.error('Sync failed', e));
     });
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
@@ -930,6 +1170,7 @@
     loadCachedModels();
     loadConversations();
     loadRepositories();
+    initAddRepoForm();
     document.getElementById('estimateBtnModels').addEventListener('click', async () => {
       const select = document.getElementById('modelsEstimateSelect');
       const input = document.getElementById('modelsEstimateInput');
@@ -938,7 +1179,7 @@
       if (!mid) return;
       localStorage.setItem('deviceMetrics', dm);
       let url = `/api/estimate?model_id=${encodeURIComponent(mid)}`;
-      if (dm) url += '&device_metric=' + encodeURIComponent(dm);
+      if (dm) url += `&device_metric=${encodeURIComponent(dm)}`;
       const res = await fetch(url);
       const data = await res.json();
       const box = document.getElementById('estimateResultModels');
@@ -955,16 +1196,24 @@
       }
     });
 
-    document.getElementById('modelsEstimateSelect').addEventListener('change', e => { document.getElementById('modelsEstimateInput').value = ''; });
-    document.getElementById('modelsEstimateInput').addEventListener('input', e => { if (e.target.value) document.getElementById('modelsEstimateSelect').value = ''; });
+    document.getElementById('modelsEstimateSelect').addEventListener('change', e => { 
+      document.getElementById('modelsEstimateInput').value = ''; 
+    });
+    document.getElementById('modelsEstimateInput').addEventListener('input', e => { 
+      if (e.target.value) {
+        document.getElementById('modelsEstimateSelect').value = ''; 
+      }
+    });
 
     document.getElementById('runBenchmarkBtn').addEventListener('click', async () => {
       const btn = document.getElementById('runBenchmarkBtn');
       const box = document.getElementById('benchmarkResult');
       const ts = document.getElementById('tflopsSizeInput').value || 4096;
       const bs = document.getElementById('bwSizeInput').value || 8192;
-      btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Running...';
-      box.style.display = 'grid'; box.innerHTML = '<div class="stat"><span class="label">Running</span><span class="value">Please wait...</span></div>';
+      btn.disabled = true; 
+      btn.innerHTML = '<span class="spinner"></span>Running...';
+      box.style.display = 'grid'; 
+      box.innerHTML = '<div class="stat"><span class="label">Running</span><span class="value">Please wait...</span></div>';
       try {
         const res = await fetch(`/api/gpu-benchmark?tflops_size=${ts}&bw_size=${bs}`);
         const d = await res.json();
@@ -974,9 +1223,15 @@
             <div class="stat"><span class="label">FP16 TFLOPS</span><span class="value">${d.tflops.fp16.tflops ? d.tflops.fp16.tflops.toFixed(2) : 'Error'}</span></div>
             <div class="stat"><span class="label">INT8 TFLOPS</span><span class="value">${d.tflops.int8.tflops ? d.tflops.int8.tflops.toFixed(2) : 'Error'}</span></div>
             <div class="stat"><span class="label">Bandwidth</span><span class="value">${d.bandwidth.gb_s.toFixed(2)} GB/s</span></div>`;
-        } else box.innerHTML = '<div class="stat"><span class="label">Error</span><span class="value">' + d.message + '</span></div>';
-      } catch (e) { box.innerHTML = '<div class="stat"><span class="label">Error</span><span class="value">' + e.message + '</span></div>'; }
-      finally { btn.disabled = false; btn.textContent = 'Run Benchmark'; }
+        } else {
+          box.innerHTML = `<div class="stat"><span class="label">Error</span><span class="value">${d.message}</span></div>`;
+        }
+      } catch (e) { 
+        box.innerHTML = `<div class="stat"><span class="label">Error</span><span class="value">${e.message}</span></div>`; 
+      } finally { 
+        btn.disabled = false;
+        btn.textContent = 'Run Benchmark'; 
+      }
     });
   </script>
 </body>

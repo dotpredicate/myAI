@@ -6,6 +6,7 @@ from typing import Optional
 from inference.engine import FinishedToolCall, FinishedToolCallResult, Tool
 import system
 import index
+from repositories import get_repo_from_vpath, resolve_repo_vpath
 
 def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     params = json.loads(tool_call.parameters)
@@ -38,7 +39,7 @@ def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, s
     )
 
 def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
-    from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, REPOSITORIES_DIR, WORKSPACE_VROOT, WORKSPACE_DIR
+    from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
         target_vpath_str = params.get("target")
@@ -55,12 +56,21 @@ def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, s
             return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": target_err}))
         
+        # Security policy check: read-only repos cannot be written to at all
+        target_repo = get_repo_from_vpath(target_vpath)
+        if target_repo and target_repo.security_policy == 'read-only':
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters,
+                                 json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
+
         source_safe, source_err = is_safe_vpath(source_vpath, Path(WORKSPACE_VROOT))
         if not source_safe:
             return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": source_err}))
         
-        target_realpath = vpath_to_realpath(target_vpath, REPOSITORIES_VROOT, REPOSITORIES_DIR)
+        target_realpath = resolve_repo_vpath(target_vpath)
+        if not target_realpath:
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters,
+                                 json.dumps({"error": "Could not resolve target repository path"}))
         source_realpath = vpath_to_realpath(source_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
         
         if not source_realpath.exists():
@@ -109,7 +119,7 @@ def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, s
                              json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
 def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
-    from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, REPOSITORIES_DIR, WORKSPACE_VROOT, WORKSPACE_DIR
+    from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
         target_vpath_str = params.get("target")
@@ -126,12 +136,21 @@ def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scop
             return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": target_err}))
         
+        # Security policy check: read-only repos cannot be written to at all
+        target_repo = get_repo_from_vpath(target_vpath)
+        if target_repo and target_repo.security_policy == 'read-only':
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters,
+                                 json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
+
         diff_safe, diff_err = is_safe_vpath(diff_vpath, Path(WORKSPACE_VROOT))
         if not diff_safe:
             return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                                  json.dumps({"error": diff_err}))
         
-        target_realpath = vpath_to_realpath(target_vpath, REPOSITORIES_VROOT, REPOSITORIES_DIR)
+        target_realpath = resolve_repo_vpath(target_vpath)
+        if not target_realpath:
+            return FinishedToolCallResult(tool_call.name, tool_call.parameters,
+                                 json.dumps({"error": "Could not resolve target repository path"}))
         diff_realpath = vpath_to_realpath(diff_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
         
         if not target_realpath.exists():

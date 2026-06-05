@@ -15,6 +15,7 @@ from conversation import (
     continue_conversation,
     delete_conversation
 )
+from repositories import router as repositories_router
 from log_config import get_logger, setup_logging
 import index
 from inference import default_provider, estimator, llama_cpp_server
@@ -61,16 +62,7 @@ async def get_cached_models():
         return JSONResponse(content={"models": []})
 
 
-@app.get('/api/repositories')
-async def get_repositories():
-    repos = system.get_repositories()
-    return JSONResponse(content={"repositories": repos})
-
-
-@app.get('/api/repositories/{repo_name}/files')
-async def get_repository_files(repo_name: str):
-    files = system.get_repository_files(repo_name)
-    return JSONResponse(content={"files": files})
+app.include_router(repositories_router)
 
 
 @app.post('/api/search')

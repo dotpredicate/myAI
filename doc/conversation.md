@@ -3,8 +3,6 @@
 
 An overview of how a conversation is structured.
 
-This isn't a technical spec, this is a mental model.
-
 A conversation consists of a stack of actions such as:
 - user message
 - user/system actions such as:
