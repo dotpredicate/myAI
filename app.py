@@ -17,7 +17,7 @@ from conversation import (
 )
 from repositories import router as repositories_router
 from log_config import get_logger, setup_logging
-import index
+from search import synchronize, semantic_search
 from inference import default_provider, estimator, llama_cpp_server
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.hf_gguf import list_cached_models
@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 async def lifespan(app: FastAPI):
     setup_logging()
     init_database()
-    asyncio.create_task(index.synchronize())
+    asyncio.create_task(synchronize())
     yield
     await llama_cpp_server.stop_llama_servers()
 
@@ -72,7 +72,7 @@ async def search(payload: dict = Body(...)):
     if not query_text:
         return JSONResponse(status_code=400, content={'error': 'query required'})
     results = []
-    for hit in await index.semantic_search(query_text, top_k, scopes=scopes):
+    for hit in await semantic_search(query_text, top_k, scopes=scopes):
         snippet = hit.text[:200] + ('...' if len(hit.text) > 200 else '')
         results.append({'id': hit.document_id, 'title': f"{hit.file_path} ({hit.chunk_index})", 'snippet': snippet, 'score': hit.score})
     return JSONResponse(content={'results': results})
@@ -146,7 +146,7 @@ async def gpu_stats():
 
 @app.post("/api/sync")
 async def sync(background_tasks: BackgroundTasks):
-    background_tasks.add_task(index.synchronize)
+    background_tasks.add_task(synchronize)
     return JSONResponse({"status": "sync started"})
 
 

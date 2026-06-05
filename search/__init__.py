@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import NamedTuple, List, Optional
 
 import database
-import documents
-from system import get_repositories, get_repo_documents, RepositoryConfig
+from . import documents
+from repositories import get_repositories, get_repo_documents, RepositoryConfig
 from inference.llama_cpp_server import LlamaCppEmbeddingServer
 from log_config import get_logger
 

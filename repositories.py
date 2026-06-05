@@ -1,47 +1,97 @@
 import os
 import re
+import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple, Literal
 from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
 import database
-import system
-from system import RepositoryConfig, REPOSITORIES_VROOT
 from log_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
 
 
-def get_repo_from_vpath(vpath: Path) -> Optional[RepositoryConfig]:
-    """Extract repo internal_name from a vpath like /repositories/myproject/... and return its RepositoryConfig."""
-    try:
-        vroot = Path(REPOSITORIES_VROOT)
-        rel = vpath.relative_to(vroot)
-        repo_name = rel.parts[0]
-        return system.get_repo_by_name(repo_name)
-    except (ValueError, IndexError):
+class RepositoryConfig(BaseModel):
+    id: int
+    display_name: str
+    internal_name: str
+    repo_type: Literal['plain', 'git']
+    path: str
+    security_policy: Literal['read-only', 'privileged-write', 'write']
+
+
+def get_repositories() -> List[RepositoryConfig]:
+    with database.mk_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories ORDER BY display_name")
+        rows = cur.fetchall()
+        return [RepositoryConfig(id=r[0], display_name=r[1], internal_name=r[2], repo_type=r[3], path=r[4], security_policy=r[5]) for r in rows]
+
+
+def get_repo_by_name(name: str) -> Optional[RepositoryConfig]:
+    """Look up a repository by its internal_name."""
+    with database.mk_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories WHERE internal_name = %s", (name,))
+        row = cur.fetchone()
+        if row:
+            return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4], security_policy=row[5])
         return None
 
 
-def resolve_repo_vpath(vpath: Path) -> Optional[Path]:
-    """Resolve a vpath under /repositories/ to a real filesystem path using the repo's stored path."""
-    repo = get_repo_from_vpath(vpath)
+def _auto_detect_repo_type(path: str) -> Literal['plain', 'git']:
+    try:
+        result = subprocess.run(
+            ["git", "-C", path, "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True
+        )
+        if result.returncode == 0:
+            return 'git'
+    except Exception:
+        pass
+    return 'plain'
+
+
+def get_repo_documents(repo_name: str) -> List[Tuple[str, Path]]:
+    """Returns list of (relative_path, full_path) for every file in a repository.
+    Supports both git repos (using ls-files) and non-git repos (os.walk)."""
+    repo = get_repo_by_name(repo_name)
     if not repo:
-        return None
+        return []
+    repo_path = Path(repo.path)
+    if not repo_path.is_dir():
+        return []
+
     try:
-        vroot = Path(REPOSITORIES_VROOT)
-        rel = vpath.relative_to(vroot)
-        # rel looks like: repo_internal_name/path/to/file, strip repo_internal_name
-        rel_parts = rel.parts[1:]
-        return Path(repo.path) / Path(*rel_parts)
-    except (ValueError, IndexError):
-        return None
+        if repo.repo_type == 'git':
+            result = subprocess.run(
+                ["git", "-C", str(repo_path), "ls-files"],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                return []
+            rel_names = [f for f in result.stdout.splitlines() if f]
+        else:
+            rel_names = []
+            for root, _, fnames in os.walk(str(repo_path)):
+                for fname in fnames:
+                    rel = Path(root) / fname
+                    rel_names.append(str(rel.relative_to(repo_path)))
+
+        return [(name, repo_path / name) for name in sorted(rel_names)]
+    except Exception:
+        return []
+
+
+def get_repository_files(repo_name: str) -> List[str]:
+    """List file names in a repository directory (relative paths)."""
+    return [rel for rel, _ in get_repo_documents(repo_name)]
 
 
 @router.get('/api/repositories')
 async def list_repositories():
-    repos = system.get_repositories()
+    repos = get_repositories()
     return JSONResponse(content={
         "repositories": [r.model_dump() for r in repos]
     })
@@ -63,7 +113,7 @@ async def create_repository(payload: dict = Body(...)):
     if not os.path.isdir(path):
         return JSONResponse(status_code=400, content={'error': f'path does not exist or is not a directory: {path}'})
 
-    existing = system.get_repo_by_name(internal_name)
+    existing = get_repo_by_name(internal_name)
     if existing:
         return JSONResponse(status_code=409, content={'error': f'repository with internal_name "{internal_name}" already exists'})
 
@@ -71,7 +121,7 @@ async def create_repository(payload: dict = Body(...)):
     if repo_type not in (None, 'plain', 'git'):
         return JSONResponse(status_code=400, content={'error': 'type must be "plain" or "git" if provided'})
     if not repo_type:
-        repo_type = system._auto_detect_repo_type(path)
+        repo_type = _auto_detect_repo_type(path)
 
     security_policy = payload.get('security', 'read-only')
     if security_policy not in ('read-only', 'privileged-write', 'write'):
@@ -87,14 +137,14 @@ async def create_repository(payload: dict = Body(...)):
         repo_id = row[0]
         conn.commit()
 
-    repo = system.get_repo_by_name(internal_name)
+    repo = get_repo_by_name(internal_name)
     assert repo is not None
     return JSONResponse(content=repo.model_dump(), status_code=201)
 
 
 @router.put('/api/repositories/{name}')
 async def update_repository(name: str, payload: dict = Body(...)):
-    existing = system.get_repo_by_name(name)
+    existing = get_repo_by_name(name)
     if not existing:
         return JSONResponse(status_code=404, content={'error': 'repository not found'})
 
@@ -111,14 +161,14 @@ async def update_repository(name: str, payload: dict = Body(...)):
         )
         conn.commit()
 
-    updated = system.get_repo_by_name(name)
+    updated = get_repo_by_name(name)
     assert updated is not None
     return JSONResponse(content=updated.model_dump())
 
 
 @router.delete('/api/repositories/{name}')
 async def delete_repository(name: str):
-    existing = system.get_repo_by_name(name)
+    existing = get_repo_by_name(name)
     if not existing:
         return JSONResponse(status_code=404, content={'error': 'repository not found'})
 
@@ -153,6 +203,6 @@ async def browse_directory(path: str, include: list[str] = Query(['files', 'fold
 
 
 @router.get('/api/repositories/{repo_name}/files')
-async def get_repository_files(repo_name: str):
-    files = system.get_repository_files(repo_name)
+async def list_repository_files(repo_name: str):
+    files = get_repository_files(repo_name)
     return JSONResponse(content={"files": files})

@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Optional
 from inference.engine import FinishedToolCall, FinishedToolCallResult, Tool
 import system
-import index
-from repositories import get_repo_from_vpath, resolve_repo_vpath
+from search import semantic_search
+from system import get_repo_from_vpath, resolve_repo_vpath
 
 async def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     params = json.loads(tool_call.parameters)
@@ -25,7 +25,7 @@ async def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = Fa
     top_k: int = int(params.get("top_k", 5))
 
     try:
-        results = await index.semantic_search(prompt, top_k, scopes=scopes)
+        results = await semantic_search(prompt, top_k, scopes=scopes)
     except Exception as exc:
         return FinishedToolCallResult(
             name=tool_call.name,
