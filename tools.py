@@ -8,7 +8,7 @@ import system
 import index
 from repositories import get_repo_from_vpath, resolve_repo_vpath
 
-def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
+async def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     params = json.loads(tool_call.parameters)
     command: str = params['command']
     if not isinstance(command, str):
@@ -19,13 +19,13 @@ def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, sco
     output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
     return FinishedToolCallResult(tool_call.name, tool_call.parameters, output_str)
 
-def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
+async def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     params = json.loads(tool_call.parameters)
     prompt: str = params["prompt"]
     top_k: int = int(params.get("top_k", 5))
 
     try:
-        results = index.semantic_search(prompt, top_k, scopes=scopes)
+        results = await index.semantic_search(prompt, top_k, scopes=scopes)
     except Exception as exc:
         return FinishedToolCallResult(
             name=tool_call.name,
@@ -38,7 +38,7 @@ def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, s
         result=json.dumps({"results": json.dumps(results)})
     )
 
-def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
+async def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -118,7 +118,7 @@ def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, s
         return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
-def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
+async def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -267,11 +267,11 @@ TOOL_REGISTRY: list[Tool] = [
     }
 ]
 
-def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: list[str] = []) -> FinishedToolCallResult:
+async def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: list[str] = []) -> FinishedToolCallResult:
     for entry in TOOL_REGISTRY:
         if entry["name"] == call.name:
             try:
-                return entry["executor"](call, privileged, scopes)
+                return await entry["executor"](call, privileged, scopes)
             except Exception as exc:
                 return FinishedToolCallResult(
                     name=call.name,

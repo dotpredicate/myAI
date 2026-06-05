@@ -22,7 +22,6 @@ from inference import default_provider, estimator, llama_cpp_server
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.hf_gguf import list_cached_models
 from tools import TOOL_REGISTRY
-import system
 
 logger = get_logger(__name__)
 
@@ -161,7 +160,7 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
 
     try:
         conn = mk_conn()
-        executed = decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
+        executed = await decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
         return JSONResponse(content={'status': 'success', 'executed': executed})
     except ValueError as e:
         return JSONResponse(status_code=400, content={'error': str(e)})

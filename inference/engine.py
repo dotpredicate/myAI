@@ -1,15 +1,18 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncGenerator, AsyncIterator, Callable, Generator, Iterator, Optional, TypedDict, Union
+from typing import AsyncIterator, Callable, Coroutine, Optional, TypedDict, Union
 
 from domain import ConversationElement
+
 
 class Tool(TypedDict):
     name: str
     schema: FunctionDefinition
-    executor: Callable[[FinishedToolCall, bool, list[str]], FinishedToolCallResult]
+    executor: Callable[[FinishedToolCall, bool, list[str]], Coroutine[None, None, FinishedToolCallResult]]
+
 
 FunctionParameters = dict[str, object]
+
 
 class FunctionDefinition(TypedDict):
     name: str

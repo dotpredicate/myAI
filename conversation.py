@@ -1,4 +1,4 @@
-from typing import AsyncGenerator, Literal, Optional, Any, Generator, List
+from typing import AsyncGenerator, Literal, Optional, Any, List
 import json
 from psycopg2.extensions import connection
 
@@ -150,7 +150,7 @@ async def continue_conversation(conn: connection, conv_id: int, model_id: str, f
                     case FinishedToolCall():
                         assert isinstance(aggregated_element, FinishedToolCall)
                         # Pass the extracted scopes to the tool call
-                        tool_result = run_tool_call(aggregated_element, scopes=scopes)
+                        tool_result = await run_tool_call(aggregated_element, scopes=scopes)
                         result_element = to_conv_elem(tool_result)
                         msg_id = insert_message(conn, conv_id, 'assistant', result_element)
                         conn.commit()
@@ -203,7 +203,7 @@ def get_conversation_details(conn: connection, conv_id: int) -> Optional[dict[st
         }
 
 
-def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> bool:
+async def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> bool:
     cur = conn.cursor()
     cur.execute('SELECT elements FROM messages WHERE id = %s AND conversation_id = %s', (msg_id, conv_id))
     row = cur.fetchone()
@@ -230,7 +230,7 @@ def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: Lite
         tool_call = FinishedToolCall(name=elem.name, parameters=elem.parameters)
         
         scopes = get_scopes_from_last_user_message(conn, conv_id)
-        result = run_tool_call(tool_call, privileged=True, scopes=scopes)
+        result = await run_tool_call(tool_call, privileged=True, scopes=scopes)
         result_elem = ToolCallResult(
             original_message_id=msg_id,
             result=result.result,

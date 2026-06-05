@@ -1,5 +1,6 @@
 from typing import Optional, Tuple, List, Any
 from psycopg2.extensions import connection
+from psycopg2.extras import execute_values
 
 def get_document_by_path(conn: connection, path: str) -> Optional[Tuple[int, str]]:
     with conn.cursor() as cur:
@@ -43,3 +44,43 @@ def replace_document_chunks(conn: connection, doc_id: int, chunk_texts: List[str
                 "INSERT INTO document_chunks (document_id, chunk_index, chunk_text, embedding) VALUES (%s, %s, %s, %s)",
                 (doc_id, index, chunk_text, embedding),
             )
+
+
+def batch_upsert_documents(
+    conn: connection,
+    docs: list[tuple[str, str, str]],  # (file_path, file_hash, content)
+) -> list[int]:
+    with conn.cursor() as cur:
+        result = execute_values(
+            cur,
+            """
+            INSERT INTO documents (file_path, file_hash, content)
+            VALUES %s
+            ON CONFLICT (file_path) DO UPDATE
+            SET file_hash = EXCLUDED.file_hash, content = EXCLUDED.content
+            RETURNING id
+            """,
+            docs,
+            template="(%s, %s, %s)",
+            fetch=True,
+        )
+        return [row[0] for row in result]
+
+
+def batch_replace_document_chunks(
+    conn: connection,
+    chunks: list[tuple[int, int, str, Any]],  # (doc_id, chunk_index, chunk_text, embedding)
+) -> None:
+    """Delete old chunks for all documents in the batch and bulk-insert new ones."""
+    with conn.cursor() as cur:
+        doc_ids = list({doc_id for doc_id, _, _, _ in chunks})
+        cur.execute(
+            "DELETE FROM document_chunks WHERE document_id = ANY(%s)",
+            (doc_ids,),
+        )
+        execute_values(
+            cur,
+            "INSERT INTO document_chunks (document_id, chunk_index, chunk_text, embedding) VALUES %s",
+            chunks,
+            template="(%s, %s, %s, %s::vector)",
+        )
