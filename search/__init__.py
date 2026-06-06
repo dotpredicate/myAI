@@ -123,8 +123,8 @@ async def _index_file(repo: RepositoryConfig, relative_path: str, full_path: Pat
     try:
         file_bytes = full_path.read_bytes()
         file_text = file_bytes.decode()
-    except Exception as exc:
-        logger.warning("%s - unreadable file: %s", relative_path, exc)
+    except Exception:
+        logger.exception("%s - unreadable file", relative_path)
         return None
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -134,6 +134,7 @@ async def _index_file(repo: RepositoryConfig, relative_path: str, full_path: Pat
         logger.debug("%s - unchanged checksum %s", relative_path, file_hash)
         return None
 
+    logger.info("%s - to be indexed", relative_path)
     token_ids, chunk_texts = await get_token_chunks(file_text)
     logger.debug("%s - tokenized into %s chunks", relative_path, len(chunk_texts))
     return IndexedFile(
@@ -217,7 +218,7 @@ async def synchronize():
                 logger.info("Repository %s - batch %s (%s files)", repo.internal_name, batch_idx, len(file_batch))
                 try:
                     await _process_file_batch(repo, file_batch)
-                except Exception as exc:
-                    logger.error("Repository %s - batch %s failed: %s", repo.internal_name, batch_idx, exc)
+                except Exception:
+                    logger.exception("Repository %s - batch %s failed", repo.internal_name, batch_idx)
 
         logger.info("Indexing finished")
