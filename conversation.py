@@ -11,7 +11,7 @@ from domain import (
     ConversationElement,
     stored_element_adapter,
 )
-from inference.engine import (
+from inference import (
     StreamingMessage,
     StreamingThinking,
     FinishedMessage,
@@ -22,7 +22,7 @@ from inference.engine import (
     Tool,
 )
 
-from inference import default_provider
+from inference import registry
 from log_config import get_logger
 
 logger = get_logger(__name__)
@@ -131,13 +131,15 @@ def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[list[
     return ctx, scopes
 
 
-async def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: list[Tool]) -> AsyncGenerator[bytes, None]:
+async def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: list[Tool], provider_key: str) -> AsyncGenerator[bytes, None]:
     from tools import run_tool_call
     context, scopes = get_messages_for_continuation(conn, conv_id)
 
+    provider = registry.get(provider_key)
+
     run_next_loop = True
     while run_next_loop:
-        chat_gen_inner = default_provider.run_chat_completion_stream(model_id, context, functions)
+        chat_gen_inner = provider.run_chat_completion_stream(model_id, context, functions)
         run_next_loop = False
         async for delta, aggregated_element in chat_gen_inner:
             if aggregated_element is not None:

@@ -34,6 +34,8 @@ Project structure:
 - `./doc/` - design and documentation
   - `conversation.md`
   - `repositories.md`
+  - `inference_providers.md`
+  - `agents.md`
 
 ### Quickstart
 1. source .venv/bin/activate
@@ -47,10 +49,11 @@ At startup, the module scans the `migrations` folder for SQL files, sorts them i
 
 ### Code style
 - Use explicit Python typing
-- Lint with mypy
+- Lint with `mypy .` and `ruff check`
 - The use of `style` attribute is forbidden
 
 ### Simplifications for now
+- the only available inference provider is embedded llama.cpp server
 - web UI only, no mobile, minimal styling
 - single user, no log-in
 - no cloud integrations

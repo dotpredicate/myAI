@@ -41,7 +41,8 @@ def list_cached_models(cache_dir: Path = DEFAULT_CACHE) -> List[str]:
 
     cached = set()
     for repo_dir in cache_dir.glob("models--*--*"):
-        if not repo_dir.is_dir(): continue
+        if not repo_dir.is_dir():
+            continue
 
         repo_id = repo_dir.name.replace("models--", "").replace("--", "/")
 

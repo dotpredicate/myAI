@@ -15,7 +15,6 @@ logger = get_logger(__name__)
 
 
 _server_processes: dict[str, subprocess.Popen] = {}
-_server_ready_events: dict[str, asyncio.Event] = {}
 
 async def _wait_for_server(port: str, timeout: int, readiness_check: Callable[[], Awaitable[bool]]) -> None:
     logger.info("Waiting for server on port %s to be ready...", port)
@@ -35,23 +34,24 @@ async def _wait_for_server(port: str, timeout: int, readiness_check: Callable[[]
     except asyncio.TimeoutError:
         raise TimeoutError(f"Server on port {port} did not start within {timeout} seconds.")
 
-async def _lazy_start_server(port: str, args: list[str], start_event: asyncio.Event, readiness_check: Callable[[], Awaitable[bool]]) -> None:
-    if port in _server_processes:
-        await start_event.wait()
-        return
-    try:
-        cmd = ["llama-server", "--port", port] + args
-        logger.info("Starting server on port %s: %s", port, ' '.join(cmd))
-        proc = subprocess.Popen(cmd)
-        _server_processes[port] = proc
-    except FileNotFoundError:
-        logger.error("llama-server not found in PATH.")
-        raise
-    try:
-        await _wait_for_server(port, 60, readiness_check)
-    except Exception:
-        raise
-    start_event.set()
+async def _lazy_start_server(port: str, args: list[str], start_lock: asyncio.Lock, start_event: asyncio.Event, readiness_check: Callable[[], Awaitable[bool]]) -> None:
+    async with start_lock:
+        if port in _server_processes:
+            await start_event.wait()
+            return
+        try:
+            cmd = ["llama-server", "--port", port] + args
+            logger.info("Starting server on port %s: %s", port, ' '.join(cmd))
+            proc = subprocess.Popen(cmd)
+            _server_processes[port] = proc
+        except FileNotFoundError:
+            logger.error("llama-server not found in PATH.")
+            raise
+        try:
+            await _wait_for_server(port, 60, readiness_check)
+        except Exception:
+            raise
+        start_event.set()
 
 async def stop_llama_servers() -> None:
     """Terminate all managed llama-server processes concurrently.
@@ -94,13 +94,14 @@ class LlamaCppServerProvider(InferenceProvider):
         endpoint = os.getenv('LLAMA_CPP_ENDPOINT', f'http://localhost:{port}')
         self._client = openai.Client(api_key='dummy', base_url=endpoint)
         self.ready_event = asyncio.Event()
+        self.start_lock = asyncio.Lock()
 
     async def _lazy_start(self):
         async def _check() -> bool:
             async with httpx.AsyncClient(timeout=1.0) as client:
                 resp = await client.get(f"http://localhost:{self.port}/v1/models")
                 return resp.status_code in (200, 401)
-        await _lazy_start_server(self.port, ["--offline", "--jinja", "--chat-template-kwargs", '{"preserve_thinking":true}'], self.ready_event, readiness_check=_check)
+        await _lazy_start_server(self.port, ["--offline", "--jinja", "--chat-template-kwargs", '{"preserve_thinking":true}'], self.start_lock, self.ready_event, readiness_check=_check)
 
     async def run_chat_completion_stream(
         self,
@@ -137,6 +138,7 @@ class LlamaCppEmbeddingServer:
         self.endpoint = f'http://localhost:{port}'
         self._client = openai.Client(api_key='dummy', base_url=self.endpoint + '/v1')
         self.ready_event = asyncio.Event()
+        self.start_lock = asyncio.Lock()
 
     async def _lazy_start(self):
         async def _check() -> bool:
@@ -146,7 +148,7 @@ class LlamaCppEmbeddingServer:
                     json={"content": "Hello, world!"}
                 )
                 return resp.status_code == 200
-        await _lazy_start_server(self.port, ["--embedding", "-hf", self.model], self.ready_event, readiness_check=_check)
+        await _lazy_start_server(self.port, ["--embedding", "-hf", self.model], self.start_lock, self.ready_event, readiness_check=_check)
 
     async def embed(self, model: str, input: str | list[str] | list[int] | list[list[int]]) -> list[list[float]]:
         if model != self.model:

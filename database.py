@@ -1,5 +1,4 @@
 import psycopg2
-from psycopg2.extensions import connection
 from datetime import datetime
 import os
 import glob

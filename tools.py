@@ -3,7 +3,7 @@ import subprocess
 import difflib
 from pathlib import Path
 from typing import Optional
-from inference.engine import FinishedToolCall, FinishedToolCallResult, Tool
+from inference import FinishedToolCall, FinishedToolCallResult, Tool
 import system
 from search import semantic_search
 from system import get_repo_from_vpath, resolve_repo_vpath

@@ -1,52 +1,8 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, Callable, Coroutine, Optional, TypedDict, Union
+from typing import AsyncIterator, Callable, Coroutine, Optional, TypeAlias, TypedDict, Union
 
 from domain import ConversationElement
-
-
-class Tool(TypedDict):
-    name: str
-    schema: FunctionDefinition
-    executor: Callable[[FinishedToolCall, bool, list[str]], Coroutine[None, None, FinishedToolCallResult]]
-
-
-FunctionParameters = dict[str, object]
-
-
-class FunctionDefinition(TypedDict):
-    name: str
-    description: str
-    parameters: FunctionParameters
-
-
-class InferenceProvider(ABC):
-    """Abstract interface for an inference provider.
-
-    Only the two core inference operations are part of the contract.
-    Lifecycle management (start/stop server etc.) is implementation-specific.
-    """
-
-    @abstractmethod
-    def run_chat_completion_stream(
-        self,
-        model_id: str,
-        context: list[tuple[int, ConversationElement]],
-        functions: list[Tool],
-    ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
-        ...
-
-    @abstractmethod
-    async def list_models(self) -> list[Model]:
-        ...
-
-
-@dataclass(frozen=True)
-class Model:
-    id: str
-    created: int
-    owned_by: str
-
 
 @dataclass(frozen=True)
 class StreamingMessage:
@@ -64,7 +20,7 @@ class StreamingToolCall:
     parameters: Optional[str]
 
 
-StreamingElement = Union[StreamingMessage, StreamingThinking, StreamingToolCall]
+StreamingElement: TypeAlias = Union[StreamingMessage, StreamingThinking, StreamingToolCall]
 
 
 @dataclass(frozen=True)
@@ -91,4 +47,43 @@ class FinishedToolCallResult:
     is_blocking: bool = False
 
 
-FinishedElement = Union[FinishedMessage, FinishedThinking, FinishedToolCall, FinishedToolCallResult]
+FinishedElement: TypeAlias = Union[FinishedMessage, FinishedThinking, FinishedToolCall, FinishedToolCallResult]
+
+FunctionParameters: TypeAlias = dict[str, object]
+
+class FunctionDefinition(TypedDict):
+    name: str
+    description: str
+    parameters: FunctionParameters
+
+class Tool(TypedDict):
+    name: str
+    schema: FunctionDefinition
+    executor: Callable[[FinishedToolCall, bool, list[str]], Coroutine[None, None, FinishedToolCallResult]]
+
+
+@dataclass(frozen=True)
+class Model:
+    id: str
+    created: int
+    owned_by: str
+
+class InferenceProvider(ABC):
+    """Abstract interface for an inference provider.
+
+    Only the two core inference operations are part of the contract.
+    Lifecycle management (start/stop server etc.) is implementation-specific.
+    """
+
+    @abstractmethod
+    def run_chat_completion_stream(
+        self,
+        model_id: str,
+        context: list[tuple[int, ConversationElement]],
+        functions: list[Tool],
+    ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
+        ...
+
+    @abstractmethod
+    async def list_models(self) -> list[Model]:
+        ...

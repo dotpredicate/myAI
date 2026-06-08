@@ -298,6 +298,8 @@
           <div id="scopePills"></div>
         </div>
         <textarea id="prompt" rows="7" placeholder="Enter prompt here"></textarea>
+        <label for="providerSelect">Provider:</label>
+        <select id="providerSelect"></select>
         <label for="modelSelect">Select Model:</label>
         <select id="modelSelect"></select>
         <button id="sendBtn" class="btn btn-primary" style="margin-top:8px">Send</button>
@@ -462,8 +464,28 @@
       } catch { grid.innerHTML = '<div class="stat"><span class="label">Error</span><span class="value">—</span></div>'; }
     }
 
-    async function loadModels() {
-      const res = await fetch('/api/models');
+    async function loadProviders() {
+      const res = await fetch('/api/providers');
+      const data = await res.json();
+      const select = document.getElementById('providerSelect');
+      select.innerHTML = '';
+      data.providers.forEach(p => {
+        const opt = document.createElement('option');
+        opt.value = p.key;
+        opt.textContent = p.display_name;
+        select.appendChild(opt);
+      });
+      const saved = localStorage.getItem('selectedProvider');
+      if (saved) select.value = saved;
+      select.addEventListener('change', () => {
+        localStorage.setItem('selectedProvider', select.value);
+        loadModels(select.value);
+      });
+    }
+
+    async function loadModels(providerKey) {
+      if (!providerKey) return;
+      const res = await fetch(`/api/providers/${encodeURIComponent(providerKey)}/models`);
       const data = await res.json();
       const chatSelect = document.getElementById('modelSelect');
       chatSelect.innerHTML = '';
@@ -1029,8 +1051,9 @@
     }
 
     async function resumeConversation(id) {
+      const pk = document.getElementById('providerSelect').value;
       const mid = document.getElementById('modelSelect').value;
-      const res = await fetch(`/api/conversations/${id}/continue?model_id=${encodeURIComponent(mid)}`);
+      const res = await fetch(`/api/conversations/${id}/continue?provider_key=${encodeURIComponent(pk)}&model_id=${encodeURIComponent(mid)}`);
       await processStream(res, document.getElementById('response'));
     }
 
@@ -1058,6 +1081,7 @@
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          provider_key: document.getElementById('providerSelect').value,
           model_id: document.getElementById('modelSelect').value,
           prompt: text,
           conversation_id: selectedConversationId,
@@ -1166,7 +1190,11 @@
     document.getElementById('inferenceBtnSide').addEventListener('click', () => switchView('inference'));
     document.getElementById('reposBtnSide').addEventListener('click', () => switchView('repositories'));
 
-    loadModels();
+    loadProviders()
+      .then(() => {
+        const selectedProvider = document.getElementById('providerSelect').value;
+        loadModels(selectedProvider);
+      });
     loadCachedModels();
     loadConversations();
     loadRepositories();

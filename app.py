@@ -18,7 +18,7 @@ from conversation import (
 from repositories import router as repositories_router
 from log_config import get_logger, setup_logging
 from search import synchronize, semantic_search
-from inference import default_provider, estimator, llama_cpp_server
+from inference import registry, estimator, llama_cpp_server
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.hf_gguf import list_cached_models
 from tools import TOOL_REGISTRY
@@ -41,12 +41,26 @@ async def read_index():
     return FileResponse("static/index.html")
 
 
-@app.get('/api/models')
-async def get_models():
+@app.get('/api/providers')
+async def get_providers():
+    registrations = registry.list_registrations()
+    return JSONResponse(content={
+        "providers": [
+            {"key": r.key, "display_name": r.display_name, "description": r.description}
+            for r in registrations
+        ]
+    })
+
+
+@app.get('/api/providers/{provider_key}/models')
+async def get_models(provider_key: str):
     try:
-        models = await default_provider.list_models()
+        provider = registry.get(provider_key)
+        models = await provider.list_models()
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": f"Provider '{provider_key}' not found"})
     except Exception as e:
-        logger.error("Error fetching models: %s", e)
+        logger.error("Error fetching models for provider '%s': %s", provider_key, e)
         models = []
     return JSONResponse(content={"models": [{'id': m.id, 'name': m.id} for m in models]})
 
@@ -82,8 +96,11 @@ async def search(payload: dict = Body(...)):
 async def prompt_model(request: Request):
     payload: dict[str, object] = await request.json()
     prompt = cast(str, payload.get('prompt', ''))
+    provider_key = cast(Optional[str], payload.get('provider_key'))
     model_id = cast(Optional[str], payload.get('model_id'))
     scopes = cast(Optional[list[str]], payload.get('scopes'))
+    if provider_key is None:
+        return JSONResponse(status_code=400, content={'error': 'provider_key required'})
     if model_id is None:
         return JSONResponse(status_code=400, content={'error': 'model_id required'})
     conversation_id = cast(Optional[int], payload.get('conversation_id'))
@@ -99,7 +116,7 @@ async def prompt_model(request: Request):
 
     available_tools = TOOL_REGISTRY
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, available_tools),
+        continue_conversation(conn, conversation_id, model_id, available_tools, provider_key=provider_key),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
 
@@ -170,7 +187,10 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
 
 @app.get('/api/conversations/{conversation_id}/continue')
 async def continue_conversation_endpoint(conversation_id: int, request: Request):
+    provider_key = request.query_params.get('provider_key')
     model_id = request.query_params.get('model_id')
+    if not provider_key:
+        return JSONResponse(status_code=400, content={'error': 'provider_key query parameter required'})
     if not model_id:
         return JSONResponse(status_code=400, content={'error': 'model_id query parameter required'})
     conn = mk_conn()
@@ -179,7 +199,7 @@ async def continue_conversation_endpoint(conversation_id: int, request: Request)
         return JSONResponse(status_code=404, content={'error': 'conversation not found'})
     available_tools = TOOL_REGISTRY
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, available_tools),
+        continue_conversation(conn, conversation_id, model_id, available_tools, provider_key=provider_key),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
 

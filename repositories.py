@@ -129,12 +129,11 @@ async def create_repository(payload: dict = Body(...)):
 
     with database.mk_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO repositories (display_name, internal_name, repo_type, path, security_policy) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            "INSERT INTO repositories (display_name, internal_name, repo_type, path, security_policy) VALUES (%s, %s, %s, %s, %s)",
             (display_name, internal_name, repo_type, path, security_policy)
         )
         row = cur.fetchone()
         assert row is not None
-        repo_id = row[0]
         conn.commit()
 
     repo = get_repo_by_name(internal_name)

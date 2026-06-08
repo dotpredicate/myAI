@@ -62,7 +62,7 @@ async def get_token_chunks(text: str, max_tokens: int = 400, overlap: int = 50, 
         chunk_tokens: list[int] = []
         chunk_text = ''
         for piece in chunk:
-            chunk_tokens.append(int(piece["id"]))  # type: ignore[call-overload]
+            chunk_tokens.append(int(piece["id"]))
             piece_content = piece["piece"]
             if isinstance(piece_content, str):
                 chunk_text += piece_content
