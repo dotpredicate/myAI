@@ -2,7 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 from typing import NamedTuple, Optional, List
-from repositories import get_repo_by_name, RepositoryConfig
+from repositories import get_repo_by_name, RepositoryConfig, SecurityPolicy
+from domain import ScopeSpec
 
 
 # Paths and configuration
@@ -13,7 +14,7 @@ WORKSPACE_VROOT = "/workspace"
 os.makedirs(WORKSPACE_DIR, exist_ok=True)
 
 
-def is_safe_vpath(vpath: Path, expected_vroot: Path, allowed_scopes: Optional[List[str]] = None) -> tuple[bool, str]:
+def is_safe_vpath(vpath: Path, expected_vroot: Path, allowed_scopes: Optional[List[ScopeSpec]] = None) -> tuple[bool, str]:
     try:
         parts = vpath.parts
         if ".." in parts:
@@ -26,13 +27,14 @@ def is_safe_vpath(vpath: Path, expected_vroot: Path, allowed_scopes: Optional[Li
             vpath_str = str(vpath)
             match_found = False
             for scope in allowed_scopes:
-                prefix = f"{expected_vroot}/{scope}"
+                prefix = f"{expected_vroot}/{scope.internal_name}"
                 if vpath_str.startswith(prefix):
                     match_found = True
                     break
 
             if not match_found:
-                return False, f"Access denied: path is not in allowed scopes {allowed_scopes}"
+                names = [s.internal_name for s in allowed_scopes]
+                return False, f"Access denied: path is not in allowed scopes {names}"
 
         return True, ""
     except Exception as e:
@@ -84,7 +86,7 @@ class ShellResult(NamedTuple):
     stderr: str
 
 
-def run_sandboxed_command(command: str, scopes: Optional[List[str]] = None) -> ShellResult:
+def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]] = None) -> ShellResult:
     workspace_path = os.path.abspath(WORKSPACE_DIR)
 
     bwrap_args = [
@@ -100,21 +102,21 @@ def run_sandboxed_command(command: str, scopes: Optional[List[str]] = None) -> S
         "--chdir", "/",
     ]
 
-    if scopes:
-        for scope in scopes:
-            repo = get_repo_by_name(scope)
-            if repo is None:
-                continue
-            scope_path = repo.path
-            if not os.path.isdir(scope_path):
-                continue
-            if repo.security_policy == 'write':
-                bwrap_args.extend(["--bind", scope_path, f"{REPOSITORIES_VROOT}/{repo.internal_name}"])
-            else:
-                bwrap_args.extend(["--ro-bind", scope_path, f"{REPOSITORIES_VROOT}/{repo.internal_name}"])
-    else:
-        # No scopes defined
-        pass
+    if not scopes:
+        scopes = []
+    
+    for scope in scopes:
+        repo = get_repo_by_name(scope.internal_name)
+        if repo is None:
+            continue
+        scope_path = repo.path
+        if not os.path.isdir(scope_path):
+            continue
+        effective_policy = scope.security_policy_override if scope.security_policy_override is not None else repo.security_policy
+        if effective_policy == SecurityPolicy.WRITE:
+            bwrap_args.extend(["--bind", scope_path, f"{REPOSITORIES_VROOT}/{repo.internal_name}"])
+        else:
+            bwrap_args.extend(["--ro-bind", scope_path, f"{REPOSITORIES_VROOT}/{repo.internal_name}"])
 
     bwrap_args.extend([
         "bash", "-c", command

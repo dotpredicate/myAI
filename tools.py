@@ -2,13 +2,14 @@ import json
 import subprocess
 import difflib
 from pathlib import Path
-from typing import Optional
 from inference import FinishedToolCall, FinishedToolCallResult, Tool
 import system
 from search import semantic_search
 from system import get_repo_from_vpath, resolve_repo_vpath
+from repositories import SecurityPolicy
+from domain import ScopeSpec
 
-async def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
+async def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
     params = json.loads(tool_call.parameters)
     command: str = params['command']
     if not isinstance(command, str):
@@ -19,13 +20,14 @@ async def run_shell_command(tool_call: FinishedToolCall, privileged: bool = Fals
     output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
     return FinishedToolCallResult(tool_call.name, tool_call.parameters, output_str)
 
-async def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
+async def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
     params = json.loads(tool_call.parameters)
     prompt: str = params["prompt"]
     top_k: int = int(params.get("top_k", 5))
 
+    scope_names: list[str] = [s.internal_name for s in scopes] if scopes else []
     try:
-        results = await semantic_search(prompt, top_k, scopes=scopes)
+        results = await semantic_search(prompt, top_k, scopes=scope_names)
     except Exception as exc:
         return FinishedToolCallResult(
             name=tool_call.name,
@@ -38,7 +40,7 @@ async def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = Fa
         result=json.dumps({"results": json.dumps(results)})
     )
 
-async def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
+async def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -58,7 +60,7 @@ async def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = Fa
         
         # Security policy check: read-only repos cannot be written to at all
         target_repo = get_repo_from_vpath(target_vpath)
-        if target_repo and target_repo.security_policy == 'read-only':
+        if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
             return FinishedToolCallResult(tool_call.name, tool_call.parameters,
                                  json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
 
@@ -118,7 +120,7 @@ async def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = Fa
         return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
                              json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
-async def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scopes: Optional[list[str]] = None) -> FinishedToolCallResult:
+async def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
     from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, WORKSPACE_VROOT, WORKSPACE_DIR
     try:
         params = json.loads(tool_call.parameters)
@@ -138,7 +140,7 @@ async def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False
         
         # Security policy check: read-only repos cannot be written to at all
         target_repo = get_repo_from_vpath(target_vpath)
-        if target_repo and target_repo.security_policy == 'read-only':
+        if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
             return FinishedToolCallResult(tool_call.name, tool_call.parameters,
                                  json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
 
@@ -267,7 +269,7 @@ TOOL_REGISTRY: list[Tool] = [
     }
 ]
 
-async def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: list[str] = []) -> FinishedToolCallResult:
+async def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
     for entry in TOOL_REGISTRY:
         if entry["name"] == call.name:
             try:

@@ -283,6 +283,7 @@
     </div>
     <div id="sidebarFooter">
       <button id="inferenceBtnSide" class="menu-item">Inference</button>
+      <button id="agentsBtnSide" class="menu-item">Agents</button>
       <button id="reposBtnSide" class="menu-item">Repositories</button>
     </div>
   </div>
@@ -295,9 +296,18 @@
         <div id="scopeSelectorContainer">
           <label>Scopes:</label>
           <select id="scopeSelect"></select>
+          <select id="scopePolicySelect">
+            <option value="">Use default</option>
+            <option value="read-only">read-only</option>
+            <option value="privileged-write">privileged-write</option>
+            <option value="write">write</option>
+          </select>
+          <button id="scopeAddBtn" class="btn">Add</button>
           <div id="scopePills"></div>
         </div>
         <textarea id="prompt" rows="7" placeholder="Enter prompt here"></textarea>
+        <label for="agentSelect">Agent:</label>
+        <select id="agentSelect"><option value="">None (manual)</option></select>
         <label for="providerSelect">Provider:</label>
         <select id="providerSelect"></select>
         <label for="modelSelect">Select Model:</label>
@@ -365,6 +375,53 @@
       </div>
     </div>
 
+    <!-- Agents -->
+    <div id="agentsView" class="view">
+      <div class="repo-panels">
+        <div class="repo-sidebar">
+          <h3>Agents</h3>
+          <div id="agentList"></div>
+        </div>
+        <div class="repo-detail" id="agentDetail">
+          <div class="repo-placeholder" id="agentDetailPlaceholder">
+            Select an agent to edit or create a new one
+          </div>
+          <div id="agentDetailContent" style="display:none">
+            <h3 id="agentDetailName"></h3>
+            <div class="repo-form" id="agentForm">
+              <div class="field"><label>Name</label><input id="agentDisplayName" class="input" placeholder="Display name"></div>
+              <div class="field"><label>Key</label><input id="agentInternalName" class="input" placeholder="Technical identifier"></div>
+              <div class="field"><label>Description</label><textarea id="agentDescription" class="input" rows="2" placeholder="Agent description"></textarea></div>
+              <div class="field"><label>Provider</label><select id="agentProviderSelect"></select></div>
+              <div class="field"><label>Model</label><select id="agentModelSelect"></select></div>
+              <div class="field-row">
+                <div class="field"><label>Context Size (n_ctx)</label><input type="number" id="agentNctx" value="4096" min="512"></div>
+                <div class="field"><label>Temperature</label><input type="number" id="agentTemperature" value="0.7" min="0" max="2" step="0.05"></div>
+              </div>
+              <div class="field"><label>Repository Access</label>
+                <div id="agentRepoAccessList" style="margin-bottom:8px"></div>
+                <div class="field-row">
+                  <select id="agentAddRepoSelect" style="flex:1"></select>
+                  <select id="agentAddRepoPolicySelect" style="flex:1">
+                    <option value="">Use default</option>
+                    <option value="read-only">read-only</option>
+                    <option value="privileged-write">privileged-write</option>
+                    <option value="write">write</option>
+                  </select>
+                  <button class="btn" id="agentAddRepoBtn">Add</button>
+                </div>
+              </div>
+              <div class="btn-row">
+                <button class="btn btn-primary" id="agentSaveBtn">Save</button>
+                <button class="btn" id="agentCancelBtn">Cancel</button>
+                <button class="btn btn-reject" id="agentDeleteBtn" style="margin-left:auto;display:none">Delete</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Repositories -->
     <div id="repositoriesView" class="view">
       <div class="repo-panels">
@@ -409,8 +466,11 @@
 
   <script>
     let blockingMessageId = null;
-    let activeScopes = [];
+    let activeScopes = [];  // list of {internalName, securityPolicyOverride}
     let allRepositories = [];
+    let allAgents = [];
+    let selectedAgent = null;
+    let editingAgentInternalName = null;
     let selectedConversationId = null;
     let currentView = 'chat';
     let gpuStatusInterval = null;
@@ -426,6 +486,9 @@
         const activeTab = document.querySelector('.tab.active');
         if (activeTab) switchInferenceTab(activeTab.dataset.tab);
         startGpuInterval();
+      } else if (name === 'agents') {
+        document.getElementById('agentsView').classList.add('active');
+        clearGpuInterval();
       } else if (name === 'repositories') {
         document.getElementById('repositoriesView').classList.add('active');
         clearGpuInterval();
@@ -464,6 +527,259 @@
       } catch { grid.innerHTML = '<div class="stat"><span class="label">Error</span><span class="value">—</span></div>'; }
     }
 
+    async function loadAgents() {
+      try {
+        const res = await fetch('/api/agents');
+        const data = await res.json();
+        allAgents = data.agents || [];
+        // Populate agent selector in chat
+        const select = document.getElementById('agentSelect');
+        select.innerHTML = '<option value="">None (manual)</option>';
+        allAgents.forEach(a => {
+          const opt = document.createElement('option');
+          opt.value = a.internal_name;
+          opt.textContent = a.display_name || a.internal_name;
+          select.appendChild(opt);
+        });
+        renderAgentList();
+        // Also populate agent form provider/model selects
+        populateAgentFormSelects();
+      } catch (e) { console.error("Failed to load agents", e); }
+    }
+
+    function populateAgentFormSelects() {
+      const pSelect = document.getElementById('agentProviderSelect');
+      pSelect.innerHTML = '<option value="">Select provider...</option>';
+      const providers = document.getElementById('providerSelect').options;
+      for (const opt of providers) {
+        const n = document.createElement('option');
+        n.value = opt.value;
+        n.textContent = opt.textContent;
+        pSelect.appendChild(n);
+      }
+      pSelect.onchange = () => loadModelsForAgentForm(pSelect.value);
+    }
+
+    async function loadModelsForAgentForm(providerKey) {
+      if (!providerKey) return;
+      const mSelect = document.getElementById('agentModelSelect');
+      mSelect.innerHTML = '<option value="">Loading...</option>';
+      const res = await fetch(`/api/providers/${encodeURIComponent(providerKey)}/models`);
+      const data = await res.json();
+      mSelect.innerHTML = '<option value="">Select model...</option>';
+      data.models.forEach(m => {
+        const opt = document.createElement('option');
+        opt.value = m.id; opt.textContent = m.name; mSelect.appendChild(opt);
+      });
+    }
+
+    function renderAgentList() {
+      const container = document.getElementById('agentList');
+      container.innerHTML = '';
+      allAgents.forEach(a => {
+        const item = document.createElement('div');
+        item.className = 'menu-item';
+        item.innerHTML = `<span>${a.display_name || a.internal_name}</span>`;
+        item.addEventListener('click', () => selectAgent(a.internal_name));
+        container.appendChild(item);
+      });
+      const addBtn = document.createElement('button');
+      addBtn.className = 'menu-item';
+      addBtn.textContent = '+ New Agent';
+      addBtn.addEventListener('click', () => newAgentForm());
+      container.appendChild(addBtn);
+    }
+
+    function newAgentForm() {
+      editingAgentInternalName = null;
+      document.getElementById('agentDetailPlaceholder').style.display = 'none';
+      document.getElementById('agentDetailContent').style.display = 'block';
+      document.getElementById('agentDetailName').textContent = 'New Agent';
+      document.getElementById('agentDisplayName').value = '';
+      document.getElementById('agentInternalName').value = '';
+      document.getElementById('agentDescription').value = '';
+      document.getElementById('agentNctx').value = '4096';
+      document.getElementById('agentTemperature').value = '0.7';
+      document.getElementById('agentDeleteBtn').style.display = 'none';
+      document.getElementById('agentProviderSelect').value = '';
+      document.getElementById('agentModelSelect').innerHTML = '<option value="">Select model...</option>';
+      renderAgentRepoAccess([]);
+    }
+
+    function selectAgent(internalName) {
+      editingAgentInternalName = internalName;
+      const agent = allAgents.find(a => a.internal_name === internalName);
+      if (!agent) return;
+      document.getElementById('agentDetailPlaceholder').style.display = 'none';
+      document.getElementById('agentDetailContent').style.display = 'block';
+      document.getElementById('agentDetailName').textContent = agent.display_name || agent.internal_name;
+      document.getElementById('agentDisplayName').value = agent.display_name || '';
+      document.getElementById('agentInternalName').value = agent.internal_name || '';
+      document.getElementById('agentDescription').value = agent.description || '';
+      document.getElementById('agentDeleteBtn').style.display = 'inline-block';
+      // Set provider/model selects
+      const pSelect = document.getElementById('agentProviderSelect');
+      pSelect.value = agent.provider_key || '';
+      loadModelsForAgentForm(agent.provider_key).then(() => {
+        document.getElementById('agentModelSelect').value = agent.model_id || '';
+      });
+      // Set inference config
+      const ic = agent.inference_config || {};
+      document.getElementById('agentNctx').value = ic.n_ctx || 4096;
+      document.getElementById('agentTemperature').value = ic.temperature || 0.7;
+      renderAgentRepoAccess(agent.repository_access || []);
+    }
+
+    function renderAgentRepoAccess(accessList) {
+      const container = document.getElementById('agentRepoAccessList');
+      container.innerHTML = '';
+      accessList.forEach(a => {
+        const repo = allRepositories.find(r => r.id === a.repository_id);
+        const item = document.createElement('div');
+        item.className = 'menu-item';
+        const label = (a.repository_internal_name || (repo ? repo.display_name || repo.internal_name : '?')) + (a.security_policy_override ? ` (${a.security_policy_override})` : '');
+        const badges = repo ? badgeHtml(repo) : '';
+        item.innerHTML = `<span>${label}</span><span>${badges}<span class="conv-delete-btn" data-repo-id="${a.repository_id}">&times;</span></span>`;
+        item.querySelector('.conv-delete-btn').addEventListener('click', e => {
+          const rid = parseInt(e.target.dataset.repoId);
+          const updated = accessList.filter(x => x.repository_id !== rid);
+          renderAgentRepoAccess(updated);
+        });
+        container.appendChild(item);
+      });
+    }
+
+    async function saveAgent() {
+      const displayName = document.getElementById('agentDisplayName').value.trim();
+      const internalName = document.getElementById('agentInternalName').value.trim();
+      const description = document.getElementById('agentDescription').value.trim();
+      const providerKey = document.getElementById('agentProviderSelect').value;
+      const modelId = document.getElementById('agentModelSelect').value;
+      const nctx = parseInt(document.getElementById('agentNctx').value) || 4096;
+      const temp = parseFloat(document.getElementById('agentTemperature').value) || 0.7;
+
+      if (!displayName || !internalName || !providerKey || !modelId) {
+        alert('Name, key, provider and model are required');
+        return;
+      }
+
+      // Collect repo access from pills
+      const repoAccess = [];
+      document.querySelectorAll('#agentRepoAccessList .menu-item').forEach(item => {
+        const text = item.querySelector('span').textContent;
+        const delBtn = item.querySelector('.conv-delete-btn');
+        const repoId = parseInt(delBtn.dataset.repoId);
+        // Extract optional override from text like "reponame (read-only)"
+        const match = text.match(/\((.+)\)/);
+        const override = match ? match[1] : null;
+        repoAccess.push({ repository_id: repoId, security_policy_override: override });
+      });
+
+      const payload = {
+        display_name: displayName,
+        internal_name: internalName,
+        description,
+        provider_key: providerKey,
+        model_id: modelId,
+        inference_config: { n_ctx: nctx, temperature: temp },
+        repository_access: repoAccess
+      };
+
+      const isNew = !editingAgentInternalName;
+      const url = isNew ? '/api/agents' : `/api/agents/${encodeURIComponent(editingAgentInternalName)}`;
+      const method = isNew ? 'POST' : 'PUT';
+
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!res.ok) {
+        const e = await res.json();
+        alert(e.error);
+        return;
+      }
+
+      if (isNew && internalName !== editingAgentInternalName) {
+        editingAgentInternalName = internalName;
+      }
+      loadAgents();
+    }
+
+    async function deleteAgent() {
+      if (!editingAgentInternalName) return;
+      if (!confirm(`Delete agent "${editingAgentInternalName}"?`)) return;
+      const res = await fetch(`/api/agents/${encodeURIComponent(editingAgentInternalName)}`, { method: 'DELETE' });
+      if (!res.ok) { const e = await res.json(); alert(e.error); return; }
+      document.getElementById('agentDetailContent').style.display = 'none';
+      document.getElementById('agentDetailPlaceholder').style.display = 'block';
+      editingAgentInternalName = null;
+      loadAgents();
+    }
+
+    document.getElementById('agentAddRepoBtn').addEventListener('click', () => {
+      const sel = document.getElementById('agentAddRepoSelect');
+      const policy = document.getElementById('agentAddRepoPolicySelect').value;
+      const repoId = parseInt(sel.value);
+      if (!repoId) { alert('Select a repository'); return; }
+      const repo = allRepositories.find(r => r.id === repoId);
+      if (!repo) return;
+      // Add to visual list via agentRepoAccessList pills
+      const container = document.getElementById('agentRepoAccessList');
+      const existing = container.querySelectorAll('.menu-item');
+      for (const item of existing) {
+        const btn = item.querySelector('.conv-delete-btn');
+        if (parseInt(btn.dataset.repoId) === repoId) {
+          alert('Repository already added');
+          return;
+        }
+      }
+      // We store state in the DOM pills; saveAgent collects from them
+      const item = document.createElement('div');
+      item.className = 'menu-item';
+      const label = repo.display_name || repo.internal_name;
+      const overrideLabel = policy ? ` (${policy})` : '';
+      const badges = badgeHtml(repo);
+      item.innerHTML = `<span>${label}${overrideLabel}</span><span>${badges}<span class="conv-delete-btn" data-repo-id="${repoId}">&times;</span></span>`;
+      item.querySelector('.conv-delete-btn').addEventListener('click', e => {
+        item.remove();
+      });
+      container.appendChild(item);
+      sel.value = '';
+      document.getElementById('agentAddRepoPolicySelect').value = '';
+    });
+
+    document.getElementById('agentSaveBtn').addEventListener('click', saveAgent);
+    document.getElementById('agentDeleteBtn').addEventListener('click', deleteAgent);
+    document.getElementById('agentCancelBtn').addEventListener('click', () => {
+      document.getElementById('agentDetailContent').style.display = 'none';
+      document.getElementById('agentDetailPlaceholder').style.display = 'block';
+      editingAgentInternalName = null;
+    });
+
+    // Agent selector in chat view
+    document.getElementById('agentSelect').addEventListener('change', e => {
+      const agentId = e.target.value;
+      if (agentId) {
+        const agent = allAgents.find(a => a.internal_name === agentId);
+        if (agent) {
+          document.getElementById('providerSelect').value = agent.provider_key;
+          document.getElementById('providerSelect').disabled = true;
+          loadModels(agent.provider_key).then(() => {
+            document.getElementById('modelSelect').value = agent.model_id;
+            document.getElementById('modelSelect').disabled = true;
+          });
+        }
+      } else {
+        document.getElementById('providerSelect').disabled = false;
+        document.getElementById('modelSelect').disabled = false;
+        const saved = localStorage.getItem('selectedProvider');
+        if (saved) document.getElementById('providerSelect').value = saved;
+        loadModels(document.getElementById('providerSelect').value);
+      }
+    });
+
     async function loadProviders() {
       const res = await fetch('/api/providers');
       const data = await res.json();
@@ -478,6 +794,7 @@
       const saved = localStorage.getItem('selectedProvider');
       if (saved) select.value = saved;
       select.addEventListener('change', () => {
+        if (document.getElementById('agentSelect').value) return; // agent is selected, ignore manual change
         localStorage.setItem('selectedProvider', select.value);
         loadModels(select.value);
       });
@@ -540,12 +857,28 @@
           opt.textContent = r.display_name || r.internal_name;
           select.appendChild(opt);
         });
-        select.addEventListener('change', e => {
-          const repo = e.target.value;
-          if (repo && !activeScopes.includes(repo)) { activeScopes.push(repo); renderScopePills(); }
-          select.value = '';
+        // Add scope button
+        document.getElementById('scopeAddBtn').addEventListener('click', () => {
+          const repoName = document.getElementById('scopeSelect').value;
+          if (!repoName) return;
+          if (activeScopes.some(s => s.internalName === repoName)) return;
+          const policyVal = document.getElementById('scopePolicySelect').value;
+          const override = policyVal || null;
+          activeScopes.push({ internalName: repoName, securityPolicyOverride: override });
+          renderScopePills();
+          document.getElementById('scopeSelect').value = '';
+          document.getElementById('scopePolicySelect').value = '';
         });
         renderRepoList();
+        // Populate agent form's repo select
+        const sel = document.getElementById('agentAddRepoSelect');
+        sel.innerHTML = '<option value="">Select repository...</option>';
+        allRepositories.forEach(r => {
+          const opt = document.createElement('option');
+          opt.value = r.id;
+          opt.textContent = r.display_name || r.internal_name;
+          sel.appendChild(opt);
+        });
       } catch (e) { console.error("Failed to load repositories", e); }
     }
 
@@ -767,15 +1100,24 @@
       }
     }
 
+    function scopePolicyLabel(s) {
+      if (s.securityPolicyOverride) return ` (${s.securityPolicyOverride})`;
+      const repo = allRepositories.find(r => r.internal_name === s.internalName);
+      if (repo) return ` (${repo.security_policy})`;
+      return '';
+    }
+
     function renderScopePills() {
       const c = document.getElementById('scopePills');
       c.innerHTML = '';
-      activeScopes.forEach(s => {
+      activeScopes.forEach((s, idx) => {
         const pill = document.createElement('div');
         pill.className = 'scope-pill';
-        pill.innerHTML = `<span>${s}</span><span class="remove-btn" data-scope="${s}">&times;</span>`;
+        const label = s.internalName + scopePolicyLabel(s);
+        pill.innerHTML = `<span>${label}</span><span class="remove-btn" data-index="${idx}">&times;</span>`;
         pill.querySelector('.remove-btn').addEventListener('click', e => {
-          activeScopes = activeScopes.filter(x => x !== e.target.dataset.scope);
+          const i = parseInt(e.target.dataset.index);
+          activeScopes.splice(i, 1);
           renderScopePills();
         });
         c.appendChild(pill);
@@ -1051,9 +1393,21 @@
     }
 
     async function resumeConversation(id) {
+      const agentId = document.getElementById('agentSelect').value;
       const pk = document.getElementById('providerSelect').value;
       const mid = document.getElementById('modelSelect').value;
-      const res = await fetch(`/api/conversations/${id}/continue?provider_key=${encodeURIComponent(pk)}&model_id=${encodeURIComponent(mid)}`);
+      const body = {};
+      if (agentId) {
+        body.agent_id = agentId;
+      } else {
+        body.provider_key = pk;
+        body.model_id = mid;
+      }
+      const res = await fetch(`/api/conversations/${id}/continue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
       await processStream(res, document.getElementById('response'));
     }
 
@@ -1077,16 +1431,22 @@
       const isNew = !selectedConversationId;
       renderSingleMessage(rc, { id: null, role: 'user', element: { type: 'message', content: text } });
       document.getElementById('prompt').value = '';
+      const agentId = document.getElementById('agentSelect').value;
+      const body = {
+        prompt: text,
+        conversation_id: selectedConversationId,
+        scopes: activeScopes.map(s => ({ internal_name: s.internalName, security_policy_override: s.securityPolicyOverride })),
+      };
+      if (agentId) {
+        body.agent_id = agentId;
+      } else {
+        body.provider_key = document.getElementById('providerSelect').value;
+        body.model_id = document.getElementById('modelSelect').value;
+      }
       const res = await fetch('/api/conversations/prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          provider_key: document.getElementById('providerSelect').value,
-          model_id: document.getElementById('modelSelect').value,
-          prompt: text,
-          conversation_id: selectedConversationId,
-          scopes: activeScopes
-        })
+        body: JSON.stringify(body)
       });
       if (res.status === 403) {
         const d = await res.json();
@@ -1188,6 +1548,7 @@
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchInferenceTab(t.dataset.tab)));
     document.getElementById('inferenceBtnSide').addEventListener('click', () => switchView('inference'));
+    document.getElementById('agentsBtnSide').addEventListener('click', () => switchView('agents'));
     document.getElementById('reposBtnSide').addEventListener('click', () => switchView('repositories'));
 
     loadProviders()
@@ -1199,6 +1560,21 @@
     loadConversations();
     loadRepositories();
     initAddRepoForm();
+    loadAgents();
+    // Populate agent form's repo select when repos are loaded
+    document.getElementById('addRepoConfirm').addEventListener('click', () => {
+      setTimeout(() => {
+        // Refresh the agent repo select after repo is added
+        const sel = document.getElementById('agentAddRepoSelect');
+        sel.innerHTML = '<option value="">Select repository...</option>';
+        allRepositories.forEach(r => {
+          const opt = document.createElement('option');
+          opt.value = r.id;
+          opt.textContent = r.display_name || r.internal_name;
+          sel.appendChild(opt);
+        });
+      }, 500);
+    });
     document.getElementById('estimateBtnModels').addEventListener('click', async () => {
       const select = document.getElementById('modelsEstimateSelect');
       const input = document.getElementById('modelsEstimateInput');

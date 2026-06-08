@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, Callable, Coroutine, Optional, TypeAlias, TypedDict, Union
+from typing import AsyncIterator, Awaitable, Callable, Optional, TypeAlias, TypedDict, Union
 
-from domain import ConversationElement
+from domain import ConversationElement, ScopeSpec
 
 @dataclass(frozen=True)
 class StreamingMessage:
@@ -59,7 +59,7 @@ class FunctionDefinition(TypedDict):
 class Tool(TypedDict):
     name: str
     schema: FunctionDefinition
-    executor: Callable[[FinishedToolCall, bool, list[str]], Coroutine[None, None, FinishedToolCallResult]]
+    executor: Callable[[FinishedToolCall, bool, list[ScopeSpec]], Awaitable[FinishedToolCallResult]]
 
 
 @dataclass(frozen=True)

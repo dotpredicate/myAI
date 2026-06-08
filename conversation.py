@@ -1,9 +1,11 @@
 from typing import AsyncGenerator, Literal, Optional, Any, List
 import json
+from pydantic import BaseModel
 from psycopg2.extensions import connection
 
 from domain import (
     Message,
+    ScopeSpec,
     Thinking,
     ToolCallFinishedOrBlocked,
     ToolCallResult,
@@ -26,6 +28,22 @@ from inference import registry
 from log_config import get_logger
 
 logger = get_logger(__name__)
+
+
+class GenerationRequest(BaseModel):
+    agent_id: Optional[str] = None
+    provider_key: Optional[str] = None
+    model_id: Optional[str] = None
+    scopes: list[ScopeSpec] = []
+
+
+class PromptRequest(GenerationRequest):
+    prompt: str
+    conversation_id: Optional[int] = None
+
+
+class ContinueRequest(GenerationRequest):
+    pass
 
 
 class ConversationBlockedError(Exception):
@@ -86,7 +104,7 @@ def get_blocking_message_id(conn: connection, conv_id: int) -> Optional[int]:
         return row[0] if row and row[0] is not None else None
 
 
-def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> List[str]:
+def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> List[ScopeSpec]:
     with conn.cursor() as cur:
         cur.execute("SELECT elements FROM messages WHERE conversation_id = %s AND role = 'user' ORDER BY created_at DESC LIMIT 1", (conv_id,))
         row = cur.fetchone()
@@ -94,11 +112,11 @@ def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> List[st
             elem_dict = json.loads(row[0]) if isinstance(row[0], str) else row[0]
             elem = stored_element_adapter.validate_python(elem_dict)
             if isinstance(elem, Message) and elem.author == 'user':
-                return elem.scopes
+                return elem.scopes or []
         return []
 
 
-def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Optional[int] = None, scopes: Optional[List[str]] = None) -> int:
+def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Optional[int] = None, scopes: Optional[List[ScopeSpec]] = None) -> int:
     if conv_id and (blocking_id := get_blocking_message_id(conn, conv_id)):
         raise ConversationBlockedError(blocking_id)
     
@@ -116,9 +134,9 @@ def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Opt
     return conv_id
 
 
-def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[list[tuple[int, ConversationElement]], list[str]]:
+def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[list[tuple[int, ConversationElement]], list[ScopeSpec]]:
     ctx: list[tuple[int, ConversationElement]] = []
-    scopes: list[str] = []
+    scopes: list[ScopeSpec] = []
     with conn.cursor() as cur:
         cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
         for row in cur.fetchall():
@@ -131,9 +149,9 @@ def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[list[
     return ctx, scopes
 
 
-async def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: list[Tool], provider_key: str) -> AsyncGenerator[bytes, None]:
+async def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: list[Tool], provider_key: str, inference_config: dict[str, Any] = {}) -> AsyncGenerator[bytes, None]:
     from tools import run_tool_call
-    context, scopes = get_messages_for_continuation(conn, conv_id)
+    context, scopes = get_messages_for_continuation(conn, conv_id)  # scopes: list[ScopeSpec]
 
     provider = registry.get(provider_key)
 

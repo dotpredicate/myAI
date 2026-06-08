@@ -15,6 +15,7 @@ Like Open WebUI but better suited for me.
 - Just works (tm)
 - Keep it simple
 - Just use postgres
+- Move fast and break things
 
 ## Technical info
 

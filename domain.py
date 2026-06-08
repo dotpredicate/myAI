@@ -1,11 +1,25 @@
 from pydantic import BaseModel, TypeAdapter
 from typing import Literal, Optional, Union
+from repositories import SecurityPolicy
+
+
+class ScopeSpec(BaseModel):
+    internal_name: str
+    security_policy_override: Optional[SecurityPolicy] = None
+
+
+def scope_policy_is_escalation(override: Optional[SecurityPolicy], base_policy: SecurityPolicy) -> bool:
+    if override is None:
+        return False
+    order: list[SecurityPolicy] = [SecurityPolicy.READ_ONLY, SecurityPolicy.PRIVILEGED_WRITE, SecurityPolicy.WRITE]
+    return order.index(override) > order.index(base_policy)
+
 
 class Message(BaseModel):
     type: Literal['message'] = 'message'
     author: Literal['user'] | Literal['assistant']
     content: str
-    scopes: list[str]
+    scopes: list[ScopeSpec] = []
 
 
 class Thinking(BaseModel):

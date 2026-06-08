@@ -2,6 +2,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from enum import StrEnum
 from typing import Optional, List, Tuple, Literal
 from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
@@ -14,13 +15,18 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
+class SecurityPolicy(StrEnum):
+    READ_ONLY = 'read-only'
+    PRIVILEGED_WRITE = 'privileged-write'
+    WRITE = 'write'
+
 class RepositoryConfig(BaseModel):
     id: int
     display_name: str
     internal_name: str
     repo_type: Literal['plain', 'git']
     path: str
-    security_policy: Literal['read-only', 'privileged-write', 'write']
+    security_policy: SecurityPolicy
 
 
 def get_repositories() -> List[RepositoryConfig]:
@@ -31,9 +37,17 @@ def get_repositories() -> List[RepositoryConfig]:
 
 
 def get_repo_by_name(name: str) -> Optional[RepositoryConfig]:
-    """Look up a repository by its internal_name."""
     with database.mk_conn() as conn, conn.cursor() as cur:
         cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories WHERE internal_name = %s", (name,))
+        row = cur.fetchone()
+        if row:
+            return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4], security_policy=row[5])
+        return None
+
+
+def get_repo_by_id(repo_id: int) -> Optional[RepositoryConfig]:
+    with database.mk_conn() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories WHERE id = %s", (repo_id,))
         row = cur.fetchone()
         if row:
             return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4], security_policy=row[5])
@@ -124,7 +138,7 @@ async def create_repository(payload: dict = Body(...)):
         repo_type = _auto_detect_repo_type(path)
 
     security_policy = payload.get('security', 'read-only')
-    if security_policy not in ('read-only', 'privileged-write', 'write'):
+    if security_policy not in list(SecurityPolicy):
         return JSONResponse(status_code=400, content={'error': 'security must be "read-only", "privileged-write", or "write"'})
 
     with database.mk_conn() as conn, conn.cursor() as cur:
@@ -150,7 +164,7 @@ async def update_repository(name: str, payload: dict = Body(...)):
     display_name = payload.get('display_name', existing.display_name)
     security_policy = payload.get('security', existing.security_policy)
 
-    if security_policy not in ('read-only', 'privileged-write', 'write'):
+    if security_policy not in list(SecurityPolicy):
         return JSONResponse(status_code=400, content={'error': 'security must be "read-only", "privileged-write", or "write"'})
 
     with database.mk_conn() as conn, conn.cursor() as cur:

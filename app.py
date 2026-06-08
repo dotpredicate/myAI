@@ -5,8 +5,10 @@ from fastapi import BackgroundTasks, FastAPI, Request, Body
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from database import mk_conn, init_database
-from typing import cast, Optional
+from typing import Optional
 from conversation import (
+    PromptRequest,
+    ContinueRequest,
     prepare_conversation_with_prompt,
     ConversationBlockedError,
     get_conversations as fetch_conversations,
@@ -15,7 +17,9 @@ from conversation import (
     continue_conversation,
     delete_conversation
 )
+from domain import ScopeSpec
 from repositories import router as repositories_router
+from agents import router as agents_router, get_agent_by_name
 from log_config import get_logger, setup_logging
 from search import synchronize, semantic_search
 from inference import registry, estimator, llama_cpp_server
@@ -76,6 +80,7 @@ async def get_cached_models():
 
 
 app.include_router(repositories_router)
+app.include_router(agents_router)
 
 
 @app.post('/api/search')
@@ -92,18 +97,36 @@ async def search(payload: dict = Body(...)):
     return JSONResponse(content={'results': results})
 
 
+def _resolve_agent(agent_id: str | None, req_scopes: list, fallback_provider: str | None, fallback_model: str | None) -> tuple:
+    """Resolve (provider_key, model_id, inference_config, scopes) from agent or fallback.
+    Returns None for provider_key if validation fails (caller handles error)."""
+    if agent_id:
+        agent = get_agent_by_name(agent_id)
+        if agent is None:
+            raise ValueError(f"Agent '{agent_id}' not found")
+        scopes = list(req_scopes)
+        existing_names = {s.internal_name for s in scopes}
+        for a in agent.repository_access:
+            if a.repository_internal_name not in existing_names:
+                scopes.append(ScopeSpec(internal_name=a.repository_internal_name, security_policy_override=a.security_policy_override))
+        return agent.provider_key, agent.model_id, agent.inference_config, scopes
+    if not fallback_provider:
+        raise ValueError('provider_key required')
+    if not fallback_model:
+        raise ValueError('model_id required')
+    return fallback_provider, fallback_model, {}, req_scopes
+
+
 @app.post('/api/conversations/prompt')
-async def prompt_model(request: Request):
-    payload: dict[str, object] = await request.json()
-    prompt = cast(str, payload.get('prompt', ''))
-    provider_key = cast(Optional[str], payload.get('provider_key'))
-    model_id = cast(Optional[str], payload.get('model_id'))
-    scopes = cast(Optional[list[str]], payload.get('scopes'))
-    if provider_key is None:
-        return JSONResponse(status_code=400, content={'error': 'provider_key required'})
-    if model_id is None:
-        return JSONResponse(status_code=400, content={'error': 'model_id required'})
-    conversation_id = cast(Optional[int], payload.get('conversation_id'))
+async def prompt_model(payload: PromptRequest):
+    prompt = payload.prompt
+    conversation_id = payload.conversation_id
+    try:
+        provider_key, model_id, inference_config, scopes = _resolve_agent(
+            payload.agent_id, payload.scopes, payload.provider_key, payload.model_id
+        )
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={'error': str(e)})
 
     try:
         conn = mk_conn()
@@ -114,9 +137,8 @@ async def prompt_model(request: Request):
             content={"error": "Action required", "blocking_message_id": e.blocking_message_id}
         )
 
-    available_tools = TOOL_REGISTRY
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, available_tools, provider_key=provider_key),
+        continue_conversation(conn, conversation_id, model_id, TOOL_REGISTRY, provider_key=provider_key, inference_config=inference_config),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
 
@@ -185,21 +207,21 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
         return JSONResponse(status_code=500, content={'error': str(e)})
 
 
-@app.get('/api/conversations/{conversation_id}/continue')
-async def continue_conversation_endpoint(conversation_id: int, request: Request):
-    provider_key = request.query_params.get('provider_key')
-    model_id = request.query_params.get('model_id')
-    if not provider_key:
-        return JSONResponse(status_code=400, content={'error': 'provider_key query parameter required'})
-    if not model_id:
-        return JSONResponse(status_code=400, content={'error': 'model_id query parameter required'})
+@app.post('/api/conversations/{conversation_id}/continue')
+async def continue_conversation_endpoint(conversation_id: int, payload: ContinueRequest):
+    try:
+        provider_key, model_id, inference_config, _ = _resolve_agent(
+            payload.agent_id, payload.scopes, payload.provider_key, payload.model_id
+        )
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={'error': str(e)})
+
     conn = mk_conn()
     details = get_conversation_details(conn, conversation_id)
     if not details:
         return JSONResponse(status_code=404, content={'error': 'conversation not found'})
-    available_tools = TOOL_REGISTRY
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, available_tools, provider_key=provider_key),
+        continue_conversation(conn, conversation_id, model_id, TOOL_REGISTRY, provider_key, inference_config),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
 
