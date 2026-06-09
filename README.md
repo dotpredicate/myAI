@@ -33,7 +33,7 @@ Project structure:
 - `./migrations/` - folder with migration scripts
 - `./static/` - static resources deployed by the server, web front-end
 - `./doc/` - design and documentation
-  - `conversation.md`
+  - `context.md`
   - `repositories.md`
   - `inference_providers.md`
   - `agents.md`

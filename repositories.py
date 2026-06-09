@@ -14,7 +14,6 @@ from log_config import get_logger
 logger = get_logger(__name__)
 router = APIRouter()
 
-
 class SecurityPolicy(StrEnum):
     READ_ONLY = 'read-only'
     PRIVILEGED_WRITE = 'privileged-write'
@@ -28,6 +27,9 @@ class RepositoryConfig(BaseModel):
     path: str
     security_policy: SecurityPolicy
 
+class ScopeSpec(BaseModel):
+    internal_name: str
+    security_policy: SecurityPolicy
 
 def get_repositories() -> List[RepositoryConfig]:
     with database.mk_conn() as conn, conn.cursor() as cur:

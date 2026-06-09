@@ -6,8 +6,7 @@ import httpx
 import openai
 from typing import AsyncIterator, Optional
 
-from domain import ConversationElement
-from inference.engine import InferenceProvider, Model, Tool, StreamingElement, FinishedElement
+from inference.engine import ChatContext, InferenceProvider, Model, Tool, StreamingElement, FinishedElement
 from .openai import DeltaProcessor, _to_oai_messages, _to_oai_tools
 from log_config import get_logger
 
@@ -88,9 +87,8 @@ async def stop_llama_servers() -> None:
 class LlamaCppServerProvider(InferenceProvider):
     """Inference provider backed by a local llama.cpp server process."""
 
-    def __init__(self, port: str = "1234", embedding_port: str = "2345"):
+    def __init__(self, port: str = "1234",):
         self.port = port
-        self.embedding_port = embedding_port
         endpoint = os.getenv('LLAMA_CPP_ENDPOINT', f'http://localhost:{port}')
         self._client = openai.Client(api_key='dummy', base_url=endpoint)
         self.ready_event = asyncio.Event()
@@ -106,7 +104,7 @@ class LlamaCppServerProvider(InferenceProvider):
     async def run_chat_completion_stream(
         self,
         model_id: str,
-        context: list[tuple[int, ConversationElement]],
+        context: ChatContext,
         tools: list[Tool],
     ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
         await self._lazy_start()

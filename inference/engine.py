@@ -1,8 +1,12 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, Awaitable, Callable, Optional, TypeAlias, TypedDict, Union
+from typing import AsyncIterator, Optional, TypeAlias, Union
 
-from domain import ConversationElement, ScopeSpec
+from pydantic import ConfigDict
+
+from domain import ConversationElement
+from repositories import ScopeSpec
+from tools import Tool
 
 @dataclass(frozen=True)
 class StreamingMessage:
@@ -39,27 +43,15 @@ class FinishedToolCall:
     parameters: str
 
 
+FinishedElement: TypeAlias = Union[FinishedMessage, FinishedThinking, FinishedToolCall]
+
 @dataclass(frozen=True)
-class FinishedToolCallResult:
-    name: str
-    parameters: str
-    result: str
-    is_blocking: bool = False
-
-
-FinishedElement: TypeAlias = Union[FinishedMessage, FinishedThinking, FinishedToolCall, FinishedToolCallResult]
-
-FunctionParameters: TypeAlias = dict[str, object]
-
-class FunctionDefinition(TypedDict):
-    name: str
-    description: str
-    parameters: FunctionParameters
-
-class Tool(TypedDict):
-    name: str
-    schema: FunctionDefinition
-    executor: Callable[[FinishedToolCall, bool, list[ScopeSpec]], Awaitable[FinishedToolCallResult]]
+class ChatContext:
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    messages: list[tuple[int, ConversationElement]]
+    scopes: list[ScopeSpec]
+    tools: list[Tool]
+    agent_prompt: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -79,7 +71,7 @@ class InferenceProvider(ABC):
     def run_chat_completion_stream(
         self,
         model_id: str,
-        context: list[tuple[int, ConversationElement]],
+        context: ChatContext,
         functions: list[Tool],
     ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
         ...

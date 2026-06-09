@@ -1,27 +1,44 @@
+from dataclasses import dataclass
 import json
 import subprocess
 import difflib
 from pathlib import Path
-from inference import FinishedToolCall, FinishedToolCallResult, Tool
-import system
-from search import semantic_search
-from system import get_repo_from_vpath, resolve_repo_vpath
+from typing import Awaitable, Callable, TypedDict
+
+from system import REPOSITORIES_VROOT, WORKSPACE_DIR, WORKSPACE_VROOT, get_repo_from_vpath, is_safe_vpath, resolve_repo_vpath, run_sandboxed_command, vpath_to_realpath
 from repositories import SecurityPolicy
 from domain import ScopeSpec
 
-async def run_shell_command(tool_call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
-    params = json.loads(tool_call.parameters)
+class FunctionDefinition(TypedDict):
+    name: str
+    description: str
+    parameters: dict[str, object]
+
+@dataclass(frozen=True)
+class ToolCallResult:
+    result: str
+    is_blocking: bool = False
+
+class Tool(TypedDict):
+    name: str
+    schema: FunctionDefinition
+    executor: Callable[[str, str, bool, list[ScopeSpec]], Awaitable[ToolCallResult]]
+
+
+async def run_shell_command(name: str, parameters: str, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
+    params = json.loads(parameters)
     command: str = params['command']
     if not isinstance(command, str):
         raise ValueError('Cannot parse the command field. Double-check if input is valid JSON.')
 
-    shell = system.run_sandboxed_command(command, scopes=scopes)
+    shell = run_sandboxed_command(command, scopes=scopes)
 
     output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
-    return FinishedToolCallResult(tool_call.name, tool_call.parameters, output_str)
+    return ToolCallResult(output_str)
 
-async def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
-    params = json.loads(tool_call.parameters)
+async def run_semantic_search(name: str, parameters: str, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
+    from search import semantic_search
+    params = json.loads(parameters)
     prompt: str = params["prompt"]
     top_k: int = int(params.get("top_k", 5))
 
@@ -29,21 +46,12 @@ async def run_semantic_search(tool_call: FinishedToolCall, privileged: bool = Fa
     try:
         results = await semantic_search(prompt, top_k, scopes=scope_names)
     except Exception as exc:
-        return FinishedToolCallResult(
-            name=tool_call.name,
-            parameters=tool_call.parameters,
-            result=json.dumps({"error": f"search failed: {exc}"})
-        )
-    return FinishedToolCallResult(
-        name=tool_call.name,
-        parameters=tool_call.parameters,
-        result=json.dumps({"results": json.dumps(results)})
-    )
+        return ToolCallResult(json.dumps({"error": f"search failed: {exc}"}))
+    return ToolCallResult(result=json.dumps({"results": json.dumps(results)}))
 
-async def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
-    from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, WORKSPACE_VROOT, WORKSPACE_DIR
+async def run_propose_replace(name: str, parameters: str, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
     try:
-        params = json.loads(tool_call.parameters)
+        params = json.loads(parameters)
         target_vpath_str = params.get("target")
         source_vpath_str = params.get("source")
         
@@ -55,29 +63,24 @@ async def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = Fa
         
         target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT), allowed_scopes=scopes)
         if not target_safe:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                                 json.dumps({"error": target_err}))
+            return ToolCallResult(json.dumps({"error": target_err}))
         
         # Security policy check: read-only repos cannot be written to at all
         target_repo = get_repo_from_vpath(target_vpath)
         if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters,
-                                 json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
+            return ToolCallResult(json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
 
         source_safe, source_err = is_safe_vpath(source_vpath, Path(WORKSPACE_VROOT))
         if not source_safe:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                                 json.dumps({"error": source_err}))
+            return ToolCallResult(json.dumps({"error": source_err}))
         
         target_realpath = resolve_repo_vpath(target_vpath)
         if not target_realpath:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters,
-                                 json.dumps({"error": "Could not resolve target repository path"}))
+            return ToolCallResult(json.dumps({"error": "Could not resolve target repository path"}))
         source_realpath = vpath_to_realpath(source_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
         
         if not source_realpath.exists():
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                                 json.dumps({"error": f"Source file not found: {source_vpath}"}))
+            return ToolCallResult(json.dumps({"error": f"Source file not found: {source_vpath}"}))
         
         if target_realpath.exists():
             target_content = target_realpath.read_text(encoding='utf-8')
@@ -104,26 +107,23 @@ async def run_propose_replace(tool_call: FinishedToolCall, privileged: bool = Fa
                 "diff": diff_text,
                 "status": "pending"
             }
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
+            return ToolCallResult(json.dumps(proposal), is_blocking=True)
         
         # privileged: perform actual replace
         try:
             target_realpath.parent.mkdir(parents=True, exist_ok=True)
             target_realpath.write_text(source_content, encoding='utf-8')
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "applied", "error": None}))
+            return ToolCallResult(json.dumps({"status": "applied", "error": None}))
         except Exception as e:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "failed", "error": str(e)}))
+            return ToolCallResult(json.dumps({"status": "failed", "error": str(e)}))
     except json.JSONDecodeError as e:
-        return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                             json.dumps({"error": f"Invalid JSON: {str(e)}"}))
+        return ToolCallResult(json.dumps({"error": f"Invalid JSON: {str(e)}"}))
     except Exception as e:
-        return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                             json.dumps({"error": f"Unexpected error: {str(e)}"}))
+        return ToolCallResult(json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
-async def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
-    from system import is_safe_vpath, vpath_to_realpath, REPOSITORIES_VROOT, WORKSPACE_VROOT, WORKSPACE_DIR
+async def run_propose_diff(name: str, parameters: str, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
     try:
-        params = json.loads(tool_call.parameters)
+        params = json.loads(parameters)
         target_vpath_str = params.get("target")
         diff_vpath_str = params.get("diff_path")
         
@@ -135,33 +135,27 @@ async def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False
         
         target_safe, target_err = is_safe_vpath(target_vpath, Path(REPOSITORIES_VROOT), allowed_scopes=scopes)
         if not target_safe:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                                 json.dumps({"error": target_err}))
+            return ToolCallResult(json.dumps({"error": target_err}))
         
         # Security policy check: read-only repos cannot be written to at all
         target_repo = get_repo_from_vpath(target_vpath)
         if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters,
-                                 json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
+            return ToolCallResult(json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
 
         diff_safe, diff_err = is_safe_vpath(diff_vpath, Path(WORKSPACE_VROOT))
         if not diff_safe:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                                 json.dumps({"error": diff_err}))
+            return ToolCallResult(json.dumps({"error": diff_err}))
         
         target_realpath = resolve_repo_vpath(target_vpath)
         if not target_realpath:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters,
-                                 json.dumps({"error": "Could not resolve target repository path"}))
+            return ToolCallResult(json.dumps({"error": "Could not resolve target repository path"}))
         diff_realpath = vpath_to_realpath(diff_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
         
         if not target_realpath.exists():
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                                 json.dumps({"error": f"Target file not found: {target_vpath}"}))
+            return ToolCallResult(json.dumps({"error": f"Target file not found: {target_vpath}"}))
         
         if not diff_realpath.exists():
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                                 json.dumps({"error": f"Diff file not found: {diff_vpath}"}))
+            return ToolCallResult(json.dumps({"error": f"Diff file not found: {diff_vpath}"}))
         
         diff_content = diff_realpath.read_text(encoding='utf-8')
         
@@ -173,22 +167,20 @@ async def run_propose_diff(tool_call: FinishedToolCall, privileged: bool = False
                 "diff": diff_content,
                 "status": "pending"
             }
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps(proposal), is_blocking=True)
+            return ToolCallResult(json.dumps(proposal), is_blocking=True)
         
         # privileged: apply patch
         try:
             result = subprocess.run(['patch', '-p0', str(target_realpath)], input=diff_content, text=True, capture_output=True)
             if result.returncode != 0:
                 raise RuntimeError(f"Patch failed: {result.stderr}")
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "applied", "error": None}))
+            return ToolCallResult(json.dumps({"status": "applied", "error": None}))
         except Exception as e:
-            return FinishedToolCallResult(tool_call.name, tool_call.parameters, json.dumps({"status": "failed", "error": str(e)}))
+            return ToolCallResult(json.dumps({"status": "failed", "error": str(e)}))
     except json.JSONDecodeError as e:
-        return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                             json.dumps({"error": f"Invalid JSON: {str(e)}"}))
+        return ToolCallResult(json.dumps({"error": f"Invalid JSON: {str(e)}"}))
     except Exception as e:
-        return FinishedToolCallResult(tool_call.name, tool_call.parameters, 
-                             json.dumps({"error": str(e)}))
+        return ToolCallResult(json.dumps({"error": str(e)}))
 
 
 
@@ -269,16 +261,12 @@ TOOL_REGISTRY: list[Tool] = [
     }
 ]
 
-async def run_tool_call(call: FinishedToolCall, privileged: bool = False, scopes: list[ScopeSpec] = []) -> FinishedToolCallResult:
+async def run_tool_call(name: str, parameters: str, privileged: bool, scopes: list[ScopeSpec]) -> ToolCallResult:
     for entry in TOOL_REGISTRY:
-        if entry["name"] == call.name:
+        if entry["name"] == name:
             try:
-                return await entry["executor"](call, privileged, scopes)
+                return await entry["executor"](name, parameters, privileged, scopes)
             except Exception as exc:
-                return FinishedToolCallResult(
-                    name=call.name,
-                    parameters=call.parameters,
-                    result=json.dumps({"error": f"Uncaught error: {exc}"})
-                )
+                return ToolCallResult(json.dumps({"error": f"Uncaught error: {exc}"}))
     
-    raise ValueError(f'Unsupported tool call {call.name}')
+    raise ValueError(f'Unsupported tool call {name}')

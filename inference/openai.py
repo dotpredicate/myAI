@@ -13,7 +13,7 @@ from inference import (
     FinishedThinking,
     FinishedToolCall,
     FinishedElement,
-    Tool,
+    ChatContext
 )
 
 from domain import (
@@ -22,17 +22,27 @@ from domain import (
     ToolCallFinishedOrBlocked,
     ToolCallResult,
     ToolCallDecision,
-    ConversationElement,
 )
 from log_config import get_logger
+from tools import Tool
 
 logger = get_logger(__name__)
 
-def _to_oai_messages(elements: list[tuple[int, ConversationElement]]) -> list[dict[str, object]]:
+def _to_oai_messages(context: ChatContext) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
+
+    # Build system prompt from scopes
+    if context.scopes:
+        scope_names = [s.internal_name for s in context.scopes]
+        system_content = f"You have access to the following repositories: {', '.join(scope_names)}. Use them when appropriate."
+        result.append({'role': 'system', 'content': system_content})
+
+    # agent_prompt placeholder - will be used in the future
+    _ = context.agent_prompt
+
     pending_thinking: Optional[str] = None
 
-    for message_id, element in elements:
+    for message_id, element in context.messages:
         match element:
             case Thinking():
                 pending_thinking = element.content

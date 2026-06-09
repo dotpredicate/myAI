@@ -19,10 +19,11 @@ from inference import (
     FinishedMessage,
     FinishedThinking,
     FinishedToolCall,
-    FinishedToolCallResult,
     FinishedElement,
-    Tool,
+    ChatContext,
 )
+
+from tools import Tool, run_tool_call
 
 from inference import registry
 from log_config import get_logger
@@ -46,6 +47,7 @@ class ContinueRequest(GenerationRequest):
     pass
 
 
+
 class ConversationBlockedError(Exception):
     def __init__(self, blocking_message_id: int):
         self.blocking_message_id = blocking_message_id
@@ -56,14 +58,6 @@ def to_conv_elem(element: FinishedElement) -> ConversationElement:
             return Message(author='assistant', content=content, scopes=[])
         case FinishedThinking(content=content):
             return Thinking(content=content)
-        case FinishedToolCallResult(name=name, parameters=parameters, result=result, is_blocking=is_blocking):
-            return ToolCallFinishedOrBlocked(
-                name=name,
-                parameters=parameters,
-                result=result,
-                is_blocking=is_blocking,
-                status='pending' if is_blocking else 'completed'
-            )
         case _:
             raise ValueError(f'Unhandled tool call type {type(element)}')
 
@@ -150,14 +144,14 @@ def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[list[
 
 
 async def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: list[Tool], provider_key: str, inference_config: dict[str, Any] = {}) -> AsyncGenerator[bytes, None]:
-    from tools import run_tool_call
-    context, scopes = get_messages_for_continuation(conn, conv_id)  # scopes: list[ScopeSpec]
+    messages, scopes = get_messages_for_continuation(conn, conv_id)
 
     provider = registry.get(provider_key)
 
     run_next_loop = True
     while run_next_loop:
-        chat_gen_inner = provider.run_chat_completion_stream(model_id, context, functions)
+        chat_context = ChatContext(messages=messages, scopes=scopes, tools=functions)
+        chat_gen_inner = provider.run_chat_completion_stream(model_id, chat_context, functions)
         run_next_loop = False
         async for delta, aggregated_element in chat_gen_inner:
             if aggregated_element is not None:
@@ -165,17 +159,23 @@ async def continue_conversation(conn: connection, conv_id: int, model_id: str, f
                     case FinishedMessage() | FinishedThinking():
                         result = to_conv_elem(aggregated_element)
                         msg_id = insert_message(conn, conv_id, 'assistant', result)
-                        context.append((msg_id, result))
+                        messages.append((msg_id, result))
                         yield json.dumps({'type': 'finalized', 'id': msg_id}).encode() + b'\n'
-                    case FinishedToolCall():
+                    case FinishedToolCall(name=name, parameters=parameters):
                         assert isinstance(aggregated_element, FinishedToolCall)
                         # Pass the extracted scopes to the tool call
-                        tool_result = await run_tool_call(aggregated_element, scopes=scopes)
-                        result_element = to_conv_elem(tool_result)
+                        tool_result = await run_tool_call(name, parameters, False, scopes)
+                        result_element = ToolCallFinishedOrBlocked(
+                            name=name,
+                            parameters=parameters,
+                            result=tool_result.result,
+                            is_blocking=tool_result.is_blocking,
+                            status='pending' if tool_result.is_blocking else 'completed'
+                        )
                         msg_id = insert_message(conn, conv_id, 'assistant', result_element)
                         conn.commit()
                         yield result_element.model_dump_json().encode() + b'\n'
-                        context.append((msg_id, result_element))
+                        messages.append((msg_id, result_element))
                         if tool_result.is_blocking:
                             cur = conn.cursor()
                             cur.execute(
@@ -246,11 +246,9 @@ async def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision
     if decision == 'approve':
         if not isinstance(elem, ToolCallFinishedOrBlocked):
             raise ValueError('original message is not a tool call')
-        from tools import run_tool_call
-        tool_call = FinishedToolCall(name=elem.name, parameters=elem.parameters)
-        
+
         scopes = get_scopes_from_last_user_message(conn, conv_id)
-        result = await run_tool_call(tool_call, privileged=True, scopes=scopes)
+        result = await run_tool_call(elem.name, elem.parameters, privileged=True, scopes=scopes)
         result_elem = ToolCallResult(
             original_message_id=msg_id,
             result=result.result,

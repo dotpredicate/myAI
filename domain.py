@@ -1,11 +1,6 @@
 from pydantic import BaseModel, TypeAdapter
 from typing import Literal, Optional, Union
-from repositories import SecurityPolicy
-
-
-class ScopeSpec(BaseModel):
-    internal_name: str
-    security_policy_override: Optional[SecurityPolicy] = None
+from repositories import ScopeSpec, SecurityPolicy
 
 
 def scope_policy_is_escalation(override: Optional[SecurityPolicy], base_policy: SecurityPolicy) -> bool:

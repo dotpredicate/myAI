@@ -112,7 +112,7 @@ def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]] = None
         scope_path = repo.path
         if not os.path.isdir(scope_path):
             continue
-        effective_policy = scope.security_policy_override if scope.security_policy_override is not None else repo.security_policy
+        effective_policy = scope.security_policy if scope.security_policy is not None else repo.security_policy
         if effective_policy == SecurityPolicy.WRITE:
             bwrap_args.extend(["--bind", scope_path, f"{REPOSITORIES_VROOT}/{repo.internal_name}"])
         else:

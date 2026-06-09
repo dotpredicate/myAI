@@ -18,7 +18,7 @@ from conversation import (
     delete_conversation
 )
 from domain import ScopeSpec
-from repositories import router as repositories_router
+from repositories import router as repositories_router, get_repo_by_id
 from agents import router as agents_router, get_agent_by_name
 from log_config import get_logger, setup_logging
 from search import synchronize, semantic_search
@@ -105,10 +105,23 @@ def _resolve_agent(agent_id: str | None, req_scopes: list, fallback_provider: st
         if agent is None:
             raise ValueError(f"Agent '{agent_id}' not found")
         scopes = list(req_scopes)
-        existing_names = {s.internal_name for s in scopes}
-        for a in agent.repository_access:
-            if a.repository_internal_name not in existing_names:
-                scopes.append(ScopeSpec(internal_name=a.repository_internal_name, security_policy_override=a.security_policy_override))
+        extra_scopes = {s.internal_name for s in scopes}
+        for agent_policy in agent.repository_access:
+            repo_key = agent_policy.repository_internal_name
+            if repo_key not in extra_scopes:
+                # Add default policy of Agent
+                if agent_policy.security_policy_override is None:
+                    repo_config = get_repo_by_id(agent_policy.repository_id)
+                    if repo_config is None:
+                        raise Exception(f"Repository {agent_policy.repository_id} not found")
+                    resolved_policy = repo_config.security_policy
+                else:
+                    resolved_policy = agent_policy.security_policy_override
+                scopes.append(ScopeSpec(
+                    internal_name=repo_key,
+                    security_policy=resolved_policy
+                ))
+            
         return agent.provider_key, agent.model_id, agent.inference_config, scopes
     if not fallback_provider:
         raise ValueError('provider_key required')
