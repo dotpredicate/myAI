@@ -33,8 +33,11 @@ def _to_oai_messages(context: ChatContext) -> list[dict[str, object]]:
 
     # Build system prompt from scopes
     if context.scopes:
-        scope_names = [s.internal_name for s in context.scopes]
-        system_content = f"You have access to the following repositories: {', '.join(scope_names)}. Use them when appropriate."
+        system_content = f"""
+        You have access to the following repositories:
+        {'\n'.join(f"- /repositories/{s.internal_name} - {s.security_policy}" for s in context.scopes)}
+        """
+        logger.debug(system_content)
         result.append({'role': 'system', 'content': system_content})
 
     # agent_prompt placeholder - will be used in the future
