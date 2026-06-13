@@ -1,42 +1,22 @@
 import json
 import re
-from typing import Any
+from typing import Any, Optional
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import database
-from repositories import SecurityPolicy, get_repo_by_id
-from domain import scope_policy_is_escalation
+from domain import SecurityPolicy, AgentConfig, AgentRepositoryAccess, scope_policy_is_escalation
+from repositories import get_repo_by_id
 from inference import registry
 from log_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
 
-
 class RepoAccessEntry(BaseModel):
     repository_id: int
     security_policy_override: SecurityPolicy | None = None
-
-
-class AgentRepositoryAccess(BaseModel):
-    id: int = 0
-    agent_id: int = 0
-    repository_id: int
-    repository_internal_name: str = ''
-    security_policy_override: SecurityPolicy | None = None
-
-
-class AgentConfig(BaseModel):
-    id: int
-    display_name: str
-    internal_name: str
-    description: str
-    provider_key: str
-    model_id: str
-    inference_config: dict[str, Any]
-    repository_access: list[AgentRepositoryAccess]
 
 
 class CreateAgentRequest(BaseModel):
@@ -67,7 +47,7 @@ def _fetch_repository_access(agent_id: int) -> list[AgentRepositoryAccess]:
             JOIN repositories r ON r.id = ara.repository_id
             WHERE ara.agent_id = %s
             """,
-            (agent_id,),
+            (agent_id,)
         )
         return [
             AgentRepositoryAccess(
@@ -107,7 +87,7 @@ def get_agent_by_name(name: str) -> AgentConfig | None:
     with database.mk_conn() as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT id, display_name, internal_name, description, provider_key, model_id, inference_config FROM agents WHERE internal_name = %s",
-            (name,),
+            (name,)
         )
         row = cur.fetchone()
         if not row:

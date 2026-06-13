@@ -2,16 +2,19 @@ from typing import AsyncGenerator, Literal, Optional, Any, List
 import json
 from pydantic import BaseModel
 from psycopg2.extensions import connection
+from fastapi import APIRouter, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 
 from domain import (
     Message,
-    ScopeSpec,
     Thinking,
     ToolCallFinishedOrBlocked,
     ToolCallResult,
     ToolCallDecision,
     ConversationElement,
     stored_element_adapter,
+    ScopeSpec,
+    SecurityPolicy,
 )
 from inference import (
     StreamingMessage,
@@ -21,21 +24,29 @@ from inference import (
     FinishedToolCall,
     FinishedElement,
     ChatContext,
+    registry
 )
+from repositories import get_repo_by_id, get_repo_by_name
+from tools import Tool, run_tool_call, TOOL_REGISTRY
 
-from tools import Tool, run_tool_call
-
-from inference import registry
 from log_config import get_logger
+from database import mk_conn
+from agents import get_agent_by_name, AgentConfig
 
 logger = get_logger(__name__)
 
+router = APIRouter()
+
+
+class UserScopeChoice(BaseModel):
+    internal_name: str
+    security_policy_override: Optional[SecurityPolicy]
 
 class GenerationRequest(BaseModel):
     agent_id: Optional[str] = None
     provider_key: Optional[str] = None
     model_id: Optional[str] = None
-    scopes: list[ScopeSpec] = []
+    scopes: list[UserScopeChoice] = []
 
 
 class PromptRequest(GenerationRequest):
@@ -110,7 +121,70 @@ def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> List[Sc
         return []
 
 
-def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Optional[int] = None, scopes: Optional[List[ScopeSpec]] = None) -> int:
+def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) -> ScopeSpec:
+    """
+    Priority: User override > Agent override > Repository policy.
+    """
+    # 1. User override
+    if choice.security_policy_override is not None:
+        return ScopeSpec(
+            internal_name=choice.internal_name,
+            security_policy=choice.security_policy_override,
+        )
+    # 2. Agent override
+    if agent is not None:
+        for ap in agent.repository_access:
+            if ap.repository_internal_name == choice.internal_name and ap.security_policy_override is not None:
+                return ScopeSpec(
+                    internal_name=choice.internal_name,
+                    security_policy=ap.security_policy_override,
+                )
+    # 3. Repository policy
+    repo = get_repo_by_name(choice.internal_name)
+    if repo is None:
+        raise ValueError(f"Repository '{choice.internal_name}' not found")
+    return ScopeSpec(
+        internal_name=choice.internal_name,
+        security_policy=repo.security_policy,
+    )
+
+
+def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fallback_model: Optional[str], req_scopes: list[UserScopeChoice]) -> tuple:
+    """Resolve (provider_key, model_id, inference_config, scopes) from agent or fallback.
+    Returns None for provider_key if validation fails (caller handles error)."""
+    if agent_id:
+        agent = get_agent_by_name(agent_id)
+        if agent is None:
+            raise ValueError(f"Agent '{agent_id}' not found")
+        scopes = [resolve_scope(s, agent=agent) for s in req_scopes]
+        extra_scopes = {s.internal_name for s in scopes}
+        for agent_policy in agent.repository_access:
+            repo_key = agent_policy.repository_internal_name
+            if repo_key not in extra_scopes:
+                # Add default policy of Agent (agent override > repo policy)
+                if agent_policy.security_policy_override is None:
+                    repo_config = get_repo_by_id(agent_policy.repository_id)
+                    if repo_config is None:
+                        raise Exception(f"Repository {agent_policy.repository_id} not found")
+                    resolved_policy = repo_config.security_policy
+                else:
+                    resolved_policy = agent_policy.security_policy_override
+                scopes.append(ScopeSpec(
+                    internal_name=repo_key,
+                    security_policy=resolved_policy
+                ))
+            
+        return agent.provider_key, agent.model_id, agent.inference_config, scopes
+    if not fallback_provider:
+        raise ValueError('provider_key required')
+    if not fallback_model:
+        raise ValueError('model_id required')
+    # No agent — user override > repo policy
+    resolved_scopes = [resolve_scope(s) for s in req_scopes]
+    return fallback_provider, fallback_model, {}, resolved_scopes
+
+
+def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Optional[int], scopes: List[ScopeSpec]) -> int:
     if conv_id and (blocking_id := get_blocking_message_id(conn, conv_id)):
         raise ConversationBlockedError(blocking_id)
     
@@ -120,7 +194,7 @@ def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Opt
     user_message = Message(
         author='user',
         content=prompt,
-        scopes=scopes if scopes else []
+        scopes=scopes
     )
         
     insert_message(conn, conv_id, 'user', user_message)
@@ -150,7 +224,7 @@ async def continue_conversation(conn: connection, conv_id: int, model_id: str, f
 
     run_next_loop = True
     while run_next_loop:
-        chat_context = ChatContext(messages=messages, scopes=scopes, tools=functions)
+        chat_context = ChatContext(messages=messages, scopes=scopes, tools=functions, agent_prompt=None)
         chat_gen_inner = provider.run_chat_completion_stream(model_id, chat_context, functions)
         run_next_loop = False
         async for delta, aggregated_element in chat_gen_inner:
@@ -269,3 +343,94 @@ def delete_conversation(conn: connection, conv_id: int) -> bool:
         cur.execute("DELETE FROM conversations WHERE id = %s", (conv_id,))
         conn.commit()
         return True
+
+
+@router.post('/api/conversations/prompt')
+async def prompt_model(payload: PromptRequest):
+    prompt = payload.prompt
+    conversation_id = payload.conversation_id
+    try:
+        provider_key, model_id, inference_config, scopes = _resolve_agent(
+            payload.agent_id, payload.provider_key, payload.model_id, payload.scopes,
+        )
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={'error': str(e)})
+
+    try:
+        conn = mk_conn()
+        conversation_id = prepare_conversation_with_prompt(conn, prompt, conversation_id, scopes=scopes)
+    except ConversationBlockedError as e:
+        return JSONResponse(
+            status_code=403,
+            content={"error": "Action required", "blocking_message_id": e.blocking_message_id}
+        )
+
+    return StreamingResponse(
+        continue_conversation(conn, conversation_id, model_id, TOOL_REGISTRY, provider_key=provider_key, inference_config=inference_config),
+        media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
+    )
+
+
+@router.get('/api/conversations')
+async def list_conversations():
+    conn = mk_conn()
+    conversations = get_conversations(conn)
+    return JSONResponse(content=conversations)
+
+
+@router.get('/api/conversations/{conv_id}')
+async def get_conversation(conv_id: int):
+    conn = mk_conn()
+    details = get_conversation_details(conn, conv_id)
+    if not details:
+        return JSONResponse(status_code=404, content={'error': 'Not found'})
+    return JSONResponse(content=details)
+
+
+@router.delete('/api/conversations/{conv_id}')
+async def delete_conversation_endpoint(conv_id: int):
+    try:
+        conn = mk_conn()
+        success = delete_conversation(conn, conv_id)
+        if not success:
+            return JSONResponse(status_code=404, content={'error': 'Conversation not found'})
+        return JSONResponse(content={'status': 'deleted', 'id': conv_id})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={'error': str(e)})
+
+
+@router.post('/api/conversations/{conv_id}/tool_calls/{msg_id}/decide')
+async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request):
+    payload = await request.json()
+    decision = payload.get('decision')
+    comment = payload.get('comment')
+    if decision not in {'approve', 'reject'}:
+        return JSONResponse(status_code=400, content={'error': 'invalid decision'})
+
+    try:
+        conn = mk_conn()
+        executed = await decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
+        return JSONResponse(content={'status': 'success', 'executed': executed})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={'error': str(e)})
+    except Exception as e:
+        return JSONResponse(status_code=500, content={'error': str(e)})
+
+
+@router.post('/api/conversations/{conversation_id}/continue')
+async def continue_conversation_endpoint(conversation_id: int, payload: ContinueRequest):
+    try:
+        provider_key, model_id, inference_config, _ = _resolve_agent(
+            payload.agent_id, payload.provider_key, payload.model_id, payload.scopes
+        )
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={'error': str(e)})
+
+    conn = mk_conn()
+    details = get_conversation_details(conn, conversation_id)
+    if not details:
+        return JSONResponse(status_code=404, content={'error': 'conversation not found'})
+    return StreamingResponse(
+        continue_conversation(conn, conversation_id, model_id, TOOL_REGISTRY, provider_key, inference_config),
+        media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
+    )

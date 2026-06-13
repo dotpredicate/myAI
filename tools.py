@@ -6,8 +6,7 @@ from pathlib import Path
 from typing import Awaitable, Callable, TypedDict
 
 from system import REPOSITORIES_VROOT, WORKSPACE_DIR, WORKSPACE_VROOT, get_repo_from_vpath, is_safe_vpath, resolve_repo_vpath, run_sandboxed_command, vpath_to_realpath
-from repositories import SecurityPolicy
-from domain import ScopeSpec
+from domain import SecurityPolicy, ScopeSpec
 
 class FunctionDefinition(TypedDict):
     name: str

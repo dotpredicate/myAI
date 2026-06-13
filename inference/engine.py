@@ -4,8 +4,7 @@ from typing import AsyncIterator, Optional, TypeAlias, Union
 
 from pydantic import ConfigDict
 
-from domain import ConversationElement
-from repositories import ScopeSpec
+from domain import ConversationElement, ScopeSpec
 from tools import Tool
 
 @dataclass(frozen=True)

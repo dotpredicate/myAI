@@ -2,8 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 from typing import NamedTuple, Optional, List
-from repositories import get_repo_by_name, RepositoryConfig, SecurityPolicy
-from domain import ScopeSpec
+from domain import ScopeSpec, SecurityPolicy, RepositoryConfig
+from repositories import get_repo_by_name
 
 
 # Paths and configuration

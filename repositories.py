@@ -2,7 +2,6 @@ import os
 import re
 import subprocess
 from pathlib import Path
-from enum import StrEnum
 from typing import Optional, List, Tuple, Literal
 from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
@@ -10,26 +9,10 @@ from pydantic import BaseModel
 
 import database
 from log_config import get_logger
+from domain import SecurityPolicy, RepositoryConfig, ScopeSpec
 
 logger = get_logger(__name__)
 router = APIRouter()
-
-class SecurityPolicy(StrEnum):
-    READ_ONLY = 'read-only'
-    PRIVILEGED_WRITE = 'privileged-write'
-    WRITE = 'write'
-
-class RepositoryConfig(BaseModel):
-    id: int
-    display_name: str
-    internal_name: str
-    repo_type: Literal['plain', 'git']
-    path: str
-    security_policy: SecurityPolicy
-
-class ScopeSpec(BaseModel):
-    internal_name: str
-    security_policy: SecurityPolicy
 
 def get_repositories() -> List[RepositoryConfig]:
     with database.mk_conn() as conn, conn.cursor() as cur:

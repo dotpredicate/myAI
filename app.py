@@ -1,31 +1,19 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, Request, Body
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi import BackgroundTasks, FastAPI, Body
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from database import mk_conn, init_database
+from database import init_database
 from typing import Optional
-from conversation import (
-    PromptRequest,
-    ContinueRequest,
-    prepare_conversation_with_prompt,
-    ConversationBlockedError,
-    get_conversations as fetch_conversations,
-    get_conversation_details,
-    decide_tool_call,
-    continue_conversation,
-    delete_conversation
-)
-from domain import ScopeSpec
-from repositories import router as repositories_router, get_repo_by_id
-from agents import router as agents_router, get_agent_by_name
+from conversation import router as conversations_router
+from repositories import router as repositories_router
+from agents import router as agents_router
 from log_config import get_logger, setup_logging
 from search import synchronize, semantic_search
 from inference import registry, estimator, llama_cpp_server
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.hf_gguf import list_cached_models
-from tools import TOOL_REGISTRY
 
 logger = get_logger(__name__)
 
@@ -81,6 +69,7 @@ async def get_cached_models():
 
 app.include_router(repositories_router)
 app.include_router(agents_router)
+app.include_router(conversations_router)
 
 
 @app.post('/api/search')
@@ -95,93 +84,6 @@ async def search(payload: dict = Body(...)):
         snippet = hit.text[:200] + ('...' if len(hit.text) > 200 else '')
         results.append({'id': hit.document_id, 'title': f"{hit.file_path} ({hit.chunk_index})", 'snippet': snippet, 'score': hit.score})
     return JSONResponse(content={'results': results})
-
-
-def _resolve_agent(agent_id: str | None, req_scopes: list, fallback_provider: str | None, fallback_model: str | None) -> tuple:
-    """Resolve (provider_key, model_id, inference_config, scopes) from agent or fallback.
-    Returns None for provider_key if validation fails (caller handles error)."""
-    if agent_id:
-        agent = get_agent_by_name(agent_id)
-        if agent is None:
-            raise ValueError(f"Agent '{agent_id}' not found")
-        scopes = list(req_scopes)
-        extra_scopes = {s.internal_name for s in scopes}
-        for agent_policy in agent.repository_access:
-            repo_key = agent_policy.repository_internal_name
-            if repo_key not in extra_scopes:
-                # Add default policy of Agent
-                if agent_policy.security_policy_override is None:
-                    repo_config = get_repo_by_id(agent_policy.repository_id)
-                    if repo_config is None:
-                        raise Exception(f"Repository {agent_policy.repository_id} not found")
-                    resolved_policy = repo_config.security_policy
-                else:
-                    resolved_policy = agent_policy.security_policy_override
-                scopes.append(ScopeSpec(
-                    internal_name=repo_key,
-                    security_policy=resolved_policy
-                ))
-            
-        return agent.provider_key, agent.model_id, agent.inference_config, scopes
-    if not fallback_provider:
-        raise ValueError('provider_key required')
-    if not fallback_model:
-        raise ValueError('model_id required')
-    return fallback_provider, fallback_model, {}, req_scopes
-
-
-@app.post('/api/conversations/prompt')
-async def prompt_model(payload: PromptRequest):
-    prompt = payload.prompt
-    conversation_id = payload.conversation_id
-    try:
-        provider_key, model_id, inference_config, scopes = _resolve_agent(
-            payload.agent_id, payload.scopes, payload.provider_key, payload.model_id
-        )
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={'error': str(e)})
-
-    try:
-        conn = mk_conn()
-        conversation_id = prepare_conversation_with_prompt(conn, prompt, conversation_id, scopes=scopes)
-    except ConversationBlockedError as e:
-        return JSONResponse(
-            status_code=403,
-            content={"error": "Action required", "blocking_message_id": e.blocking_message_id}
-        )
-
-    return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, TOOL_REGISTRY, provider_key=provider_key, inference_config=inference_config),
-        media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
-    )
-
-
-@app.get('/api/conversations')
-async def get_conversations():
-    conn = mk_conn()
-    conversations = fetch_conversations(conn)
-    return JSONResponse(content=conversations)
-
-
-@app.get('/api/conversations/{conv_id}')
-async def get_conversation(conv_id: int):
-    conn = mk_conn()
-    details = get_conversation_details(conn, conv_id)
-    if not details:
-        return JSONResponse(status_code=404, content={'error': 'Not found'})
-    return JSONResponse(content=details)
-
-
-@app.delete('/api/conversations/{conv_id}')
-async def delete_conversation_endpoint(conv_id: int):
-    try:
-        conn = mk_conn()
-        success = delete_conversation(conn, conv_id)
-        if not success:
-            return JSONResponse(status_code=404, content={'error': 'Conversation not found'})
-        return JSONResponse(content={'status': 'deleted', 'id': conv_id})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={'error': str(e)})
 
 
 @app.get('/api/estimate')
@@ -200,43 +102,6 @@ async def gpu_stats():
 async def sync(background_tasks: BackgroundTasks):
     background_tasks.add_task(synchronize)
     return JSONResponse({"status": "sync started"})
-
-
-@app.post('/api/conversations/{conv_id}/tool_calls/{msg_id}/decide')
-async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request):
-    payload = await request.json()
-    decision = payload.get('decision')
-    comment = payload.get('comment')
-    if decision not in {'approve', 'reject'}:
-        return JSONResponse(status_code=400, content={'error': 'invalid decision'})
-
-    try:
-        conn = mk_conn()
-        executed = await decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
-        return JSONResponse(content={'status': 'success', 'executed': executed})
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={'error': str(e)})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={'error': str(e)})
-
-
-@app.post('/api/conversations/{conversation_id}/continue')
-async def continue_conversation_endpoint(conversation_id: int, payload: ContinueRequest):
-    try:
-        provider_key, model_id, inference_config, _ = _resolve_agent(
-            payload.agent_id, payload.scopes, payload.provider_key, payload.model_id
-        )
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={'error': str(e)})
-
-    conn = mk_conn()
-    details = get_conversation_details(conn, conversation_id)
-    if not details:
-        return JSONResponse(status_code=404, content={'error': 'conversation not found'})
-    return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, TOOL_REGISTRY, provider_key, inference_config),
-        media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
-    )
 
 
 @app.get('/api/gpu-benchmark')
