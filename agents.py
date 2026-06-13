@@ -23,6 +23,7 @@ class CreateAgentRequest(BaseModel):
     display_name: str
     internal_name: str
     description: str = ''
+    instructions: Optional[str] = None
     provider_key: str
     model_id: str
     inference_config: dict[str, Any] = {}
@@ -32,6 +33,7 @@ class CreateAgentRequest(BaseModel):
 class UpdateAgentRequest(BaseModel):
     display_name: str | None = None
     description: str | None = None
+    instructions: str | None = None
     provider_key: str | None = None
     model_id: str | None = None
     inference_config: dict[str, Any] | None = None
@@ -64,7 +66,7 @@ def _fetch_repository_access(agent_id: int) -> list[AgentRepositoryAccess]:
 def get_agents() -> list[AgentConfig]:
     with database.mk_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT id, display_name, internal_name, description, provider_key, model_id, inference_config FROM agents"
+            "SELECT id, display_name, internal_name, description, instructions, provider_key, model_id, inference_config FROM agents"
         )
         rows = cur.fetchall()
         agents = []
@@ -75,9 +77,10 @@ def get_agents() -> list[AgentConfig]:
                 display_name=row[1],
                 internal_name=row[2],
                 description=row[3],
-                provider_key=row[4],
-                model_id=row[5],
-                inference_config=row[6] if row[6] else {},
+                instructions=row[4],
+                provider_key=row[5],
+                model_id=row[6],
+                inference_config=row[7] if row[7] else {},
                 repository_access=_fetch_repository_access(agent_id),
             ))
         return agents
@@ -86,7 +89,7 @@ def get_agents() -> list[AgentConfig]:
 def get_agent_by_name(name: str) -> AgentConfig | None:
     with database.mk_conn() as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT id, display_name, internal_name, description, provider_key, model_id, inference_config FROM agents WHERE internal_name = %s",
+            "SELECT id, display_name, internal_name, description, instructions, provider_key, model_id, inference_config FROM agents WHERE internal_name = %s",
             (name,)
         )
         row = cur.fetchone()
@@ -98,9 +101,10 @@ def get_agent_by_name(name: str) -> AgentConfig | None:
             display_name=row[1],
             internal_name=row[2],
             description=row[3],
-            provider_key=row[4],
-            model_id=row[5],
-            inference_config=row[6] if row[6] else {},
+            instructions=row[4],
+            provider_key=row[5],
+            model_id=row[6],
+            inference_config=row[7] if row[7] else {},
             repository_access=_fetch_repository_access(agent_id),
         )
 
@@ -109,6 +113,7 @@ def create_agent(payload: CreateAgentRequest) -> AgentConfig:
     display_name = payload.display_name.strip()
     internal_name = payload.internal_name.strip()
     description = payload.description.strip()
+    instructions = payload.instructions.strip() if payload.instructions else None
     provider_key = payload.provider_key.strip()
     model_id = payload.model_id.strip()
     inference_config = payload.inference_config
@@ -129,8 +134,8 @@ def create_agent(payload: CreateAgentRequest) -> AgentConfig:
     with database.mk_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO agents (display_name, internal_name, description, provider_key, model_id, inference_config) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-                (display_name, internal_name, description, provider_key, model_id, json.dumps(inference_config)),
+                "INSERT INTO agents (display_name, internal_name, description, instructions, provider_key, model_id, inference_config) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (display_name, internal_name, description, instructions, provider_key, model_id, json.dumps(inference_config)),
             )
             row = cur.fetchone()
             assert row is not None
@@ -163,6 +168,7 @@ def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
 
     display_name = payload.display_name if payload.display_name is not None else existing.display_name
     description = payload.description if payload.description is not None else existing.description
+    instructions = payload.instructions if payload.instructions is not None else existing.instructions
     provider_key = payload.provider_key if payload.provider_key is not None else existing.provider_key
     model_id = payload.model_id if payload.model_id is not None else existing.model_id
     inference_config = payload.inference_config if payload.inference_config is not None else existing.inference_config
@@ -177,8 +183,8 @@ def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
     with database.mk_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "UPDATE agents SET display_name = %s, description = %s, provider_key = %s, model_id = %s, inference_config = %s WHERE id = %s",
-                (display_name, description, provider_key, model_id, json.dumps(inference_config), existing.id),
+                "UPDATE agents SET display_name = %s, description = %s, instructions = %s, provider_key = %s, model_id = %s, inference_config = %s WHERE id = %s",
+                (display_name, description, instructions, provider_key, model_id, json.dumps(inference_config), existing.id),
             )
 
             # Replace repository access: delete old, insert new

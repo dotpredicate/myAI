@@ -37,6 +37,7 @@ class AgentConfig(BaseModel):
     display_name: str
     internal_name: str
     description: str
+    instructions: Optional[str] = None
     provider_key: str
     model_id: str
     inference_config: dict[str, Any]

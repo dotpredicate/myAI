@@ -15,11 +15,23 @@ The single object given to every provider call.
 
 A conversation is an ordered sequence of interactions stored in the database.
 
+- User message
+- User/system actions such as:
+    - acceptation / rejection of a secured action
+    - interrupt (i.e. async action result)
+    - cancellation of ongoing generation
+- Agent message
+- Agent thinking
+- Agent tool calls, such as:
+    - Using semantic search
+    - Executing a command
+    - File change (diff/replace)
+    - Spawning a sub-agent
+
+
 ### Scopes
 
-User messages and Agents carry security scopes.
-
-Scopes are extracted from the last user message on continuation and forwarded to tool execution.
+Available repositories and associated resolved security policies are passed to the Agent.
 
 ### Lifecycle
 

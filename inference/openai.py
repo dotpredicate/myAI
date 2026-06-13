@@ -1,3 +1,4 @@
+import datetime
 from typing import Optional, cast
 
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
@@ -31,17 +32,30 @@ logger = get_logger(__name__)
 def _to_oai_messages(context: ChatContext) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
 
+    system_content = f"""
+        The date is {datetime.date.today()}.
+    """
+
     # Build system prompt from scopes
     if context.scopes:
-        system_content = f"""
-        You have access to the following repositories:
+        scopes_content = f"""
+        You have access to following repositories:
         {'\n'.join(f"- /repositories/{s.internal_name} - {s.security_policy}" for s in context.scopes)}
         """
+        system_content += "\n" + scopes_content
         logger.debug(system_content)
-        result.append({'role': 'system', 'content': system_content})
+    
+    if context.instructions:
+        instructions_content = f"""
+            Additional instructions:
+            {context.instructions}
+        """
+        system_content += "\n" + context.instructions
+        logger.debug(instructions_content)
 
-    # agent_prompt placeholder - will be used in the future
-    _ = context.agent_prompt
+    logger.debug(system_content)
+    result.append({'role': 'system', 'content': system_content})
+
 
     pending_thinking: Optional[str] = None
 

@@ -50,7 +50,7 @@ class ChatContext:
     messages: list[tuple[int, ConversationElement]]
     scopes: list[ScopeSpec]
     tools: list[Tool]
-    agent_prompt: Optional[str]
+    instructions: str
 
 
 @dataclass(frozen=True)

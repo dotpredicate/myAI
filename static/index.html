@@ -392,6 +392,7 @@
               <div class="field"><label>Name</label><input id="agentDisplayName" class="input" placeholder="Display name"></div>
               <div class="field"><label>Key</label><input id="agentInternalName" class="input" placeholder="Technical identifier"></div>
               <div class="field"><label>Description</label><textarea id="agentDescription" class="input" rows="2" placeholder="Agent description"></textarea></div>
+              <div class="field"><label>Instructions</label><textarea id="agentInstructions" class="input" rows="4" placeholder="Agent instructions"></textarea></div>
               <div class="field"><label>Provider</label><select id="agentProviderSelect"></select></div>
               <div class="field"><label>Model</label><select id="agentModelSelect"></select></div>
               <div class="field-row">
@@ -598,6 +599,7 @@
       document.getElementById('agentDisplayName').value = '';
       document.getElementById('agentInternalName').value = '';
       document.getElementById('agentDescription').value = '';
+      document.getElementById('agentInstructions').value = '';
       document.getElementById('agentNctx').value = '4096';
       document.getElementById('agentTemperature').value = '0.7';
       document.getElementById('agentDeleteBtn').style.display = 'none';
@@ -616,6 +618,7 @@
       document.getElementById('agentDisplayName').value = agent.display_name || '';
       document.getElementById('agentInternalName').value = agent.internal_name || '';
       document.getElementById('agentDescription').value = agent.description || '';
+      document.getElementById('agentInstructions').value = agent.instructions || '';
       document.getElementById('agentDeleteBtn').style.display = 'inline-block';
       // Set provider/model selects
       const pSelect = document.getElementById('agentProviderSelect');
@@ -653,6 +656,7 @@
       const displayName = document.getElementById('agentDisplayName').value.trim();
       const internalName = document.getElementById('agentInternalName').value.trim();
       const description = document.getElementById('agentDescription').value.trim();
+      const instructions = document.getElementById('agentInstructions').value.trim();
       const providerKey = document.getElementById('agentProviderSelect').value;
       const modelId = document.getElementById('agentModelSelect').value;
       const nctx = parseInt(document.getElementById('agentNctx').value) || 4096;
@@ -679,6 +683,7 @@
         display_name: displayName,
         internal_name: internalName,
         description,
+        instructions,
         provider_key: providerKey,
         model_id: modelId,
         inference_config: { n_ctx: nctx, temperature: temp },

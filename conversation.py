@@ -48,11 +48,9 @@ class GenerationRequest(BaseModel):
     model_id: Optional[str] = None
     scopes: list[UserScopeChoice] = []
 
-
 class PromptRequest(GenerationRequest):
     prompt: str
     conversation_id: Optional[int] = None
-
 
 class ContinueRequest(GenerationRequest):
     pass
@@ -71,7 +69,6 @@ def to_conv_elem(element: FinishedElement) -> ConversationElement:
             return Thinking(content=content)
         case _:
             raise ValueError(f'Unhandled tool call type {type(element)}')
-
 
 def create_conversation(conn: connection) -> int:
     with conn.cursor() as cur:
@@ -103,11 +100,10 @@ def get_blocking_message_id(conn: connection, conv_id: int) -> Optional[int]:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT blocking_message_id FROM conversations WHERE id = %s",
-            (conv_id,),
+            (conv_id,)
         )
         row = cur.fetchone()
         return row[0] if row and row[0] is not None else None
-
 
 def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> List[ScopeSpec]:
     with conn.cursor() as cur:
@@ -119,7 +115,6 @@ def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> List[Sc
             if isinstance(elem, Message) and elem.author == 'user':
                 return elem.scopes or []
         return []
-
 
 def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) -> ScopeSpec:
     """
@@ -148,9 +143,8 @@ def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) 
         security_policy=repo.security_policy,
     )
 
-
 def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fallback_model: Optional[str], req_scopes: list[UserScopeChoice]) -> tuple:
-    """Resolve (provider_key, model_id, inference_config, scopes) from agent or fallback.
+    """Resolve (provider_key, model_id, inference_config, scopes, agent_prompt) from agent or fallback.
     Returns None for provider_key if validation fails (caller handles error)."""
     if agent_id:
         agent = get_agent_by_name(agent_id)
@@ -174,15 +168,14 @@ def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fa
                     security_policy=resolved_policy
                 ))
             
-        return agent.provider_key, agent.model_id, agent.inference_config, scopes
+        return agent.provider_key, agent.model_id, agent.inference_config, scopes, agent.instructions
     if not fallback_provider:
         raise ValueError('provider_key required')
     if not fallback_model:
         raise ValueError('model_id required')
-    # No agent — user override > repo policy
+    # No agent \u2014 user override > repo policy
     resolved_scopes = [resolve_scope(s) for s in req_scopes]
-    return fallback_provider, fallback_model, {}, resolved_scopes
-
+    return fallback_provider, fallback_model, {}, resolved_scopes, None
 
 def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Optional[int], scopes: List[ScopeSpec]) -> int:
     if conv_id and (blocking_id := get_blocking_message_id(conn, conv_id)):
@@ -201,10 +194,8 @@ def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Opt
     conn.commit()
     return conv_id
 
-
-def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[list[tuple[int, ConversationElement]], list[ScopeSpec]]:
+def get_messages_for_continuation(conn: connection, conv_id: int) -> list[tuple[int, ConversationElement]]:
     ctx: list[tuple[int, ConversationElement]] = []
-    scopes: list[ScopeSpec] = []
     with conn.cursor() as cur:
         cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
         for row in cur.fetchall():
@@ -212,19 +203,17 @@ def get_messages_for_continuation(conn: connection, conv_id: int) -> tuple[list[
             element_dict = json.loads(element) if isinstance(element, str) else element
             parsed = stored_element_adapter.validate_python(element_dict)
             ctx.append((message_id, parsed))
-            if role == 'user' and isinstance(parsed, Message):
-                scopes = parsed.scopes or []
-    return ctx, scopes
+    return ctx
 
-
-async def continue_conversation(conn: connection, conv_id: int, model_id: str, functions: list[Tool], provider_key: str, inference_config: dict[str, Any] = {}) -> AsyncGenerator[bytes, None]:
-    messages, scopes = get_messages_for_continuation(conn, conv_id)
+async def continue_conversation(conn: connection, conv_id: int, functions: list[Tool], agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, extra_scopes: list[UserScopeChoice] = []) -> AsyncGenerator[bytes, None]:
+    provider_key, model_id, inference_config, scopes, agent_prompt = _resolve_agent(agent_id, provider_key, model_id, extra_scopes)
+    messages = get_messages_for_continuation(conn, conv_id)
 
     provider = registry.get(provider_key)
 
     run_next_loop = True
     while run_next_loop:
-        chat_context = ChatContext(messages=messages, scopes=scopes, tools=functions, agent_prompt=None)
+        chat_context = ChatContext(messages=messages, scopes=scopes, tools=functions, instructions=agent_prompt)
         chat_gen_inner = provider.run_chat_completion_stream(model_id, chat_context, functions)
         run_next_loop = False
         async for delta, aggregated_element in chat_gen_inner:
@@ -268,13 +257,11 @@ async def continue_conversation(conn: connection, conv_id: int, model_id: str, f
     conn.commit()
     logger.info("Stream finished")
 
-
 def get_conversations(conn: connection) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         cur.execute("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")
         rows = cur.fetchall()
     return [{'id': r[0], 'title': r[1], 'created_at': r[2].isoformat()} for r in rows]
-
 
 def get_conversation_details(conn: connection, conv_id: int) -> Optional[dict[str, Any]]:
     with conn.cursor() as cur:
@@ -295,6 +282,7 @@ def get_conversation_details(conn: connection, conv_id: int) -> Optional[dict[st
             'blocking_message_id': row[3],
             'messages': messages
         }
+
 
 
 async def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> bool:
@@ -334,6 +322,7 @@ async def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision
     return executed
 
 
+
 def delete_conversation(conn: connection, conv_id: int) -> bool:
     with conn.cursor() as cur:
         cur.execute("SELECT id FROM conversations WHERE id = %s", (conv_id,))
@@ -345,12 +334,13 @@ def delete_conversation(conn: connection, conv_id: int) -> bool:
         return True
 
 
+
 @router.post('/api/conversations/prompt')
 async def prompt_model(payload: PromptRequest):
     prompt = payload.prompt
     conversation_id = payload.conversation_id
     try:
-        provider_key, model_id, inference_config, scopes = _resolve_agent(
+        provider_key, model_id, inference_config, scopes, agent_prompt = _resolve_agent(
             payload.agent_id, payload.provider_key, payload.model_id, payload.scopes,
         )
     except ValueError as e:
@@ -366,9 +356,10 @@ async def prompt_model(payload: PromptRequest):
         )
 
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, TOOL_REGISTRY, provider_key=provider_key, inference_config=inference_config),
+        continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
+
 
 
 @router.get('/api/conversations')
@@ -378,6 +369,7 @@ async def list_conversations():
     return JSONResponse(content=conversations)
 
 
+
 @router.get('/api/conversations/{conv_id}')
 async def get_conversation(conv_id: int):
     conn = mk_conn()
@@ -385,6 +377,7 @@ async def get_conversation(conv_id: int):
     if not details:
         return JSONResponse(status_code=404, content={'error': 'Not found'})
     return JSONResponse(content=details)
+
 
 
 @router.delete('/api/conversations/{conv_id}')
@@ -397,6 +390,7 @@ async def delete_conversation_endpoint(conv_id: int):
         return JSONResponse(content={'status': 'deleted', 'id': conv_id})
     except Exception as e:
         return JSONResponse(status_code=500, content={'error': str(e)})
+
 
 
 @router.post('/api/conversations/{conv_id}/tool_calls/{msg_id}/decide')
@@ -417,20 +411,14 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
         return JSONResponse(status_code=500, content={'error': str(e)})
 
 
+
 @router.post('/api/conversations/{conversation_id}/continue')
 async def continue_conversation_endpoint(conversation_id: int, payload: ContinueRequest):
-    try:
-        provider_key, model_id, inference_config, _ = _resolve_agent(
-            payload.agent_id, payload.provider_key, payload.model_id, payload.scopes
-        )
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={'error': str(e)})
-
     conn = mk_conn()
     details = get_conversation_details(conn, conversation_id)
     if not details:
         return JSONResponse(status_code=404, content={'error': 'conversation not found'})
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, model_id, TOOL_REGISTRY, provider_key, inference_config),
+        continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )

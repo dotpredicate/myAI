@@ -6,7 +6,6 @@ from inference.llama_cpp_server import LlamaCppServerProvider
 
 @dataclass(frozen=True)
 class ProviderRegistration:
-    """Metadata and instance for a registered inference provider."""
     key: str
     display_name: str
     description: str
