@@ -52,22 +52,22 @@ def vpath_to_realpath(vpath: Path, vroot: str, base_dir: str) -> Path:
     return Path(base_dir) / Path(*parts)
 
 
-def get_repo_from_vpath(vpath: Path) -> Optional[RepositoryConfig]:
+async def get_repo_from_vpath(vpath: Path) -> Optional[RepositoryConfig]:
     """Extract repo internal_name from a vpath like /repositories/myproject/... and return its RepositoryConfig."""
 
     try:
         vroot = Path(REPOSITORIES_VROOT)
         rel = vpath.relative_to(vroot)
         repo_name = rel.parts[0]
-        return get_repo_by_name(repo_name)
+        return await get_repo_by_name(repo_name)
     except (ValueError, IndexError):
         return None
 
 
-def resolve_repo_vpath(vpath: Path) -> Optional[Path]:
+async def resolve_repo_vpath(vpath: Path) -> Optional[Path]:
     """Resolve a vpath under /repositories/ to a real filesystem path using the repo's stored path."""
 
-    repo = get_repo_from_vpath(vpath)
+    repo = await get_repo_from_vpath(vpath)
     if not repo:
         return None
     try:
@@ -86,7 +86,7 @@ class ShellResult(NamedTuple):
     stderr: str
 
 
-def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]] = None) -> ShellResult:
+async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]] = None) -> ShellResult:
     workspace_path = os.path.abspath(WORKSPACE_DIR)
 
     bwrap_args = [
@@ -106,7 +106,7 @@ def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]] = None
         scopes = []
     
     for scope in scopes:
-        repo = get_repo_by_name(scope.internal_name)
+        repo = await get_repo_by_name(scope.internal_name)
         if repo is None:
             continue
         scope_path = repo.path

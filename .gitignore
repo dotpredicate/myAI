@@ -3,3 +3,4 @@ __pycache__
 repositories
 workspace
 gguf-parser-linux-amd64
+.env

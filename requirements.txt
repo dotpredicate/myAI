@@ -1,10 +1,13 @@
 fastapi[standard]
 httpx
 
-psycopg2-binary
+psycopg[binary,pool]
 pgvector==0.4.2
 
 openai
 huggingface_hub
 
 tinygrad==0.13.0
+
+# dev dependencies
+# testcontainers

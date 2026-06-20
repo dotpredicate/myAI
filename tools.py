@@ -5,7 +5,8 @@ import difflib
 from pathlib import Path
 from typing import Awaitable, Callable, TypedDict
 
-from system import REPOSITORIES_VROOT, WORKSPACE_DIR, WORKSPACE_VROOT, get_repo_from_vpath, is_safe_vpath, resolve_repo_vpath, run_sandboxed_command, vpath_to_realpath
+import system
+from system import REPOSITORIES_VROOT, WORKSPACE_VROOT, get_repo_from_vpath, is_safe_vpath, resolve_repo_vpath, run_sandboxed_command, vpath_to_realpath
 from domain import SecurityPolicy, ScopeSpec
 
 class FunctionDefinition(TypedDict):
@@ -30,7 +31,7 @@ async def run_shell_command(name: str, parameters: str, privileged: bool = False
     if not isinstance(command, str):
         raise ValueError('Cannot parse the command field. Double-check if input is valid JSON.')
 
-    shell = run_sandboxed_command(command, scopes=scopes)
+    shell = await run_sandboxed_command(command, scopes=scopes)
 
     output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
     return ToolCallResult(output_str)
@@ -65,7 +66,7 @@ async def run_propose_replace(name: str, parameters: str, privileged: bool = Fal
             return ToolCallResult(json.dumps({"error": target_err}))
         
         # Security policy check: read-only repos cannot be written to at all
-        target_repo = get_repo_from_vpath(target_vpath)
+        target_repo = await get_repo_from_vpath(target_vpath)
         if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
             return ToolCallResult(json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
 
@@ -73,10 +74,10 @@ async def run_propose_replace(name: str, parameters: str, privileged: bool = Fal
         if not source_safe:
             return ToolCallResult(json.dumps({"error": source_err}))
         
-        target_realpath = resolve_repo_vpath(target_vpath)
+        target_realpath = await resolve_repo_vpath(target_vpath)
         if not target_realpath:
             return ToolCallResult(json.dumps({"error": "Could not resolve target repository path"}))
-        source_realpath = vpath_to_realpath(source_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
+        source_realpath = vpath_to_realpath(source_vpath, WORKSPACE_VROOT, system.WORKSPACE_DIR)
         
         if not source_realpath.exists():
             return ToolCallResult(json.dumps({"error": f"Source file not found: {source_vpath}"}))
@@ -137,7 +138,7 @@ async def run_propose_diff(name: str, parameters: str, privileged: bool = False,
             return ToolCallResult(json.dumps({"error": target_err}))
         
         # Security policy check: read-only repos cannot be written to at all
-        target_repo = get_repo_from_vpath(target_vpath)
+        target_repo = await get_repo_from_vpath(target_vpath)
         if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
             return ToolCallResult(json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
 
@@ -145,10 +146,10 @@ async def run_propose_diff(name: str, parameters: str, privileged: bool = False,
         if not diff_safe:
             return ToolCallResult(json.dumps({"error": diff_err}))
         
-        target_realpath = resolve_repo_vpath(target_vpath)
+        target_realpath = await resolve_repo_vpath(target_vpath)
         if not target_realpath:
             return ToolCallResult(json.dumps({"error": "Could not resolve target repository path"}))
-        diff_realpath = vpath_to_realpath(diff_vpath, WORKSPACE_VROOT, WORKSPACE_DIR)
+        diff_realpath = vpath_to_realpath(diff_vpath, WORKSPACE_VROOT, system.WORKSPACE_DIR)
         
         if not target_realpath.exists():
             return ToolCallResult(json.dumps({"error": f"Target file not found: {target_vpath}"}))

@@ -97,9 +97,9 @@ async def semantic_search(query: str, top_k: int, scopes: Optional[List[str]] = 
     base_query += " ORDER BY score ASC LIMIT %s"
     new_params.append(top_k)
 
-    with database.mk_conn() as conn, conn.cursor() as cur:
-        cur.execute(base_query, tuple(new_params))
-        rows = cur.fetchall()
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute(base_query, tuple(new_params))
+        rows = await cur.fetchall()
         results = []
         for row in rows:
             doc_id, file_path, chunk_index, content, score = row
@@ -128,8 +128,8 @@ async def _index_file(repo: RepositoryConfig, relative_path: str, full_path: Pat
         return None
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()
-    with database.mk_conn() as conn:
-        existing = documents.get_document_by_path(conn, relative_path)
+    async with database.mk_conn() as conn:
+        existing = await documents.get_document_by_path(conn, relative_path)
     if existing and existing[1] == file_hash:
         logger.debug("%s - unchanged checksum %s", relative_path, file_hash)
         return None
@@ -178,9 +178,10 @@ async def _process_file_batch(repo: RepositoryConfig, files: list[tuple[str, Pat
     assert len(all_embeddings) == len(all_chunk_texts)
 
     # Step 4: batch upsert documents, split embeddings back per file, bulk-insert chunks
-    with database.mk_conn() as conn:
+    async with database.mk_conn() as conn:
+        await conn.set_autocommit(False)
         doc_tuples = [(f.relative_path, f.file_hash, f.file_text) for f in indexed_files]
-        doc_ids = documents.batch_upsert_documents(conn, doc_tuples)
+        doc_ids = await documents.batch_upsert_documents(conn, doc_tuples)
 
         embed_offset = 0
         all_db_chunks: list[tuple[int, int, str, list[float]]] = []
@@ -196,8 +197,8 @@ async def _process_file_batch(repo: RepositoryConfig, files: list[tuple[str, Pat
                 ))
             embed_offset += n_chunks
 
-        documents.batch_replace_document_chunks(conn, all_db_chunks)
-        conn.commit()
+        await documents.batch_replace_document_chunks(conn, all_db_chunks)
+        await conn.commit()
 
     logger.info("%s - %s files indexed (%s chunks, %s embeddings)", repo_name, len(indexed_files), total_plans, len(all_embeddings))
 
@@ -209,8 +210,8 @@ async def synchronize():
         return
     async with _sync_lock:
         logger.info("Indexing started")
-        for repo in get_repositories():
-            repo_docs = get_repo_documents(repo.internal_name)
+        for repo in await get_repositories():
+            repo_docs = await get_repo_documents(repo.internal_name)
             total_files = len(repo_docs)
             logger.info("Processing repository %s (%s files)", repo.internal_name, total_files)
 

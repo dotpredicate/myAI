@@ -50,8 +50,9 @@ At startup, the module scans the `migrations` folder for SQL files, sorts them i
 
 ### Code style
 - Use explicit Python typing
-- Lint with `mypy .` and `ruff check`
 - The use of `style` attribute is forbidden
+- Lint with `mypy .` and `ruff check`
+- Test with `python -m unittest`
 
 ### Simplifications for now
 - the only available inference provider is embedded llama.cpp server

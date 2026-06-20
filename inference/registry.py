@@ -63,7 +63,6 @@ class InferenceProviderRegistry:
 # Module-level singleton
 registry = InferenceProviderRegistry()
 
-# Register the built-in llama.cpp server provider
 registry.register(
     "llama.cpp",
     "Llama.cpp Server",

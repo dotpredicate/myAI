@@ -47,7 +47,6 @@ class Message(BaseModel):
     type: Literal['message'] = 'message'
     author: Literal['user'] | Literal['assistant']
     content: str
-    scopes: List[ScopeSpec]
 
 class Thinking(BaseModel):
     type: Literal['thinking'] = 'thinking'
@@ -60,6 +59,7 @@ class ToolCallFinishedOrBlocked(BaseModel):
     result: str
     is_blocking: bool
     status: Literal['pending'] | Literal['completed']
+    scopes: List[ScopeSpec] = []
 
 class ToolCallResult(BaseModel):
     type: Literal['tool_call_result'] = 'tool_call_result'

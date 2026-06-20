@@ -20,8 +20,8 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
-    init_database()
-    asyncio.create_task(synchronize())
+    await init_database()
+    # asyncio.create_task(synchronize())
     yield
     await llama_cpp_server.stop_llama_servers()
 

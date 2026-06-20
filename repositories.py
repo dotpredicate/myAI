@@ -5,35 +5,34 @@ from pathlib import Path
 from typing import Optional, List, Tuple, Literal
 from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-
 import database
 from log_config import get_logger
-from domain import SecurityPolicy, RepositoryConfig, ScopeSpec
+from domain import SecurityPolicy, RepositoryConfig
 
 logger = get_logger(__name__)
+
 router = APIRouter()
 
-def get_repositories() -> List[RepositoryConfig]:
-    with database.mk_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories ORDER BY display_name")
-        rows = cur.fetchall()
+async def get_repositories() -> List[RepositoryConfig]:
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories ORDER BY display_name")
+        rows = await cur.fetchall()
         return [RepositoryConfig(id=r[0], display_name=r[1], internal_name=r[2], repo_type=r[3], path=r[4], security_policy=r[5]) for r in rows]
 
 
-def get_repo_by_name(name: str) -> Optional[RepositoryConfig]:
-    with database.mk_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories WHERE internal_name = %s", (name,))
-        row = cur.fetchone()
+async def get_repo_by_name(name: str) -> Optional[RepositoryConfig]:
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories WHERE internal_name = %s", (name,))
+        row = await cur.fetchone()
         if row:
             return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4], security_policy=row[5])
         return None
 
 
-def get_repo_by_id(repo_id: int) -> Optional[RepositoryConfig]:
-    with database.mk_conn() as conn, conn.cursor() as cur:
-        cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories WHERE id = %s", (repo_id,))
-        row = cur.fetchone()
+async def get_repo_by_id(repo_id: int) -> Optional[RepositoryConfig]:
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories WHERE id = %s", (repo_id,))
+        row = await cur.fetchone()
         if row:
             return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4], security_policy=row[5])
         return None
@@ -52,10 +51,10 @@ def _auto_detect_repo_type(path: str) -> Literal['plain', 'git']:
     return 'plain'
 
 
-def get_repo_documents(repo_name: str) -> List[Tuple[str, Path]]:
+async def get_repo_documents(repo_name: str) -> List[Tuple[str, Path]]:
     """Returns list of (relative_path, full_path) for every file in a repository.
     Supports both git repos (using ls-files) and non-git repos (os.walk)."""
-    repo = get_repo_by_name(repo_name)
+    repo = await get_repo_by_name(repo_name)
     if not repo:
         return []
     repo_path = Path(repo.path)
@@ -83,14 +82,14 @@ def get_repo_documents(repo_name: str) -> List[Tuple[str, Path]]:
         return []
 
 
-def get_repository_files(repo_name: str) -> List[str]:
+async def get_repository_files(repo_name: str) -> List[str]:
     """List file names in a repository directory (relative paths)."""
-    return [rel for rel, _ in get_repo_documents(repo_name)]
+    return [rel for rel, _ in await get_repo_documents(repo_name)]
 
 
 @router.get('/api/repositories')
 async def list_repositories():
-    repos = get_repositories()
+    repos = await get_repositories()
     return JSONResponse(content={
         "repositories": [r.model_dump() for r in repos]
     })
@@ -112,7 +111,7 @@ async def create_repository(payload: dict = Body(...)):
     if not os.path.isdir(path):
         return JSONResponse(status_code=400, content={'error': f'path does not exist or is not a directory: {path}'})
 
-    existing = get_repo_by_name(internal_name)
+    existing = await get_repo_by_name(internal_name)
     if existing:
         return JSONResponse(status_code=409, content={'error': f'repository with internal_name "{internal_name}" already exists'})
 
@@ -126,23 +125,20 @@ async def create_repository(payload: dict = Body(...)):
     if security_policy not in list(SecurityPolicy):
         return JSONResponse(status_code=400, content={'error': 'security must be "read-only", "privileged-write", or "write"'})
 
-    with database.mk_conn() as conn, conn.cursor() as cur:
-        cur.execute(
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute(
             "INSERT INTO repositories (display_name, internal_name, repo_type, path, security_policy) VALUES (%s, %s, %s, %s, %s)",
             (display_name, internal_name, repo_type, path, security_policy)
         )
-        row = cur.fetchone()
-        assert row is not None
-        conn.commit()
 
-    repo = get_repo_by_name(internal_name)
+    repo = await get_repo_by_name(internal_name)
     assert repo is not None
     return JSONResponse(content=repo.model_dump(), status_code=201)
 
 
 @router.put('/api/repositories/{name}')
 async def update_repository(name: str, payload: dict = Body(...)):
-    existing = get_repo_by_name(name)
+    existing = await get_repo_by_name(name)
     if not existing:
         return JSONResponse(status_code=404, content={'error': 'repository not found'})
 
@@ -152,27 +148,25 @@ async def update_repository(name: str, payload: dict = Body(...)):
     if security_policy not in list(SecurityPolicy):
         return JSONResponse(status_code=400, content={'error': 'security must be "read-only", "privileged-write", or "write"'})
 
-    with database.mk_conn() as conn, conn.cursor() as cur:
-        cur.execute(
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute(
             "UPDATE repositories SET display_name = %s, security_policy = %s WHERE id = %s",
             (display_name, security_policy, existing.id)
         )
-        conn.commit()
 
-    updated = get_repo_by_name(name)
+    updated = await get_repo_by_name(name)
     assert updated is not None
     return JSONResponse(content=updated.model_dump())
 
 
 @router.delete('/api/repositories/{name}')
 async def delete_repository(name: str):
-    existing = get_repo_by_name(name)
+    existing = await get_repo_by_name(name)
     if not existing:
         return JSONResponse(status_code=404, content={'error': 'repository not found'})
 
-    with database.mk_conn() as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM repositories WHERE id = %s", (existing.id,))
-        conn.commit()
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute("DELETE FROM repositories WHERE id = %s", (existing.id,))
 
     return JSONResponse(content={'status': 'deleted', 'internal_name': name})
 
@@ -202,5 +196,5 @@ async def browse_directory(path: str, include: list[str] = Query(['files', 'fold
 
 @router.get('/api/repositories/{repo_name}/files')
 async def list_repository_files(repo_name: str):
-    files = get_repository_files(repo_name)
+    files = await get_repository_files(repo_name)
     return JSONResponse(content={"files": files})

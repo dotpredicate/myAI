@@ -1,7 +1,7 @@
-from typing import AsyncGenerator, Literal, Optional, Any, List
+from typing import AsyncGenerator, Literal, Optional, Any
 import json
 from pydantic import BaseModel
-from psycopg2.extensions import connection
+from psycopg import AsyncConnection
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
@@ -40,7 +40,7 @@ router = APIRouter()
 
 class UserScopeChoice(BaseModel):
     internal_name: str
-    security_policy_override: Optional[SecurityPolicy]
+    security_policy_override: Optional[SecurityPolicy] = None
 
 class GenerationRequest(BaseModel):
     agent_id: Optional[str] = None
@@ -64,26 +64,25 @@ class ConversationBlockedError(Exception):
 def to_conv_elem(element: FinishedElement) -> ConversationElement:
     match element:
         case FinishedMessage(content=content):
-            return Message(author='assistant', content=content, scopes=[])
+            return Message(author='assistant', content=content)
         case FinishedThinking(content=content):
             return Thinking(content=content)
         case _:
             raise ValueError(f'Unhandled tool call type {type(element)}')
 
-def create_conversation(conn: connection) -> int:
-    with conn.cursor() as cur:
-        cur.execute("INSERT INTO conversations DEFAULT VALUES RETURNING id")
-        row = cur.fetchone()
+async def create_conversation(conn: AsyncConnection) -> int:
+    async with conn.cursor() as cur:
+        await cur.execute("INSERT INTO conversations DEFAULT VALUES RETURNING id")
+        row = await cur.fetchone()
         if not row:
             raise RuntimeError("Failed to create conversation")
         conv_id = row[0]
-        conn.commit()
         return conv_id
 
 
-def insert_message(conn: connection, conv_id: int, role: str, element: ConversationElement) -> int:
-    with conn.cursor() as cur:
-        cur.execute(
+async def insert_message(conn: AsyncConnection, conv_id: int, role: str, element: ConversationElement) -> int:
+    async with conn.cursor() as cur:
+        await cur.execute(
             """
             INSERT INTO messages (conversation_id, role, elements, created_at)
             VALUES (%s, %s, %s, NOW())
@@ -91,32 +90,21 @@ def insert_message(conn: connection, conv_id: int, role: str, element: Conversat
             """,
             (conv_id, role, json.dumps(element.model_dump()))
         )
-        row = cur.fetchone()
+        row = await cur.fetchone()
         assert row is not None
         return row[0]
 
 
-def get_blocking_message_id(conn: connection, conv_id: int) -> Optional[int]:
-    with conn.cursor() as cur:
-        cur.execute(
+async def get_blocking_message_id(conn: AsyncConnection, conv_id: int) -> Optional[int]:
+    async with conn.cursor() as cur:
+        await cur.execute(
             "SELECT blocking_message_id FROM conversations WHERE id = %s",
             (conv_id,)
         )
-        row = cur.fetchone()
+        row = await cur.fetchone()
         return row[0] if row and row[0] is not None else None
 
-def get_scopes_from_last_user_message(conn: connection, conv_id: int) -> List[ScopeSpec]:
-    with conn.cursor() as cur:
-        cur.execute("SELECT elements FROM messages WHERE conversation_id = %s AND role = 'user' ORDER BY created_at DESC LIMIT 1", (conv_id,))
-        row = cur.fetchone()
-        if row:
-            elem_dict = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-            elem = stored_element_adapter.validate_python(elem_dict)
-            if isinstance(elem, Message) and elem.author == 'user':
-                return elem.scopes or []
-        return []
-
-def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) -> ScopeSpec:
+async def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) -> ScopeSpec:
     """
     Priority: User override > Agent override > Repository policy.
     """
@@ -135,7 +123,7 @@ def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) 
                     security_policy=ap.security_policy_override,
                 )
     # 3. Repository policy
-    repo = get_repo_by_name(choice.internal_name)
+    repo = await get_repo_by_name(choice.internal_name)
     if repo is None:
         raise ValueError(f"Repository '{choice.internal_name}' not found")
     return ScopeSpec(
@@ -143,21 +131,21 @@ def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) 
         security_policy=repo.security_policy,
     )
 
-def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fallback_model: Optional[str], req_scopes: list[UserScopeChoice]) -> tuple:
+async def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fallback_model: Optional[str], req_scopes: list[UserScopeChoice]) -> tuple:
     """Resolve (provider_key, model_id, inference_config, scopes, agent_prompt) from agent or fallback.
     Returns None for provider_key if validation fails (caller handles error)."""
     if agent_id:
-        agent = get_agent_by_name(agent_id)
+        agent = await get_agent_by_name(agent_id)
         if agent is None:
             raise ValueError(f"Agent '{agent_id}' not found")
-        scopes = [resolve_scope(s, agent=agent) for s in req_scopes]
+        scopes = [await resolve_scope(s, agent=agent) for s in req_scopes]
         extra_scopes = {s.internal_name for s in scopes}
         for agent_policy in agent.repository_access:
             repo_key = agent_policy.repository_internal_name
             if repo_key not in extra_scopes:
                 # Add default policy of Agent (agent override > repo policy)
                 if agent_policy.security_policy_override is None:
-                    repo_config = get_repo_by_id(agent_policy.repository_id)
+                    repo_config = await get_repo_by_id(agent_policy.repository_id)
                     if repo_config is None:
                         raise Exception(f"Repository {agent_policy.repository_id} not found")
                     resolved_policy = repo_config.security_policy
@@ -173,41 +161,39 @@ def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fa
         raise ValueError('provider_key required')
     if not fallback_model:
         raise ValueError('model_id required')
-    # No agent \u2014 user override > repo policy
-    resolved_scopes = [resolve_scope(s) for s in req_scopes]
+    # No agent: user override > repo policy
+    resolved_scopes = [await resolve_scope(s) for s in req_scopes]
     return fallback_provider, fallback_model, {}, resolved_scopes, None
 
-def prepare_conversation_with_prompt(conn: connection, prompt: str, conv_id: Optional[int], scopes: List[ScopeSpec]) -> int:
-    if conv_id and (blocking_id := get_blocking_message_id(conn, conv_id)):
+async def prepare_conversation_with_prompt(conn: AsyncConnection, prompt: str, conv_id: Optional[int]) -> int:
+    if conv_id and (blocking_id := await get_blocking_message_id(conn, conv_id)):
         raise ConversationBlockedError(blocking_id)
     
     if not conv_id:
-        conv_id = create_conversation(conn)
+        conv_id = await create_conversation(conn)
     
     user_message = Message(
         author='user',
         content=prompt,
-        scopes=scopes
     )
         
-    insert_message(conn, conv_id, 'user', user_message)
-    conn.commit()
+    await insert_message(conn, conv_id, 'user', user_message)
     return conv_id
 
-def get_messages_for_continuation(conn: connection, conv_id: int) -> list[tuple[int, ConversationElement]]:
+async def get_messages_for_continuation(conn: AsyncConnection, conv_id: int) -> list[tuple[int, ConversationElement]]:
     ctx: list[tuple[int, ConversationElement]] = []
-    with conn.cursor() as cur:
-        cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
-        for row in cur.fetchall():
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
+        async for row in cur:
             message_id, role, element = row
             element_dict = json.loads(element) if isinstance(element, str) else element
             parsed = stored_element_adapter.validate_python(element_dict)
             ctx.append((message_id, parsed))
     return ctx
 
-async def continue_conversation(conn: connection, conv_id: int, functions: list[Tool], agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, extra_scopes: list[UserScopeChoice] = []) -> AsyncGenerator[bytes, None]:
-    provider_key, model_id, inference_config, scopes, agent_prompt = _resolve_agent(agent_id, provider_key, model_id, extra_scopes)
-    messages = get_messages_for_continuation(conn, conv_id)
+async def continue_conversation(conn: AsyncConnection, conv_id: int, functions: list[Tool], agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, extra_scopes: list[UserScopeChoice] = []) -> AsyncGenerator[bytes, None]:
+    provider_key, model_id, inference_config, scopes, agent_prompt = await _resolve_agent(agent_id, provider_key, model_id, extra_scopes)
+    messages = await get_messages_for_continuation(conn, conv_id)
 
     provider = registry.get(provider_key)
 
@@ -221,7 +207,7 @@ async def continue_conversation(conn: connection, conv_id: int, functions: list[
                 match aggregated_element:
                     case FinishedMessage() | FinishedThinking():
                         result = to_conv_elem(aggregated_element)
-                        msg_id = insert_message(conn, conv_id, 'assistant', result)
+                        msg_id = await insert_message(conn, conv_id, 'assistant', result)
                         messages.append((msg_id, result))
                         yield json.dumps({'type': 'finalized', 'id': msg_id}).encode() + b'\n'
                     case FinishedToolCall(name=name, parameters=parameters):
@@ -233,18 +219,18 @@ async def continue_conversation(conn: connection, conv_id: int, functions: list[
                             parameters=parameters,
                             result=tool_result.result,
                             is_blocking=tool_result.is_blocking,
-                            status='pending' if tool_result.is_blocking else 'completed'
+                            status='pending' if tool_result.is_blocking else 'completed',
+                            scopes=scopes
                         )
-                        msg_id = insert_message(conn, conv_id, 'assistant', result_element)
-                        conn.commit()
+                        msg_id = await insert_message(conn, conv_id, 'assistant', result_element)
                         yield result_element.model_dump_json().encode() + b'\n'
                         messages.append((msg_id, result_element))
                         if tool_result.is_blocking:
-                            cur = conn.cursor()
-                            cur.execute(
-                                "UPDATE conversations SET blocking_message_id = %s WHERE id = %s",
-                                (msg_id, conv_id),
-                            )
+                            async with conn.cursor() as cur:
+                                await cur.execute(
+                                    "UPDATE conversations SET blocking_message_id = %s WHERE id = %s",
+                                    (msg_id, conv_id),
+                                )
                             run_next_loop = False
                         else:
                             run_next_loop = True
@@ -254,24 +240,23 @@ async def continue_conversation(conn: connection, conv_id: int, functions: list[
                     yield json.dumps({'type': 'message', 'content': delta.content}).encode() + b'\n'
                 elif isinstance(delta, StreamingThinking):
                     yield json.dumps({'type': 'thinking', 'content': delta.content}).encode() + b'\n'
-    conn.commit()
     logger.info("Stream finished")
 
-def get_conversations(conn: connection) -> list[dict[str, Any]]:
-    with conn.cursor() as cur:
-        cur.execute("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")
-        rows = cur.fetchall()
+async def get_conversations(conn: AsyncConnection) -> list[dict[str, Any]]:
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")
+        rows = await cur.fetchall()
     return [{'id': r[0], 'title': r[1], 'created_at': r[2].isoformat()} for r in rows]
 
-def get_conversation_details(conn: connection, conv_id: int) -> Optional[dict[str, Any]]:
-    with conn.cursor() as cur:
-        cur.execute("SELECT id, title, created_at, blocking_message_id FROM conversations WHERE id = %s", (conv_id,))
-        row = cur.fetchone()
+async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optional[dict[str, Any]]:
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT id, title, created_at, blocking_message_id FROM conversations WHERE id = %s", (conv_id,))
+        row = await cur.fetchone()
         if not row:
             return None
-        cur.execute("SELECT id, role, elements, created_at FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
+        await cur.execute("SELECT id, role, elements, created_at FROM messages WHERE conversation_id = %s ORDER BY created_at ASC", (conv_id,))
         messages = []
-        for r in cur.fetchall():
+        async for r in cur:
             elem_dict = json.loads(r[2]) if isinstance(r[2], str) else r[2]
             parsed = stored_element_adapter.validate_python(elem_dict)
             messages.append({'id': r[0], 'role': r[1], 'element': parsed.model_dump(), 'created_at': r[3].isoformat()})
@@ -285,52 +270,54 @@ def get_conversation_details(conn: connection, conv_id: int) -> Optional[dict[st
 
 
 
-async def decide_tool_call(conn: connection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> bool:
-    cur = conn.cursor()
-    cur.execute('SELECT elements FROM messages WHERE id = %s AND conversation_id = %s', (msg_id, conv_id))
-    row = cur.fetchone()
-    if not row:
-        raise ValueError('message not found')
-    
-    elem_dict = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-    elem = stored_element_adapter.validate_python(elem_dict)
+async def decide_tool_call(conn: AsyncConnection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> bool:
+    async with conn.cursor() as cur:
+        await conn.set_autocommit(False)
+        await cur.execute('SELECT elements FROM messages WHERE id = %s AND conversation_id = %s', (msg_id, conv_id))
+        row = await cur.fetchone()
+        if not row:
+            raise ValueError('message not found')
+        
+        elem_dict = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        elem = stored_element_adapter.validate_python(elem_dict)
 
-    decision_elem = ToolCallDecision(
-        decision=decision,
-        original_message_id=msg_id,
-        comment=comment or ""
-    )
-    
-    insert_message(conn, conv_id, 'assistant', decision_elem)
-    cur.execute('UPDATE conversations SET blocking_message_id = NULL WHERE id = %s', (conv_id,))
-
-    executed = False
-    if decision == 'approve':
-        if not isinstance(elem, ToolCallFinishedOrBlocked):
-            raise ValueError('original message is not a tool call')
-
-        scopes = get_scopes_from_last_user_message(conn, conv_id)
-        result = await run_tool_call(elem.name, elem.parameters, privileged=True, scopes=scopes)
-        result_elem = ToolCallResult(
+        decision_elem = ToolCallDecision(
+            decision=decision,
             original_message_id=msg_id,
-            result=result.result,
+            comment=comment or ""
         )
-        insert_message(conn, conv_id, 'system', result_elem)
-        executed = True
-    
-    conn.commit()
-    return executed
+        
+        await insert_message(conn, conv_id, 'assistant', decision_elem)
+        await cur.execute('UPDATE conversations SET blocking_message_id = NULL WHERE id = %s', (conv_id,))
+
+        executed = False
+        if decision == 'approve':
+            if not isinstance(elem, ToolCallFinishedOrBlocked):
+                raise ValueError('original message is not a tool call')
+
+            # FIXME: A new approach to this
+            result = await run_tool_call(elem.name, elem.parameters, privileged=True, scopes=elem.scopes)
+            result_elem = ToolCallResult(
+                original_message_id=msg_id,
+                result=result.result,
+            )
+            await insert_message(conn, conv_id, 'system', result_elem)
+            executed = True
+        
+        await conn.commit()
+        return executed
 
 
 
-def delete_conversation(conn: connection, conv_id: int) -> bool:
-    with conn.cursor() as cur:
-        cur.execute("SELECT id FROM conversations WHERE id = %s", (conv_id,))
-        if not cur.fetchone():
+async def delete_conversation(conn: AsyncConnection, conv_id: int) -> bool:
+    async with conn.cursor() as cur:
+        await conn.set_autocommit(False)
+        await cur.execute("SELECT id FROM conversations WHERE id = %s", (conv_id,))
+        if not await cur.fetchone():
             return False
-        cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conv_id,))
-        cur.execute("DELETE FROM conversations WHERE id = %s", (conv_id,))
-        conn.commit()
+        await cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conv_id,))
+        await cur.execute("DELETE FROM conversations WHERE id = %s", (conv_id,))
+        await conn.commit()
         return True
 
 
@@ -339,24 +326,23 @@ def delete_conversation(conn: connection, conv_id: int) -> bool:
 async def prompt_model(payload: PromptRequest):
     prompt = payload.prompt
     conversation_id = payload.conversation_id
-    try:
-        provider_key, model_id, inference_config, scopes, agent_prompt = _resolve_agent(
-            payload.agent_id, payload.provider_key, payload.model_id, payload.scopes,
-        )
-    except ValueError as e:
-        return JSONResponse(status_code=400, content={'error': str(e)})
+    
+    async with mk_conn() as conn:
+        try:
+            conversation_id = await prepare_conversation_with_prompt(conn, prompt, conversation_id)
+        except ConversationBlockedError as e:
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Action required", "blocking_message_id": e.blocking_message_id}
+            )
 
-    try:
-        conn = mk_conn()
-        conversation_id = prepare_conversation_with_prompt(conn, prompt, conversation_id, scopes=scopes)
-    except ConversationBlockedError as e:
-        return JSONResponse(
-            status_code=403,
-            content={"error": "Action required", "blocking_message_id": e.blocking_message_id}
-        )
+    async def stream():
+        async with mk_conn() as conn:
+            async for chunk in continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes):
+                yield chunk
 
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes),
+        stream(),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
 
@@ -364,16 +350,16 @@ async def prompt_model(payload: PromptRequest):
 
 @router.get('/api/conversations')
 async def list_conversations():
-    conn = mk_conn()
-    conversations = get_conversations(conn)
+    async with mk_conn() as conn:
+        conversations = await get_conversations(conn)
     return JSONResponse(content=conversations)
 
 
 
 @router.get('/api/conversations/{conv_id}')
 async def get_conversation(conv_id: int):
-    conn = mk_conn()
-    details = get_conversation_details(conn, conv_id)
+    async with mk_conn() as conn:
+        details = await get_conversation_details(conn, conv_id)
     if not details:
         return JSONResponse(status_code=404, content={'error': 'Not found'})
     return JSONResponse(content=details)
@@ -383,8 +369,8 @@ async def get_conversation(conv_id: int):
 @router.delete('/api/conversations/{conv_id}')
 async def delete_conversation_endpoint(conv_id: int):
     try:
-        conn = mk_conn()
-        success = delete_conversation(conn, conv_id)
+        async with mk_conn() as conn:
+            success = await delete_conversation(conn, conv_id)
         if not success:
             return JSONResponse(status_code=404, content={'error': 'Conversation not found'})
         return JSONResponse(content={'status': 'deleted', 'id': conv_id})
@@ -402,8 +388,8 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
         return JSONResponse(status_code=400, content={'error': 'invalid decision'})
 
     try:
-        conn = mk_conn()
-        executed = await decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
+        async with mk_conn() as conn:
+            executed = await decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
         return JSONResponse(content={'status': 'success', 'executed': executed})
     except ValueError as e:
         return JSONResponse(status_code=400, content={'error': str(e)})
@@ -414,11 +400,17 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
 
 @router.post('/api/conversations/{conversation_id}/continue')
 async def continue_conversation_endpoint(conversation_id: int, payload: ContinueRequest):
-    conn = mk_conn()
-    details = get_conversation_details(conn, conversation_id)
-    if not details:
-        return JSONResponse(status_code=404, content={'error': 'conversation not found'})
+    async with mk_conn() as conn:
+        details = await get_conversation_details(conn, conversation_id)
+        if not details:
+            return JSONResponse(status_code=404, content={'error': 'conversation not found'})
+
+    async def stream():
+        async with mk_conn() as conn:
+            async for chunk in continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes):
+                yield chunk
+
     return StreamingResponse(
-        continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes),
+        stream(),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )

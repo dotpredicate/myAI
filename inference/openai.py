@@ -33,7 +33,7 @@ def _to_oai_messages(context: ChatContext) -> list[dict[str, object]]:
     result: list[dict[str, object]] = []
 
     system_content = f"""
-        The date is {datetime.date.today()}.
+    The date is {datetime.date.today()}.
     """
 
     # Build system prompt from scopes
@@ -47,8 +47,8 @@ def _to_oai_messages(context: ChatContext) -> list[dict[str, object]]:
     
     if context.instructions:
         instructions_content = f"""
-            Additional instructions:
-            {context.instructions}
+        Additional instructions:
+        {context.instructions}
         """
         system_content += "\n" + context.instructions
         logger.debug(instructions_content)

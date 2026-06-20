@@ -1401,7 +1401,9 @@
       const agentId = document.getElementById('agentSelect').value;
       const pk = document.getElementById('providerSelect').value;
       const mid = document.getElementById('modelSelect').value;
-      const body = {};
+      const body = {
+        scopes: activeScopes.map(s => ({ internal_name: s.internalName, security_policy_override: s.securityPolicyOverride })),
+      };
       if (agentId) {
         body.agent_id = agentId;
       } else {
