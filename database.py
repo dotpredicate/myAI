@@ -35,7 +35,6 @@ async def mk_conn():
 
 async def init_database():
     async with mk_conn() as conn, conn.cursor() as cur:
-        # Ensure pgvector is available
         await cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         
         await cur.execute(

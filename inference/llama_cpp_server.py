@@ -90,7 +90,7 @@ class LlamaCppServerProvider(InferenceProvider):
     def __init__(self, port: str = "1234",):
         self.port = port
         endpoint = os.getenv('LLAMA_CPP_ENDPOINT', f'http://localhost:{port}')
-        self._client = openai.Client(api_key='dummy', base_url=endpoint)
+        self._client = openai.AsyncOpenAI(api_key='dummy', base_url=endpoint)
         self.ready_event = asyncio.Event()
         self.start_lock = asyncio.Lock()
 
@@ -108,7 +108,7 @@ class LlamaCppServerProvider(InferenceProvider):
         tools: list[Tool],
     ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
         await self._lazy_start()
-        raw_stream = self._client.chat.completions.create(  # type: ignore[call-overload]
+        raw_stream = await self._client.chat.completions.create(
             model=model_id,
             messages=_to_oai_messages(context),
             reasoning_effort='high',
@@ -116,15 +116,15 @@ class LlamaCppServerProvider(InferenceProvider):
             tools=_to_oai_tools(tools),
         )
         processor = DeltaProcessor()
-        for chunk in raw_stream:
+        async for chunk in raw_stream:
             yield processor.process(chunk)
 
     async def list_models(self) -> list[Model]:
         await self._lazy_start()
-        raw_models = self._client.models.list()
+        raw_models = await self._client.models.list()
         return [
             Model(id=m.id, created=m.created, owned_by=m.owned_by)
-            for m in raw_models
+            for m in raw_models.data
         ]
 
 class LlamaCppEmbeddingServer:
@@ -134,7 +134,7 @@ class LlamaCppEmbeddingServer:
         self.port = port
         self.model = model
         self.endpoint = f'http://localhost:{port}'
-        self._client = openai.Client(api_key='dummy', base_url=self.endpoint + '/v1')
+        self._client = openai.AsyncOpenAI(api_key='dummy', base_url=self.endpoint + '/v1')
         self.ready_event = asyncio.Event()
         self.start_lock = asyncio.Lock()
 
@@ -153,7 +153,7 @@ class LlamaCppEmbeddingServer:
         # FIXME
             raise ValueError(f"This llama.cpp server only supports {self.model}, wanted to embed with {model}")
         await self._lazy_start()
-        resp = self._client.embeddings.create(model=model, input=input)
+        resp = await self._client.embeddings.create(model=model, input=input)
         return [e.embedding for e in resp.data]
 
     async def tokenize(self, text: str) -> list[dict[str, object]]:

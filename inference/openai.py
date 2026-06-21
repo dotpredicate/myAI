@@ -1,6 +1,7 @@
 import datetime
 from typing import Optional, cast
 
+from openai.types.chat import ChatCompletionMessageParam
 from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 from openai.types.shared_params.function_definition import FunctionDefinition
@@ -29,8 +30,8 @@ from tools import Tool
 
 logger = get_logger(__name__)
 
-def _to_oai_messages(context: ChatContext) -> list[dict[str, object]]:
-    result: list[dict[str, object]] = []
+def _to_oai_messages(context: ChatContext) -> list[ChatCompletionMessageParam]:
+    result: list[ChatCompletionMessageParam] = []
 
     system_content = f"""
     The date is {datetime.date.today()}.
@@ -70,7 +71,7 @@ def _to_oai_messages(context: ChatContext) -> list[dict[str, object]]:
                     msg['reasoning_content'] = pending_thinking
                     pending_thinking = None
                     logger.debug("Added thinking: %s", msg)
-                result.append(msg)
+                result.append(cast(ChatCompletionMessageParam, msg))
 
             case ToolCallFinishedOrBlocked():
                 tc: dict[str, object] = {
@@ -88,7 +89,7 @@ def _to_oai_messages(context: ChatContext) -> list[dict[str, object]]:
                     tc['reasoning_content'] = pending_thinking
                     tc['content'] = ''
                     pending_thinking = None
-                result.append(tc)
+                result.append(cast(ChatCompletionMessageParam, tc))
                 if element.status == 'completed':
                     result.append({
                         'role': 'tool',

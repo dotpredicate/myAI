@@ -1,4 +1,4 @@
-from typing import AsyncGenerator, Literal, Optional, Any
+from typing import AsyncGenerator, Literal, Optional, Any, Union
 import json
 from pydantic import BaseModel
 from psycopg import AsyncConnection
@@ -56,6 +56,27 @@ class ContinueRequest(GenerationRequest):
     pass
 
 
+class MessageChunk(BaseModel):
+    type: Literal['message'] = 'message'
+    content: str
+
+class ThinkingChunk(BaseModel):
+    type: Literal['thinking'] = 'thinking'
+    content: str
+
+class ToolCallEvent(BaseModel):
+    type: Literal['tool_call'] = 'tool_call'
+    name: str
+    parameters: str
+    result: str
+    is_blocking: bool
+    status: Literal['pending'] | Literal['completed']
+
+class ElementFinalized(BaseModel):
+    type: Literal['finalized'] = 'finalized'
+    id: int
+
+StreamEvent = Union[MessageChunk, ThinkingChunk, ElementFinalized, ToolCallEvent]
 
 class ConversationBlockedError(Exception):
     def __init__(self, blocking_message_id: int):
@@ -191,7 +212,7 @@ async def get_messages_for_continuation(conn: AsyncConnection, conv_id: int) -> 
             ctx.append((message_id, parsed))
     return ctx
 
-async def continue_conversation(conn: AsyncConnection, conv_id: int, functions: list[Tool], agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, extra_scopes: list[UserScopeChoice] = []) -> AsyncGenerator[bytes, None]:
+async def continue_conversation(conn: AsyncConnection, conv_id: int, functions: list[Tool], agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, extra_scopes: list[UserScopeChoice] = []) -> AsyncGenerator[StreamEvent, None]:
     provider_key, model_id, inference_config, scopes, agent_prompt = await _resolve_agent(agent_id, provider_key, model_id, extra_scopes)
     messages = await get_messages_for_continuation(conn, conv_id)
 
@@ -209,7 +230,7 @@ async def continue_conversation(conn: AsyncConnection, conv_id: int, functions: 
                         result = to_conv_elem(aggregated_element)
                         msg_id = await insert_message(conn, conv_id, 'assistant', result)
                         messages.append((msg_id, result))
-                        yield json.dumps({'type': 'finalized', 'id': msg_id}).encode() + b'\n'
+                        yield ElementFinalized(id=msg_id)
                     case FinishedToolCall(name=name, parameters=parameters):
                         assert isinstance(aggregated_element, FinishedToolCall)
                         # Pass the extracted scopes to the tool call
@@ -223,7 +244,13 @@ async def continue_conversation(conn: AsyncConnection, conv_id: int, functions: 
                             scopes=scopes
                         )
                         msg_id = await insert_message(conn, conv_id, 'assistant', result_element)
-                        yield result_element.model_dump_json().encode() + b'\n'
+                        yield ToolCallEvent(
+                            name=name,
+                            parameters=parameters,
+                            result=tool_result.result,
+                            is_blocking=tool_result.is_blocking,
+                            status='pending' if tool_result.is_blocking else 'completed',
+                        )
                         messages.append((msg_id, result_element))
                         if tool_result.is_blocking:
                             async with conn.cursor() as cur:
@@ -234,12 +261,12 @@ async def continue_conversation(conn: AsyncConnection, conv_id: int, functions: 
                             run_next_loop = False
                         else:
                             run_next_loop = True
-                        yield json.dumps({'type': 'finalized', 'id': msg_id}).encode() + b'\n'
+                        yield ElementFinalized(id=msg_id)
             if delta is not None:
                 if isinstance(delta, StreamingMessage):
-                    yield json.dumps({'type': 'message', 'content': delta.content}).encode() + b'\n'
+                    yield MessageChunk(content=delta.content)
                 elif isinstance(delta, StreamingThinking):
-                    yield json.dumps({'type': 'thinking', 'content': delta.content}).encode() + b'\n'
+                    yield ThinkingChunk(content=delta.content)
     logger.info("Stream finished")
 
 async def get_conversations(conn: AsyncConnection) -> list[dict[str, Any]]:
@@ -267,8 +294,6 @@ async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optio
             'blocking_message_id': row[3],
             'messages': messages
         }
-
-
 
 async def decide_tool_call(conn: AsyncConnection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> bool:
     async with conn.cursor() as cur:
@@ -307,8 +332,6 @@ async def decide_tool_call(conn: AsyncConnection, conv_id: int, msg_id: int, dec
         await conn.commit()
         return executed
 
-
-
 async def delete_conversation(conn: AsyncConnection, conv_id: int) -> bool:
     async with conn.cursor() as cur:
         await conn.set_autocommit(False)
@@ -319,8 +342,6 @@ async def delete_conversation(conn: AsyncConnection, conv_id: int) -> bool:
         await cur.execute("DELETE FROM conversations WHERE id = %s", (conv_id,))
         await conn.commit()
         return True
-
-
 
 @router.post('/api/conversations/prompt')
 async def prompt_model(payload: PromptRequest):
@@ -338,23 +359,19 @@ async def prompt_model(payload: PromptRequest):
 
     async def stream():
         async with mk_conn() as conn:
-            async for chunk in continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes):
-                yield chunk
+            async for event in continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes):
+                yield event.model_dump_json() + '\n'
 
     return StreamingResponse(
         stream(),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
     )
 
-
-
 @router.get('/api/conversations')
 async def list_conversations():
     async with mk_conn() as conn:
         conversations = await get_conversations(conn)
     return JSONResponse(content=conversations)
-
-
 
 @router.get('/api/conversations/{conv_id}')
 async def get_conversation(conv_id: int):
@@ -363,8 +380,6 @@ async def get_conversation(conv_id: int):
     if not details:
         return JSONResponse(status_code=404, content={'error': 'Not found'})
     return JSONResponse(content=details)
-
-
 
 @router.delete('/api/conversations/{conv_id}')
 async def delete_conversation_endpoint(conv_id: int):
@@ -376,8 +391,6 @@ async def delete_conversation_endpoint(conv_id: int):
         return JSONResponse(content={'status': 'deleted', 'id': conv_id})
     except Exception as e:
         return JSONResponse(status_code=500, content={'error': str(e)})
-
-
 
 @router.post('/api/conversations/{conv_id}/tool_calls/{msg_id}/decide')
 async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request):
@@ -396,8 +409,6 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
     except Exception as e:
         return JSONResponse(status_code=500, content={'error': str(e)})
 
-
-
 @router.post('/api/conversations/{conversation_id}/continue')
 async def continue_conversation_endpoint(conversation_id: int, payload: ContinueRequest):
     async with mk_conn() as conn:
@@ -407,8 +418,8 @@ async def continue_conversation_endpoint(conversation_id: int, payload: Continue
 
     async def stream():
         async with mk_conn() as conn:
-            async for chunk in continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes):
-                yield chunk
+            async for event in continue_conversation(conn, conversation_id, TOOL_REGISTRY, agent_id=payload.agent_id, provider_key=payload.provider_key, model_id=payload.model_id, extra_scopes=payload.scopes):
+                yield event.model_dump_json() + '\n'
 
     return StreamingResponse(
         stream(),

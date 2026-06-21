@@ -169,7 +169,7 @@ async def _process_file_batch(repo: RepositoryConfig, files: list[tuple[str, Pat
         all_token_ids.extend(f.token_ids)
         all_chunk_texts.extend(f.chunk_texts)
 
-    # Step 3: embed in sub-batches of EMBED_BATCH_SIZE
+    # Step 3: embed in sub-batches
     all_embeddings: list[list[float]] = []
     for sub_batch in _batched(all_token_ids, EMBED_BATCH_SIZE):
         sub_embeddings = await embedding_server.embed(EMBEDDING_MODEL, sub_batch)

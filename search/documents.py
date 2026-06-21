@@ -61,7 +61,9 @@ async def batch_upsert_documents(
             docs,
             returning=True,
         )
-        return [row[0] for row in await cur.fetchall()]
+        async def next_id():
+            return (await cur.fetchone())[0]
+        return [await next_id() async for _ in cur.results()]
 
 
 async def batch_replace_document_chunks(
