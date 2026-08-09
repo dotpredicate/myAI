@@ -80,6 +80,25 @@
     .msg-body th { background: #f9f9f9; }
     .blocked { background-color: #ffe6e6; border-left: 4px solid #f00; }
     .msg-header { display: flex; justify-content: space-between; align-items: center; }
+    #notificationStack {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 1000;
+      max-width: 320px;
+    }
+    .notification-error {
+      padding: 10px 12px;
+      border: 1px solid #f5c6cb;
+      border-radius: 4px;
+      background: #fdf2f2;
+      color: #8a1f11;
+      box-shadow: 0 2px 8px rgba(0,0,0,.12);
+      font-size: 13px;
+    }
     /* Chat - tool calls */
     .diff-view {
       background: #f8f8f8;
@@ -475,6 +494,7 @@
     let selectedConversationId = null;
     let currentView = 'chat';
     let gpuStatusInterval = null;
+    let activeStreamAbortController = null;
 
     function switchView(name) {
       currentView = name;
@@ -1148,6 +1168,27 @@
       document.querySelectorAll('details[data-message-id]').forEach(e => e.classList.remove('blocked'));
     }
 
+    function showErrorNotification(message) {
+      let stack = document.getElementById('notificationStack');
+      if (!stack) {
+        stack = document.createElement('div');
+        stack.id = 'notificationStack';
+        document.body.appendChild(stack);
+      }
+      const item = document.createElement('div');
+      item.className = 'notification-error';
+      item.textContent = message;
+      stack.appendChild(item);
+      setTimeout(() => item.remove(), 5000);
+    }
+
+    function abortActiveStream() {
+      if (activeStreamAbortController) {
+        activeStreamAbortController.abort();
+        activeStreamAbortController = null;
+      }
+    }
+
     async function deleteConversation(id, ev) {
       ev.stopPropagation();
       if (!confirm('Delete this conversation?')) return;
@@ -1303,8 +1344,9 @@
         }
       }
 
-      finalize(id) {
+      finalize(id, sequenceId) {
         this.wrapper.dataset.messageId = id;
+        this.wrapper.dataset.sequenceId = sequenceId;
         if (this.state.type === 'tool_call' && this.state.blocking) {
           const c = this.wrapper.querySelector('details[data-mode="function_call"]');
           const p = document.createElement('div');
@@ -1319,27 +1361,29 @@
           p.appendChild(r);
           c.appendChild(p);
           blockingMessageId = id;
-        } else blockingMessageId = null;
+        }
         if (this.state.type === 'message') smd.parser_end(this.state.parser);
         this.state = { type: null };
       }
     }
 
     async function loadConversation(id) {
-      const res = await fetch(`/api/conversations/${id}`);
-      const data = await res.json();
-      blockingMessageId = data.blocking_message_id;
-      document.getElementById('continueBtn').disabled = blockingMessageId !== null;
+      abortActiveStream();
+      clearBlock();
+      activeStreamAbortController = new AbortController();
       const rc = document.getElementById('response');
       rc.innerHTML = '';
       const t = document.createElement('h2');
-      t.textContent = (data.title || ("Conversation (" + data.id + ")")) + ' (' + new Date(data.created_at).toLocaleString() + ')';
+      t.textContent = "Conversation (" + id + ")";
       rc.appendChild(t);
-      const r = new ChatStreamRenderer(rc);
-      for (const msg of data.messages) {
-        r.init(msg.element.type, msg.role);
-        r.write(msg.element);
-        r.finalize(msg.id);
+      try {
+        const res = await fetch(`/api/conversations/${id}/stream`, { signal: activeStreamAbortController.signal });
+        await processStream(res, rc);
+      } catch (e) {
+        if (e.name !== 'AbortError') {
+          console.error('Failed to load conversation stream', e);
+          showErrorNotification('Could not load conversation stream.');
+        }
       }
       document.getElementById('chatHistory').scrollTop = document.getElementById('chatHistory').scrollHeight;
     }
@@ -1381,20 +1425,40 @@
     }
 
     async function processStream(res, container, onConvStart) {
+      if (!res.ok) {
+        if (res.status === 403) {
+          const d = await res.json();
+          blockConversation(d.blocking_message_id);
+          highlightBlockingMessage(d.blocking_message_id);
+          return;
+        }
+        const text = await res.text();
+        console.error('Stream request failed', res.status, text);
+        showErrorNotification(res.status === 409 ? 'This conversation is already generating.' : 'Generation stream failed.');
+        if (res.status === 409 && selectedConversationId) loadConversation(selectedConversationId);
+        return;
+      }
       document.getElementById('continueBtn').disabled = true;
       const r = new ChatStreamRenderer(container);
       const raw = res.headers.get('X-Conversation-ID');
       const cid = parseInt(raw);
       if (onConvStart) onConvStart(cid);
       for await (const v of streamPrompt(res)) {
+        if (v.type === 'generation_error') {
+          console.error('Generation failed', v.message);
+          showErrorNotification('Generation failed. See console logs for details.');
+          break;
+        }
         if (v.type === 'finalized') {
-          r.finalize(v.id);
+          r.finalize(v.id, v.sequence_id);
+          continue;
         } else if (v.type !== r.state.type) {
-          r.init(v.type, 'assistant');
+          r.init(v.type, v.role || 'assistant');
         }
         r.write(v);
       }
-      document.getElementById('continueBtn').disabled = false;
+      document.getElementById('continueBtn').disabled = blockingMessageId !== null;
+      if (blockingMessageId !== null) blockConversation(blockingMessageId);
     }
 
     async function resumeConversation(id) {
@@ -1428,10 +1492,12 @@
       const r = new ChatStreamRenderer(container);
       r.init(msg.element.type, msg.role);
       r.write(msg.element);
-      r.finalize(msg.id);
+      r.finalize(msg.id, msg.sequence_id);
     }
 
     async function sendPrompt() {
+      abortActiveStream();
+      clearBlock();
       const rc = document.getElementById('response');
       const text = document.getElementById('prompt').value;
       if (!text.trim()) return;
@@ -1546,6 +1612,8 @@
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
     document.getElementById('newBtnSide').addEventListener('click', () => {
+      abortActiveStream();
+      clearBlock();
       switchView('chat');
       document.getElementById('prompt').value = '';
       document.getElementById('response').innerHTML = '';

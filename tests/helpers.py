@@ -1,5 +1,3 @@
-"""Shared test helpers for integration and E2E tests."""
-
 import asyncio
 import time
 import unittest
@@ -16,9 +14,7 @@ from inference.engine import (
     InferenceProvider,
     Model,
     ChatContext,
-    StreamingMessage,
     StreamingElement,
-    FinishedMessage,
     FinishedElement,
 )
 
@@ -37,35 +33,32 @@ logging.info(f"[SETUP] Database initialized in {time.time()-t0:.1f}s")
 atexit.register(_container.stop)
 
 
-class MockInferenceProvider(InferenceProvider):
-    """Simple mock that returns a single static response."""
+class Yield:
+    def __init__(self, streaming: Optional[StreamingElement] = None, finished: Optional[FinishedElement] = None):
+        self.streaming = streaming
+        self.finished = finished
 
-    def __init__(self, response_content: str = "Mock response", models: Optional[List[Model]] = None):
-        self.response_content = response_content
-        self.models = models or []
 
-    async def run_chat_completion_stream(
-        self,
-        model_id: str,
-        context: ChatContext,
-        functions: list[Any],
-    ) -> AsyncIterator[tuple[Optional[StreamingMessage], Optional[FinishedMessage]]]:
-        yield (StreamingMessage(content=self.response_content), None)
-        yield (None, FinishedMessage(content=self.response_content))
+class Wait:
+    def __init__(self):
+        self.event = asyncio.Event()
 
-    async def list_models(self) -> list[Model]:
-        return self.models
+    def set(self):
+        self.event.set()
+
+    async def wait(self):
+        await self.event.wait()
 
 
 class MockE2EProvider(InferenceProvider):
 
-    def __init__(
-        self,
-        stream: List[Tuple[Optional[StreamingElement], Optional[FinishedElement]]],
-        models: Optional[List[Model]] = None,
-    ):
-        self.stream = iter(stream)
+    def __init__(self, models: Optional[List[Model]] = None):
         self.models = models or []
+        self._streams: List[List[Any]] = []
+        self.calls = 0
+
+    def schedule_stream(self, *actions: Any) -> None:
+        self._streams.append(list(actions))
 
     async def run_chat_completion_stream(
         self,
@@ -73,8 +66,13 @@ class MockE2EProvider(InferenceProvider):
         context: ChatContext,
         functions: List[Any],
     ) -> AsyncIterator[Tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
-        for pair in self.stream:
-            yield pair
+        actions = self._streams[self.calls] if self.calls < len(self._streams) else []
+        self.calls += 1
+        for action in actions:
+            if isinstance(action, Yield):
+                yield action.streaming, action.finished
+            elif isinstance(action, Wait):
+                await action.event.wait()
 
     async def list_models(self) -> list[Model]:
         return self.models
@@ -105,6 +103,9 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
         )
+
+        self.mock_provider = MockE2EProvider()
+        registry.register("mock_e2e", "Mock E2E", "", self.mock_provider)
 
     async def _helper_create_repo(
         self,

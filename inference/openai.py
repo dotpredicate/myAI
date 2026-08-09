@@ -171,6 +171,20 @@ class DeltaProcessor:
                 self.buffered_element = new_elem
         return new_elem, finalized
 
+    def flush(self) -> Optional[FinishedElement]:
+        if self.buffered_element is None:
+            return None
+        match self.buffered_element:
+            case StreamingMessage(content=c):
+                finalized: Optional[FinishedElement] = FinishedMessage(content=c)
+            case StreamingThinking(content=c):
+                finalized = FinishedThinking(content=c)
+            case StreamingToolCall(name=n, parameters=p):
+                assert n is not None and p is not None
+                finalized = FinishedToolCall(name=n, parameters=p)
+        self.buffered_element = None
+        return finalized
+
 
 # TODO: This will become OpenAICompatibleProvider extending InferenceProvider
 # def run_chat_completion_stream(model_id: str, context: list[tuple[int, ConversationElement]], functions: List[object]):

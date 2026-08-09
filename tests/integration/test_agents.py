@@ -1,16 +1,7 @@
 import unittest
-from tests.helpers import BaseTestCase, MockInferenceProvider
-from inference.registry import registry
+from tests.helpers import BaseTestCase
 
 class TestAgents(BaseTestCase):
-    async def asyncSetUp(self):
-        await super().asyncSetUp()
-        registry.register(
-            "mock_provider",
-            "Mock Provider",
-            "A mock provider for testing",
-            MockInferenceProvider(response_content="Mock response")
-        )
 
     async def test_create_agent(self):
         payload = {
@@ -18,7 +9,7 @@ class TestAgents(BaseTestCase):
             "internal_name": "test_agent",
             "description": "Testing",
             "instructions": "Be good",
-            "provider_key": "mock_provider",
+            "provider_key": "mock_e2e",
             "model_id": "dummy_model",
             "inference_config": {},
             "repository_access": []
@@ -48,7 +39,7 @@ class TestAgents(BaseTestCase):
             "internal_name": "bad agent!",
             "description": "",
             "instructions": "",
-            "provider_key": "mock_provider",
+            "provider_key": "mock_e2e",
             "model_id": "dummy_model",
             "repository_access": []
         }
@@ -74,7 +65,7 @@ class TestAgents(BaseTestCase):
             "internal_name": "updatable",
             "description": "Original description",
             "instructions": "Original instructions",
-            "provider_key": "mock_provider",
+            "provider_key": "mock_e2e",
             "model_id": "model_1",
             "inference_config": {},
             "repository_access": []
@@ -98,7 +89,7 @@ class TestAgents(BaseTestCase):
             "internal_name": "to_delete",
             "description": "",
             "instructions": "Delete me",
-            "provider_key": "mock_provider",
+            "provider_key": "mock_e2e",
             "model_id": "dummy_model",
             "inference_config": {},
             "repository_access": []

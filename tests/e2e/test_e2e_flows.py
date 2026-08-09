@@ -1,14 +1,9 @@
-"""End-to-end business flow tests.
-
-Treats the system as a black box via the API, testing full lifecycle flows.
-"""
 import json
 import unittest
 from pathlib import Path
 
-from tests.helpers import BaseTestCase, MockE2EProvider
+from tests.helpers import BaseTestCase, Yield
 from inference.engine import FinishedMessage, FinishedToolCall
-from inference.registry import registry
 
 
 class TestE2EFlows(BaseTestCase):
@@ -25,20 +20,16 @@ class TestE2EFlows(BaseTestCase):
             "security": "write",
         })
 
-        registry.register(
-            "reader_mock", "Reader Mock", "",
-            MockE2EProvider(stream=[
-                (None, FinishedToolCall(
-                    name="run_shell_command",
-                    parameters=json.dumps({"command": "cat /repositories/reader_repo/data.txt"}),
-                )),
-                # after tool executes, mock returns a message summarizing
-                (None, FinishedMessage(content="The file contains: secret-data-42")),
-            ]),
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="run_shell_command",
+                parameters=json.dumps({"command": "cat /repositories/reader_repo/data.txt"}),
+            )),
+            Yield(finished=FinishedMessage(content="The file contains: secret-data-42")),
         )
 
         resp = await self.client.post("/api/conversations/prompt", json={
-            "provider_key": "reader_mock",
+            "provider_key": "mock_e2e",
             "model_id": "m",
             "prompt": "read data.txt",
             "scopes": [{"internal_name": "reader_repo"}],
@@ -68,21 +59,18 @@ class TestE2EFlows(BaseTestCase):
             "security": "write",
         })
 
-        registry.register(
-            "editor_mock", "Editor Mock", "",
-            MockE2EProvider(stream=[
-                (None, FinishedToolCall(
-                    name="propose_replace",
-                    parameters=json.dumps({
-                        "target": "/repositories/editor_repo/hello.txt",
-                        "source": "/workspace/new.txt",
-                    }),
-                )),
-            ]),
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="propose_replace",
+                parameters=json.dumps({
+                    "target": "/repositories/editor_repo/hello.txt",
+                    "source": "/workspace/new.txt",
+                }),
+            )),
         )
 
         resp = await self.client.post("/api/conversations/prompt", json={
-            "provider_key": "editor_mock",
+            "provider_key": "mock_e2e",
             "model_id": "m",
             "prompt": "replace hello.txt",
         })
@@ -112,19 +100,16 @@ class TestE2EFlows(BaseTestCase):
                 "security": "write",
             })
 
-        registry.register(
-            "discover_mock", "Discover Mock", "",
-            MockE2EProvider(stream=[
-                (None, FinishedToolCall(
-                    name="run_shell_command",
-                    parameters=json.dumps({"command": "ls /repositories/"}),
-                )),
-                (None, FinishedMessage(content="Found repos: alpha, beta, gamma")),
-            ]),
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="run_shell_command",
+                parameters=json.dumps({"command": "ls /repositories/"}),
+            )),
+            Yield(finished=FinishedMessage(content="Found repos: alpha, beta, gamma")),
         )
 
         resp = await self.client.post("/api/conversations/prompt", json={
-            "provider_key": "discover_mock",
+            "provider_key": "mock_e2e",
             "model_id": "m",
             "prompt": "list my repositories",
             "scopes": [{"internal_name": name} for name in repo_names],

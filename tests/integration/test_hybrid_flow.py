@@ -7,30 +7,24 @@ import json
 import unittest
 from pathlib import Path
 
-from tests.helpers import BaseTestCase, MockE2EProvider
+from tests.helpers import BaseTestCase, Yield
 from inference.engine import FinishedToolCall
-from inference.registry import registry
 
 
 class TestHybridFlow(BaseTestCase):
 
     async def test_mock_model_triggers_real_shell_command(self):
         """Mock issues run_shell_command -> real subprocess executes it."""
-        registry.register(
-            "mock_shell",
-            "Mock Shell",
-            "",
-            MockE2EProvider(stream=[
-                (None, FinishedToolCall(
-                    name="run_shell_command",
-                    parameters=json.dumps({"command": "echo hello-world"}),
-                )),
-            ]),
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="run_shell_command",
+                parameters=json.dumps({"command": "echo hello-world"}),
+            )),
         )
 
         resp = await self.client.post("/api/conversations/prompt", json={
             "agent_id": None,
-            "provider_key": "mock_shell",
+            "provider_key": "mock_e2e",
             "model_id": "m",
             "prompt": "run a command",
         })
@@ -48,21 +42,16 @@ class TestHybridFlow(BaseTestCase):
 
     async def test_mock_model_parameter_passing(self):
         """Verify mock parameters are correctly passed to the real tool."""
-        registry.register(
-            "mock_param",
-            "Mock Param",
-            "",
-            MockE2EProvider(stream=[
-                (None, FinishedToolCall(
-                    name="run_shell_command",
-                    parameters=json.dumps({"command": "echo arg1 arg2"}),
-                )),
-            ]),
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="run_shell_command",
+                parameters=json.dumps({"command": "echo arg1 arg2"}),
+            )),
         )
 
         resp = await self.client.post("/api/conversations/prompt", json={
             "agent_id": None,
-            "provider_key": "mock_param",
+            "provider_key": "mock_e2e",
             "model_id": "m",
             "prompt": "do it",
         })
@@ -89,24 +78,19 @@ class TestHybridFlow(BaseTestCase):
         Path(self._workspace_dir.name, source_rel).write_text("new content", encoding="utf-8")
         Path(self._repo_dir.name, "target.txt").write_text("old content", encoding="utf-8")
 
-        registry.register(
-            "mock_replace",
-            "Mock Replace",
-            "",
-            MockE2EProvider(stream=[
-                (None, FinishedToolCall(
-                    name="propose_replace",
-                    parameters=json.dumps({
-                        "target": f"/repositories/{repo_name}/target.txt",
-                        "source": f"/workspace/{source_rel}",
-                    }),
-                )),
-            ]),
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="propose_replace",
+                parameters=json.dumps({
+                    "target": f"/repositories/{repo_name}/target.txt",
+                    "source": f"/workspace/{source_rel}",
+                }),
+            )),
         )
 
         resp = await self.client.post("/api/conversations/prompt", json={
             "agent_id": None,
-            "provider_key": "mock_replace",
+            "provider_key": "mock_e2e",
             "model_id": "m",
             "prompt": "replace the file",
         })

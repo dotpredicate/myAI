@@ -118,6 +118,9 @@ class LlamaCppServerProvider(InferenceProvider):
         processor = DeltaProcessor()
         async for chunk in raw_stream:
             yield processor.process(chunk)
+        finalized = processor.flush()
+        if finalized is not None:
+            yield None, finalized
 
     async def list_models(self) -> list[Model]:
         await self._lazy_start()
@@ -151,7 +154,7 @@ class LlamaCppEmbeddingServer:
     async def embed(self, model: str, input: str | list[str] | list[int] | list[list[int]]) -> list[list[float]]:
         if model != self.model:
         # FIXME
-            raise ValueError(f"This llama.cpp server only supports {self.model}, wanted to embed with {model}")
+            raise ValueError(f"This llama.cpp server only supports {self.model}, but attempted to embed with {model}")
         await self._lazy_start()
         resp = await self._client.embeddings.create(model=model, input=input)
         return [e.embedding for e in resp.data]
