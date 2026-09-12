@@ -1,12 +1,15 @@
 import asyncio
 import os
+import socket
 import subprocess
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 import httpx
 import openai
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 
-from inference.engine import ChatContext, InferenceProvider, Model, Tool, StreamingElement, FinishedElement
+from inference.engine import ChatContext, InferenceProvider, Model, Tool, StreamingElement, FinishedElement, InferenceParam, InferenceParamType
+from inference.hf_gguf import resolve_hf_alias, list_cached_models
 from .openai import DeltaProcessor, _to_oai_messages, _to_oai_tools
 from log_config import get_logger
 
@@ -70,7 +73,7 @@ async def stop_llama_servers() -> None:
             logger.info("Process %s terminated gracefully.", process.pid)
         except asyncio.TimeoutError:
             logger.warning(
-                "Process %s did not terminate within 20s, sending SIGKILL.",
+                "Process %s did not terminate within 10s, sending SIGKILL.",
                 process.pid,
             )
             process.kill()
@@ -84,36 +87,85 @@ async def stop_llama_servers() -> None:
     await asyncio.gather(*tasks)
     _server_processes.clear()
 
+
+def get_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('', 0))
+        return s.getsockname()[1]
+
+
+@dataclass
+class ModelServer:
+    port: str
+    client: openai.AsyncOpenAI
+    ready_event: asyncio.Event
+    start_lock: asyncio.Lock
+
+
 class LlamaCppServerProvider(InferenceProvider):
-    """Inference provider backed by a local llama.cpp server process."""
 
-    def __init__(self, port: str = "1234",):
-        self.port = port
-        endpoint = os.getenv('LLAMA_CPP_ENDPOINT', f'http://localhost:{port}')
-        self._client = openai.AsyncOpenAI(api_key='dummy', base_url=endpoint)
-        self.ready_event = asyncio.Event()
-        self.start_lock = asyncio.Lock()
+    def __init__(self):
+        self._model_servers: dict[tuple[Optional[int], str], ModelServer] = {}
+        self._creation_lock = asyncio.Lock()
 
-    async def _lazy_start(self):
+    async def _get_or_start_server(self, model_id: str, n_ctx: Optional[int]) -> ModelServer:
+        key = (n_ctx, model_id)
+        if key in self._model_servers:
+            server = self._model_servers[key]
+            await server.ready_event.wait()
+            return server
+
+        async with self._creation_lock:
+            if key in self._model_servers:
+                server = self._model_servers[key]
+                await server.ready_event.wait()
+                return server
+
+            port = str(get_free_port())
+            ready_event = asyncio.Event()
+            start_lock = asyncio.Lock()
+            endpoint = os.getenv('LLAMA_CPP_ENDPOINT', f'http://localhost:{port}')
+            client = openai.AsyncOpenAI(api_key='dummy', base_url=endpoint)
+            server = ModelServer(port=port, client=client, ready_event=ready_event, start_lock=start_lock)
+            self._model_servers[key] = server
+
+        args = [
+            "--jinja",
+            "-hf", model_id
+        ]
+        if n_ctx is not None:
+            args += ["--ctx-size", str(n_ctx)]
+
         async def _check() -> bool:
             async with httpx.AsyncClient(timeout=1.0) as client:
-                resp = await client.get(f"http://localhost:{self.port}/v1/models")
+                resp = await client.get(f"http://localhost:{port}/v1/models")
                 return resp.status_code in (200, 401)
-        await _lazy_start_server(self.port, ["--offline", "--jinja", "--chat-template-kwargs", '{"preserve_thinking":true}'], self.start_lock, self.ready_event, readiness_check=_check)
+
+        await _lazy_start_server(port, args, start_lock, ready_event, readiness_check=_check)
+        return server
 
     async def run_chat_completion_stream(
         self,
         model_id: str,
+        inference_config: dict[str, Any],
         context: ChatContext,
-        tools: list[Tool],
     ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
-        await self._lazy_start()
-        raw_stream = await self._client.chat.completions.create(
+        n_ctx: int = inference_config.get('n_ctx')
+        temperature: float = inference_config.get('temperature')
+        server = await self._get_or_start_server(model_id, n_ctx)
+        raw_stream = await server.client.chat.completions.create(
             model=model_id,
             messages=_to_oai_messages(context),
             reasoning_effort='high',
+            temperature=temperature,
             stream=True,
-            tools=_to_oai_tools(tools),
+            tools=_to_oai_tools(context.tools),
+            extra_body={
+                "chat_template_kwargs": {
+                    "enable_thinking": True,
+                    "preserve_thinking": True
+                }
+            }
         )
         processor = DeltaProcessor()
         async for chunk in raw_stream:
@@ -123,11 +175,32 @@ class LlamaCppServerProvider(InferenceProvider):
             yield None, finalized
 
     async def list_models(self) -> list[Model]:
-        await self._lazy_start()
-        raw_models = await self._client.models.list()
+        aliases = list_cached_models()
         return [
-            Model(id=m.id, created=m.created, owned_by=m.owned_by)
-            for m in raw_models.data
+            Model(id=alias, created=0, owned_by='huggingface')
+            for alias in aliases
+        ]
+
+    def get_inference_params(self) -> list[InferenceParam]:
+        return [
+            InferenceParam(
+                name="n_ctx",
+                type=InferenceParamType.INT,
+                default=None,
+                min=512,
+                max=128000,
+                step=512,
+                description="Context window size in tokens",
+            ),
+            InferenceParam(
+                name="temperature",
+                type=InferenceParamType.FLOAT,
+                default=None,
+                min=0.0,
+                max=2.0,
+                step=0.05,
+                description="Sampling temperature",
+            ),
         ]
 
 class LlamaCppEmbeddingServer:

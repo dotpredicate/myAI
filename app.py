@@ -57,6 +57,15 @@ async def get_models(provider_key: str):
     return JSONResponse(content={"models": [{'id': m.id, 'name': m.id} for m in models]})
 
 
+@app.get('/api/providers/{provider_key}/inference-params')
+async def get_inference_params(provider_key: str):
+    try:
+        provider = registry.get(provider_key)
+        return provider.get_inference_params()
+    except KeyError:
+        return JSONResponse(status_code=404, content={"error": f"Provider '{provider_key}' not found"})
+
+
 @app.get('/api/cached-models')
 async def get_cached_models():
     try:

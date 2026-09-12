@@ -1,8 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional, TypeAlias, Union
-
-from pydantic import ConfigDict
+from typing import Any, AsyncIterator, Optional, TypeAlias, Union
 
 from domain import ConversationElement, ScopeSpec
 from tools import Tool
@@ -46,7 +44,6 @@ FinishedElement: TypeAlias = Union[FinishedMessage, FinishedThinking, FinishedTo
 
 @dataclass(frozen=True)
 class ChatContext:
-    model_config = ConfigDict(arbitrary_types_allowed=True)
     messages: list[tuple[int, ConversationElement]]
     scopes: list[ScopeSpec]
     tools: list[Tool]
@@ -59,6 +56,27 @@ class Model:
     created: int
     owned_by: str
 
+from enum import StrEnum
+
+
+class InferenceParamType(StrEnum):
+    INT = "int"
+    FLOAT = "float"
+    BOOL = "bool"
+    STR = "str"
+
+
+@dataclass(frozen=True)
+class InferenceParam:
+    name: str
+    type: InferenceParamType
+    default: Any
+    min: Optional[Any] = None
+    max: Optional[Any] = None
+    step: Optional[Any] = None
+    description: Optional[str] = None
+
+
 class InferenceProvider(ABC):
     """Abstract interface for an inference provider.
 
@@ -70,11 +88,14 @@ class InferenceProvider(ABC):
     def run_chat_completion_stream(
         self,
         model_id: str,
+        inference_config: dict[str, Any],
         context: ChatContext,
-        functions: list[Tool],
     ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
         ...
 
     @abstractmethod
     async def list_models(self) -> list[Model]:
         ...
+
+    def get_inference_params(self) -> list[InferenceParam]:
+        return []

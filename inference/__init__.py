@@ -8,7 +8,9 @@ from .engine import (
     FinishedToolCall as FinishedToolCall,
     StreamingElement as StreamingElement,
     FinishedElement as FinishedElement,
-    ChatContext as ChatContext
+    ChatContext as ChatContext,
+    InferenceParam as InferenceParam,
+    InferenceParamType as InferenceParamType,
 )
 from .llama_cpp_server import LlamaCppEmbeddingServer as LlamaCppEmbeddingServer
 from .registry import registry as registry

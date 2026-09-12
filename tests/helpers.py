@@ -63,8 +63,8 @@ class MockE2EProvider(InferenceProvider):
     async def run_chat_completion_stream(
         self,
         model_id: str,
-        context: ChatContext,
-        functions: List[Any],
+        inference_config: dict[str, Any],
+        context: ChatContext
     ) -> AsyncIterator[Tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
         actions = self._streams[self.calls] if self.calls < len(self._streams) else []
         self.calls += 1

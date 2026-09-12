@@ -54,7 +54,7 @@ class TestInference(BaseTestCase):
         from inference.engine import ChatContext
         from domain import Message
         context = ChatContext(messages=[(1, Message(author="user", content="hi"))], scopes=[], tools=[], instructions="")
-        async for delta, finished in provider.run_chat_completion_stream("test_model", context, []):
+        async for delta, finished in provider.run_chat_completion_stream("test_model", {}, context):
             if finished is not None:
                 self.assertIsInstance(finished, FinishedMessage)
                 self.assertEqual(finished.content, "hello world")

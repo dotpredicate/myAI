@@ -278,6 +278,14 @@
     .badge-w { background: #e8f5e9; color: #2e7d32; }
     .repo-form { background: #f9f9f9; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; }
     .repo-form .field { margin-bottom: 8px; }
+
+    /* Model Settings */
+    #modelSettingsContainer { display: none; }
+    #modelSettingsContainer.visible { display: block; }
+    #modelSettingsFields { display: none; margin-top: 8px; padding: 10px; background: #f9f9f9; border: 1px solid #e0e0e0; border-radius: 4px; }
+    #modelSettingsFields.visible { display: block; }
+    #modelSettingsFields .field-row { margin-bottom: 8px; }
+    #modelSettingsFields .field-row:last-child { margin-bottom: 0; }
     .repo-form .field-row { margin-bottom: 8px; }
     .repo-form .btn-row { margin-top: 12px; display: flex; gap: 8px; }
     .repo-form .path-input-wrap { display: flex; gap: 6px; }
@@ -331,6 +339,13 @@
         <select id="providerSelect"></select>
         <label for="modelSelect">Select Model:</label>
         <select id="modelSelect"></select>
+        <div class="field" id="modelSettingsContainer">
+          <div class="field-row" style="align-items: center;">
+            <label>Model Settings</label>
+            <button id="modelSettingsToggle" class="btn">Show</button>
+          </div>
+          <div id="modelSettingsFields"></div>
+        </div>
         <button id="sendBtn" class="btn btn-primary" style="margin-top:8px">Send</button>
         <button id="continueBtn" class="btn" style="margin-top:8px">Continue</button>
       </div>
@@ -847,7 +862,58 @@
       });
       const savedMetrics = localStorage.getItem('deviceMetrics');
       if (savedMetrics) document.getElementById('modelsDeviceMetricInput').value = savedMetrics;
+      await loadModelSettings(providerKey);
     }
+
+    async function loadModelSettings(providerKey) {
+      const container = document.getElementById('modelSettingsContainer');
+      const fields = document.getElementById('modelSettingsFields');
+      const hasAgent = document.getElementById('agentSelect').value;
+
+      if (hasAgent) { container.classList.remove('visible'); return; }
+
+      const res = await fetch(`/api/providers/${encodeURIComponent(providerKey)}/inference-params`);
+      const params = await res.json();
+      if (params.length === 0) { container.classList.remove('visible'); return; }
+
+      fields.innerHTML = '';
+      const modelId = document.getElementById('modelSelect').value;
+      const saved = JSON.parse(localStorage.getItem(`cfg:${providerKey}:${modelId}`) || '{}');
+
+      params.forEach(p => {
+        const row = document.createElement('div'); row.className = 'field-row';
+        row.innerHTML = `<label>${p.description || p.name}</label>`;
+        const inp = document.createElement('input');
+        inp.type = 'number'; inp.className = 'input';
+        inp.step = p.step || (p.type === 'int' ? 1 : 0.01);
+        if (p.min !== undefined) inp.min = p.min;
+        if (p.max !== undefined) inp.max = p.max;
+        inp.value = saved[p.name] ?? '';
+        inp.onchange = () => {
+          const cfg = {};
+          fields.querySelectorAll('input').forEach(el => { if (el.value) cfg[el.dataset.name] = el.dataset.type === 'int' ? parseInt(el.value) : parseFloat(el.value); });
+          localStorage.setItem(`cfg:${providerKey}:${modelId}`, JSON.stringify(cfg));
+        };
+        inp.dataset.name = p.name; inp.dataset.type = p.type;
+        row.appendChild(inp); fields.appendChild(row);
+      });
+
+      container.classList.add('visible');
+    }
+
+    function getModelSettings() {
+      const p = document.getElementById('providerSelect').value;
+      const m = document.getElementById('modelSelect').value;
+      return JSON.parse(localStorage.getItem(`cfg:${p}:${m}`) || '{}');
+    }
+
+    document.getElementById('modelSettingsToggle').addEventListener('click', () => {
+      const f = document.getElementById('modelSettingsFields');
+      f.classList.toggle('visible');
+      document.getElementById('modelSettingsToggle').textContent = f.classList.contains('visible') ? 'Hide' : 'Show';
+    });
+
+    document.getElementById('agentSelect').addEventListener('change', () => loadModelSettings(document.getElementById('providerSelect').value));
 
     async function loadCachedModels() {
       try {
@@ -1473,6 +1539,7 @@
       } else {
         body.provider_key = pk;
         body.model_id = mid;
+        body.inference_config = getModelSettings();
       }
       const res = await fetch(`/api/conversations/${id}/continue`, {
         method: 'POST',
@@ -1515,6 +1582,7 @@
       } else {
         body.provider_key = document.getElementById('providerSelect').value;
         body.model_id = document.getElementById('modelSelect').value;
+        body.inference_config = getModelSettings();
       }
       const res = await fetch('/api/conversations/prompt', {
         method: 'POST',

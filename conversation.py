@@ -49,6 +49,7 @@ class GenerationRequest(BaseModel):
     agent_id: Optional[str] = None
     provider_key: Optional[str] = None
     model_id: Optional[str] = None
+    inference_config: dict[str, Any] = {}
     scopes: list[UserScopeChoice] = []
 
 class PromptRequest(GenerationRequest):
@@ -365,7 +366,7 @@ async def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = 
         security_policy=repo.security_policy,
     )
 
-async def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fallback_model: Optional[str], req_scopes: list[UserScopeChoice]) -> tuple:
+async def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fallback_model: Optional[str], req_scopes: list[UserScopeChoice], inference_config: dict[str, Any] = {}) -> tuple:
     """Resolve (provider_key, model_id, inference_config, scopes, agent_prompt) from agent or fallback.
     Returns None for provider_key if validation fails (caller handles error)."""
     if agent_id:
@@ -397,7 +398,7 @@ async def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[st
         raise ValueError('model_id required')
     # No agent: user override > repo policy
     resolved_scopes = [await resolve_scope(s) for s in req_scopes]
-    return fallback_provider, fallback_model, {}, resolved_scopes, None
+    return fallback_provider, fallback_model, inference_config, resolved_scopes, None
 
 async def prepare_and_start_generation(
     prompt: str,
@@ -407,6 +408,7 @@ async def prepare_and_start_generation(
     provider_key: Optional[str] = None,
     model_id: Optional[str] = None,
     extra_scopes: list[UserScopeChoice] = [],
+    inference_config: dict[str, Any] = {},
 ) -> tuple[int, StoredMessageRecord]:
     if conversation_id is None:
         async with mk_conn() as conn:
@@ -445,6 +447,7 @@ async def prepare_and_start_generation(
         provider_key=provider_key,
         model_id=model_id,
         extra_scopes=extra_scopes,
+        inference_config=inference_config,
     ))
     return conversation_id, user_record
 
@@ -459,8 +462,13 @@ async def get_messages_for_continuation(conn: AsyncConnection, conv_id: int) -> 
             ctx.append((message_id, parsed))
     return ctx
 
-async def continue_conversation(conn: AsyncConnection, conv_id: int, functions: list[Tool], agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, extra_scopes: list[UserScopeChoice] = []) -> AsyncGenerator[StreamEvent, None]:
-    provider_key, model_id, inference_config, scopes, agent_prompt = await _resolve_agent(agent_id, provider_key, model_id, extra_scopes)
+async def prompt_conversation(
+        conn: AsyncConnection, conv_id: int, functions: list[Tool], 
+        agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, 
+        extra_scopes: list[UserScopeChoice] = [], 
+        inference_config: dict[str, Any] = {}
+    ) -> AsyncGenerator[StreamEvent, None]:
+    provider_key, model_id, inference_config, scopes, agent_prompt = await _resolve_agent(agent_id, provider_key, model_id, extra_scopes, inference_config)
     messages = await get_messages_for_continuation(conn, conv_id)
 
     provider = registry.get(provider_key)
@@ -468,7 +476,7 @@ async def continue_conversation(conn: AsyncConnection, conv_id: int, functions: 
     run_next_loop = True
     while run_next_loop:
         chat_context = ChatContext(messages=messages, scopes=scopes, tools=functions, instructions=agent_prompt)
-        chat_gen_inner = provider.run_chat_completion_stream(model_id, chat_context, functions)
+        chat_gen_inner = provider.run_chat_completion_stream(model_id, inference_config, chat_context)
         run_next_loop = False
         async for delta, aggregated_element in chat_gen_inner:
             if aggregated_element is not None:
@@ -532,10 +540,11 @@ async def _run_generation_task(
     provider_key: Optional[str] = None,
     model_id: Optional[str] = None,
     extra_scopes: list[UserScopeChoice] = [],
+    inference_config: dict[str, Any] = {},
 ) -> None:
     try:
         async with mk_conn() as conn:
-            async for event in continue_conversation(
+            async for event in prompt_conversation(
                 conn,
                 state.conversation_id,
                 functions,
@@ -543,6 +552,7 @@ async def _run_generation_task(
                 provider_key=provider_key,
                 model_id=model_id,
                 extra_scopes=extra_scopes,
+                inference_config=inference_config,
             ):
                 await state.apply_event(event)
         await state.finish()
@@ -564,6 +574,7 @@ async def start_generation(
     provider_key: Optional[str] = None,
     model_id: Optional[str] = None,
     extra_scopes: list[UserScopeChoice] = [],
+    inference_config: dict[str, Any] = {},
 ) -> ActiveGeneration:
     async with mk_conn() as conn:
         latest_sequence_id = await get_latest_sequence_id(conn, conv_id)
@@ -580,6 +591,7 @@ async def start_generation(
             provider_key=provider_key,
             model_id=model_id,
             extra_scopes=extra_scopes,
+            inference_config=inference_config,
         ))
         return state
 
@@ -707,6 +719,7 @@ async def prompt_model(payload: PromptRequest):
             provider_key=payload.provider_key,
             model_id=payload.model_id,
             extra_scopes=payload.scopes,
+            inference_config=payload.inference_config,
         )
     except ConversationBlockedError as e:
         return JSONResponse(
@@ -804,6 +817,7 @@ async def continue_conversation_endpoint(conversation_id: int, payload: Continue
             provider_key=payload.provider_key,
             model_id=payload.model_id,
             extra_scopes=payload.scopes,
+            inference_config=payload.inference_config,
         )
     except ActiveGenerationExistsError:
         return JSONResponse(status_code=409, content={"error": "conversation is already generating"})
