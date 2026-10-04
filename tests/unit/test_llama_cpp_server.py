@@ -3,9 +3,9 @@ import subprocess
 import time
 import unittest
 from typing import cast
-from unittest.mock import patch
 
 from inference import llama_cpp_server as module
+from inference.engine import TokenPiece
 
 
 class FakeProcess:
@@ -34,6 +34,22 @@ def as_process(process: FakeProcess) -> subprocess.Popen[str]:
     return cast(subprocess.Popen[str], process)
 
 
+class TestTokenizationResponse(unittest.TestCase):
+    def test_parses_text_and_byte_pieces(self) -> None:
+        result = module._parse_tokenization_response({
+            "tokens": [
+                {"id": 1, "piece": "hello"},
+                {"id": 2, "piece": [195, 169]},
+            ]
+        })
+
+        self.assertEqual(result, [TokenPiece(1, "hello"), TokenPiece(2, [195, 169])])
+
+    def test_rejects_malformed_token(self) -> None:
+        with self.assertRaises(ValueError):
+            module._parse_tokenization_response({"tokens": [{"id": 1, "piece": [256]}]})
+
+
 class TestLlamaCppServerIdleShutdown(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         await module.stop_llama_servers()
@@ -49,12 +65,11 @@ class TestLlamaCppServerIdleShutdown(unittest.IsolatedAsyncioTestCase):
             last_used=time.monotonic() - module.IDLE_TIMEOUT_SECONDS - 1,
         )
 
-        with patch.object(module, "IDLE_CHECK_INTERVAL_SECONDS", 0.001):
-            monitor = asyncio.create_task(module._idle_monitor())
-            await asyncio.sleep(0.02)
-            monitor.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await monitor
+        monitor = asyncio.create_task(module._idle_monitor(check_interval=0.001))
+        await asyncio.sleep(0.02)
+        monitor.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await monitor
 
         self.assertTrue(process.terminated)
         self.assertFalse(process.killed)
@@ -70,12 +85,11 @@ class TestLlamaCppServerIdleShutdown(unittest.IsolatedAsyncioTestCase):
         )
         module._server_processes["1234"] = server
 
-        with patch.object(module, "IDLE_CHECK_INTERVAL_SECONDS", 0.001):
-            monitor = asyncio.create_task(module._idle_monitor())
-            await asyncio.sleep(0.02)
-            monitor.cancel()
-            with self.assertRaises(asyncio.CancelledError):
-                await monitor
+        monitor = asyncio.create_task(module._idle_monitor(check_interval=0.001))
+        await asyncio.sleep(0.02)
+        monitor.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await monitor
 
         self.assertFalse(process.terminated)
         self.assertIn("1234", module._server_processes)

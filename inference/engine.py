@@ -43,12 +43,33 @@ class FinishedToolCall:
 
 FinishedElement: TypeAlias = Union[FinishedMessage, FinishedThinking, FinishedToolCall]
 
+EmbeddingInput: TypeAlias = Union[str, list[str], list[int], list[list[int]]]
+
+
+@dataclass(frozen=True)
+class TokenPiece:
+    id: int
+    piece: str | list[int]
+
+
+class EmbeddingProvider(ABC):
+    """Interface for producing embeddings and model tokenization details."""
+
+    @abstractmethod
+    async def embed(self, model: str, input: EmbeddingInput) -> list[list[float]]:
+        ...
+
+    @abstractmethod
+    async def tokenize(self, text: str) -> list[TokenPiece]:
+        ...
+
+
 @dataclass(frozen=True)
 class ChatContext:
     messages: list[tuple[int, ConversationElement]]
     scopes: list[ScopeSpec]
     tools: list[Tool]
-    instructions: str
+    instructions: Optional[str]
 
 
 @dataclass(frozen=True)

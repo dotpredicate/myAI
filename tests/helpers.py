@@ -11,9 +11,12 @@ from testcontainers.postgres import PostgresContainer  # type: ignore
 
 import database
 from inference.engine import (
+    EmbeddingInput,
+    EmbeddingProvider,
     InferenceProvider,
     Model,
     ChatContext,
+    TokenPiece,
     StreamingElement,
     FinishedElement,
 )
@@ -76,6 +79,23 @@ class MockE2EProvider(InferenceProvider):
 
     async def list_models(self) -> list[Model]:
         return self.models
+
+
+class DeterministicEmbeddingProvider(EmbeddingProvider):
+
+    def __init__(self) -> None:
+        self.embed_calls = 0
+        self.tokenize_calls = 0
+
+    async def embed(self, model: str, input: EmbeddingInput) -> list[list[float]]:
+        self.embed_calls += 1
+        result_count = 1 if isinstance(input, str) else len(input)
+        vector = [1.0] + [0.0] * 767
+        return [vector.copy() for _ in range(result_count)]
+
+    async def tokenize(self, text: str) -> list[TokenPiece]:
+        self.tokenize_calls += 1
+        return [TokenPiece(id=index, piece=char) for index, char in enumerate(text)]
 
 
 class BaseTestCase(unittest.IsolatedAsyncioTestCase):

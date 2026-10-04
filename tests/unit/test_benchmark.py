@@ -1,8 +1,11 @@
-import asyncio
 import unittest
-from unittest.mock import patch
 
-from inference.benchmark import model_info, parse_llama_bench_output, _quant_info
+from inference.benchmark import (
+    ModelQuantInfo,
+    _model_info_result,
+    _quant_info_from_header,
+    parse_llama_bench_output,
+)
 
 
 HEADER = {
@@ -14,13 +17,9 @@ HEADER = {
 }
 
 
-class TestModelInfo(unittest.TestCase):
+class TestModelInfoFormatting(unittest.TestCase):
     def test_quant_info_fields(self):
-        async def run():
-            with patch("inference.benchmark._gguf_header", return_value=HEADER):
-                return await _quant_info("org/repo", "Model-Q4_K_M.gguf", "Q4_K_M")
-
-        r = asyncio.run(run())
+        r = _quant_info_from_header("Model-Q4_K_M.gguf", "Q4_K_M", HEADER)
         self.assertEqual(r["quant"], "Q4_K_M")
         self.assertEqual(r["filename"], "Model-Q4_K_M.gguf")
         self.assertEqual(r["size_bytes"], 100)
@@ -29,25 +28,15 @@ class TestModelInfo(unittest.TestCase):
         self.assertEqual(r["context_length"], 8192)
 
     def test_quant_info_error(self):
-        async def run():
-            with patch("inference.benchmark._gguf_header", return_value={"error": "boom"}):
-                return await _quant_info("org/repo", "Model-Q4_K_M.gguf", "Q4_K_M")
-
-        r = asyncio.run(run())
+        r = _quant_info_from_header("Model-Q4_K_M.gguf", "Q4_K_M", {"error": "boom"})
         self.assertEqual(r["error"], "boom")
 
-    def test_model_info_gathers_all_quants(self):
-        async def run():
-            with (
-                patch(
-                    "inference.benchmark._resolve_targets",
-                    return_value=[("repo", "a.gguf", "Q4_K_M"), ("repo", "b.gguf", "Q5_K_M")],
-                ),
-                patch("inference.benchmark._gguf_header", return_value=HEADER),
-            ):
-                return await model_info("repo")
-
-        data = asyncio.run(run())
+    def test_model_info_result_includes_all_quants(self):
+        quants: list[ModelQuantInfo] = [
+            _quant_info_from_header("a.gguf", "Q4_K_M", HEADER),
+            _quant_info_from_header("b.gguf", "Q5_K_M", HEADER),
+        ]
+        data = _model_info_result("repo", quants)
         self.assertEqual(data["model_id"], "repo")
         self.assertEqual([q["quant"] for q in data["quants"]], ["Q4_K_M", "Q5_K_M"])
 

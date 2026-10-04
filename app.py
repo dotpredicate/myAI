@@ -10,7 +10,7 @@ from conversation import router as conversations_router
 from repositories import router as repositories_router
 from agents import router as agents_router
 from log_config import get_logger, setup_logging
-from search import synchronize, semantic_search
+from search import synchronize, semantic_search, clear_index
 from inference import registry, benchmark, llama_cpp_server
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.hf_gguf import list_cached_models
@@ -95,6 +95,12 @@ async def search(payload: dict = Body(...)):
     return JSONResponse(content={'results': results})
 
 
+@app.delete('/api/search/index')
+async def clear_search_index():
+    await clear_index()
+    return JSONResponse(content={"status": "cleared"})
+
+
 @app.get('/models/{model:path}/info')
 async def model_info_endpoint(model: str):
     return JSONResponse(content=await benchmark.model_info(model))
@@ -115,7 +121,7 @@ async def benchmark_model_endpoint(
 
 @app.get('/api/gpu-stats')
 async def gpu_stats():
-    stats = benchmark.get_gpu_stats()
+    stats = await asyncio.to_thread(benchmark.get_gpu_stats)
     return JSONResponse(content={"free": stats.free_bytes, "total": stats.total_bytes})
 
 
@@ -143,8 +149,17 @@ async def run_gpu_benchmark(
     bw_size: int = 8192
 ):
     try:
-        tflops_results = benchmark_tflops(M=tflops_size, K=tflops_size, N=tflops_size)
-        bandwidth_results = benchmark_bandwidth(R=bw_size, C=bw_size)
+        tflops_results = await asyncio.to_thread(
+            benchmark_tflops,
+            M=tflops_size,
+            K=tflops_size,
+            N=tflops_size,
+        )
+        bandwidth_results = await asyncio.to_thread(
+            benchmark_bandwidth,
+            R=bw_size,
+            C=bw_size,
+        )
         
         return JSONResponse(content={
             "status": "success",

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import re
 import subprocess
@@ -38,11 +39,13 @@ async def get_repo_by_id(repo_id: int) -> Optional[RepositoryConfig]:
         return None
 
 
-def _auto_detect_repo_type(path: str) -> Literal['plain', 'git']:
+async def _auto_detect_repo_type(path: str) -> Literal['plain', 'git']:
     try:
-        result = subprocess.run(
+        result = await asyncio.to_thread(
+            subprocess.run,
             ["git", "-C", path, "rev-parse", "--is-inside-work-tree"],
-            capture_output=True, text=True
+            capture_output=True,
+            text=True,
         )
         if result.returncode == 0:
             return 'git'
@@ -63,9 +66,11 @@ async def get_repo_documents(repo_name: str) -> List[Tuple[str, Path]]:
 
     try:
         if repo.repo_type == 'git':
-            result = subprocess.run(
+            result = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "-C", str(repo_path), "ls-files"],
-                capture_output=True, text=True
+                capture_output=True,
+                text=True,
             )
             if result.returncode != 0:
                 return []
@@ -119,7 +124,7 @@ async def create_repository(payload: dict = Body(...)):
     if repo_type not in (None, 'plain', 'git'):
         return JSONResponse(status_code=400, content={'error': 'type must be "plain" or "git" if provided'})
     if not repo_type:
-        repo_type = _auto_detect_repo_type(path)
+        repo_type = await _auto_detect_repo_type(path)
 
     security_policy = payload.get('security', 'read-only')
     if security_policy not in list(SecurityPolicy):

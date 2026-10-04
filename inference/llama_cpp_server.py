@@ -10,7 +10,7 @@ import openai
 import time
 from typing import Any, AsyncIterator, Optional
 
-from inference.engine import ChatContext, InferenceProvider, Model, StreamingElement, FinishedElement, InferenceParam, InferenceParamType
+from inference.engine import ChatContext, EmbeddingInput, EmbeddingProvider, InferenceProvider, Model, StreamingElement, FinishedElement, InferenceParam, InferenceParamType, TokenPiece
 from inference.hf_gguf import list_cached_models
 from .openai import DeltaProcessor, _to_oai_messages, _to_oai_tools
 from log_config import get_logger
@@ -69,10 +69,10 @@ async def _stop_managed_server(port: str, server: ManagedServer) -> None:
         logger.info("Process %s killed.", process.pid)
 
 
-async def _idle_monitor() -> None:
+async def _idle_monitor(check_interval: float = IDLE_CHECK_INTERVAL_SECONDS) -> None:
     try:
         while True:
-            await asyncio.sleep(IDLE_CHECK_INTERVAL_SECONDS)
+            await asyncio.sleep(check_interval)
             now = time.monotonic()
             for port, server in list(_server_processes.items()):
                 if server.process.poll() is not None:
@@ -180,6 +180,33 @@ def get_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(('', 0))
         return s.getsockname()[1]
+
+
+def _parse_tokenization_response(payload: object) -> list[TokenPiece]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("tokens"), list):
+        raise ValueError("Invalid llama.cpp tokenization response")
+
+    tokens: list[TokenPiece] = []
+    for raw_token in payload["tokens"]:
+        if not isinstance(raw_token, dict):
+            raise ValueError("Invalid llama.cpp tokenization response")
+
+        token_id = raw_token.get("id")
+        raw_piece = raw_token.get("piece")
+        if type(token_id) is not int:
+            raise ValueError("Invalid llama.cpp tokenization response")
+        piece: str | list[int]
+        if isinstance(raw_piece, str):
+            piece = raw_piece
+        elif isinstance(raw_piece, list) and all(
+            type(byte) is int and 0 <= byte <= 255 for byte in raw_piece
+        ):
+            piece = raw_piece
+        else:
+            raise ValueError("Invalid llama.cpp tokenization response")
+
+        tokens.append(TokenPiece(id=token_id, piece=piece))
+    return tokens
 
 
 @dataclass
@@ -297,7 +324,7 @@ class LlamaCppServerProvider(InferenceProvider):
             ),
         ]
 
-class LlamaCppEmbeddingServer:
+class LlamaCppEmbeddingServer(EmbeddingProvider):
     """Manages a local llama.cpp server process for embeddings."""
 
     def __init__(self, model: str, port: str = "2345"):
@@ -318,7 +345,7 @@ class LlamaCppEmbeddingServer:
                 return resp.status_code == 200
         await _lazy_start_server(self.port, self.model, ["--embedding", "-hf", self.model], self.start_lock, self.ready_event, readiness_check=_check)
 
-    async def embed(self, model: str, input: str | list[str] | list[int] | list[list[int]]) -> list[list[float]]:
+    async def embed(self, model: str, input: EmbeddingInput) -> list[list[float]]:
         if model != self.model:
         # FIXME
             raise ValueError(f"This llama.cpp server only supports {self.model}, but attempted to embed with {model}")
@@ -327,7 +354,7 @@ class LlamaCppEmbeddingServer:
             resp = await self._client.embeddings.create(model=model, input=input)
             return [e.embedding for e in resp.data]
 
-    async def tokenize(self, text: str) -> list[dict[str, object]]:
+    async def tokenize(self, text: str) -> list[TokenPiece]:
         await self._lazy_start()
         async with _track_server_activity(self.port):
             async with httpx.AsyncClient(timeout=5.0) as client:
@@ -335,4 +362,4 @@ class LlamaCppEmbeddingServer:
                     f"{self.endpoint}/tokenize",
                     json={"content": text, "with_pieces": True}
                 )
-            return response.json()["tokens"]
+            return _parse_tokenization_response(response.json())

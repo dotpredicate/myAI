@@ -3,7 +3,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import NamedTuple, Optional, TypedDict
+from typing import Any, NamedTuple, Optional, TypedDict
 
 from log_config import get_logger
 from .hf_gguf import download_file_slice, get_gguf_split_info, list_gguf_quants, resolve_hf_alias
@@ -78,11 +78,15 @@ async def model_info(model_alias: str) -> dict:
         *(_quant_info(repo_id, filename, quant) for repo_id, filename, quant in targets)
     ))
 
-    return {"model_id": model_alias, "quants": quants}
+    return _model_info_result(model_alias, quants)
 
 
 async def _quant_info(repo_id: str, filename: str, quant: str) -> ModelQuantInfo:
     header = await _gguf_header(repo_id, filename)
+    return _quant_info_from_header(filename, quant, header)
+
+
+def _quant_info_from_header(filename: str, quant: str, header: dict[str, Any]) -> ModelQuantInfo:
     entry: ModelQuantInfo = {"quant": quant, "filename": filename}
     if "error" in header:
         entry["error"] = header["error"]
@@ -92,6 +96,10 @@ async def _quant_info(repo_id: str, filename: str, quant: str) -> ModelQuantInfo
     entry["architecture"] = header["architecture"]
     entry["context_length"] = header["context_length"]
     return entry
+
+
+def _model_info_result(model_alias: str, quants: list[ModelQuantInfo]) -> dict[str, Any]:
+    return {"model_id": model_alias, "quants": quants}
 
 
 def _resolve_targets(alias: str) -> list[tuple[str, str, str]]:

@@ -1,5 +1,6 @@
+import asyncio
+from contextlib import suppress
 import os
-import subprocess
 from pathlib import Path
 from typing import NamedTuple, Optional, List
 from domain import ScopeSpec, SecurityPolicy, RepositoryConfig
@@ -123,22 +124,32 @@ async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]] 
     ])
 
     try:
-        result = subprocess.run(
-            bwrap_args,
-            capture_output=True,
-            text=True,
-            timeout=30,
+        process = await asyncio.create_subprocess_exec(
+            *bwrap_args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+        except TimeoutError:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await process.communicate()
+            return ShellResult(
+                returncode=None,
+                stdout="",
+                stderr="Command timed out",
+            )
+        except asyncio.CancelledError:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await process.communicate()
+            raise
+
         return ShellResult(
-            result.returncode,
-            result.stdout,
-            result.stderr
-        )
-    except subprocess.TimeoutExpired:
-        return ShellResult(
-            returncode=None,
-            stdout='',
-            stderr="Command timed out",
+            process.returncode,
+            stdout.decode(errors="replace"),
+            stderr.decode(errors="replace"),
         )
     except Exception as e:
         return ShellResult(

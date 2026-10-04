@@ -1,5 +1,8 @@
 from .engine import (
     InferenceProvider as InferenceProvider,
+    EmbeddingProvider as EmbeddingProvider,
+    EmbeddingInput as EmbeddingInput,
+    TokenPiece as TokenPiece,
     StreamingMessage as StreamingMessage,
     StreamingThinking as StreamingThinking,
     StreamingToolCall as StreamingToolCall,

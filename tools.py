@@ -1,13 +1,17 @@
 from dataclasses import dataclass
+import asyncio
 import json
 import subprocess
 import difflib
 from pathlib import Path
-from typing import Awaitable, Callable, TypedDict
+from typing import TYPE_CHECKING, Awaitable, Callable, TypedDict
 
 import system
 from system import REPOSITORIES_VROOT, WORKSPACE_VROOT, get_repo_from_vpath, is_safe_vpath, resolve_repo_vpath, run_sandboxed_command, vpath_to_realpath
 from domain import SecurityPolicy, ScopeSpec
+
+if TYPE_CHECKING:
+    from inference.engine import EmbeddingProvider
 
 class FunctionDefinition(TypedDict):
     name: str
@@ -36,7 +40,13 @@ async def run_shell_command(name: str, parameters: str, privileged: bool = False
     output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
     return ToolCallResult(output_str)
 
-async def run_semantic_search(name: str, parameters: str, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
+async def run_semantic_search(
+    name: str,
+    parameters: str,
+    privileged: bool = False,
+    scopes: list[ScopeSpec] = [],
+    embedding_provider: "EmbeddingProvider | None" = None,
+) -> ToolCallResult:
     from search import semantic_search
     params = json.loads(parameters)
     prompt: str = params["prompt"]
@@ -44,10 +54,15 @@ async def run_semantic_search(name: str, parameters: str, privileged: bool = Fal
 
     scope_names: list[str] = [s.internal_name for s in scopes] if scopes else []
     try:
-        results = await semantic_search(prompt, top_k, scopes=scope_names)
+        results = await semantic_search(
+            prompt,
+            top_k,
+            scopes=scope_names,
+            provider=embedding_provider,
+        )
     except Exception as exc:
         return ToolCallResult(json.dumps({"error": f"search failed: {exc}"}))
-    return ToolCallResult(result=json.dumps({"results": json.dumps(results)}))
+    return ToolCallResult(result=json.dumps({"results": [result._asdict() for result in results]}))
 
 async def run_propose_replace(name: str, parameters: str, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
     try:
@@ -171,7 +186,14 @@ async def run_propose_diff(name: str, parameters: str, privileged: bool = False,
         
         # privileged: apply patch
         try:
-            result = subprocess.run(['patch', '-p0', str(target_realpath)], input=diff_content, text=True, capture_output=True)
+            result = await asyncio.to_thread(
+                subprocess.run,
+                ['patch', '-p0', str(target_realpath)],
+                input=diff_content,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
             if result.returncode != 0:
                 raise RuntimeError(f"Patch failed: {result.stderr}")
             return ToolCallResult(json.dumps({"status": "applied", "error": None}))

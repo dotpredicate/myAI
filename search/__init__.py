@@ -8,13 +8,14 @@ from typing import NamedTuple, List, Optional
 import database
 from . import documents
 from repositories import get_repositories, get_repo_documents, RepositoryConfig
+from inference import EmbeddingProvider, TokenPiece
 from inference.llama_cpp_server import LlamaCppEmbeddingServer
 from log_config import get_logger
 
 _sync_lock = asyncio.Lock()
 
 EMBEDDING_MODEL = "unsloth/embeddinggemma-300m-GGUF"
-embedding_server = LlamaCppEmbeddingServer(EMBEDDING_MODEL)
+embedding_provider: EmbeddingProvider = LlamaCppEmbeddingServer(EMBEDDING_MODEL)
 logger = get_logger(__name__)
 # logger.setLevel("DEBUG")
 
@@ -45,13 +46,24 @@ class SearchHit(NamedTuple):
     text: str
 
 
-async def get_token_chunks(text: str, max_tokens: int = 400, overlap: int = 50, char_chunk_size: int = 100_000) -> tuple[list[list[int]], list[str]]:
+def _resolve_embedding_provider(provider: Optional[EmbeddingProvider]) -> EmbeddingProvider:
+    return embedding_provider if provider is None else provider
+
+
+async def get_token_chunks(
+    text: str,
+    max_tokens: int = 400,
+    overlap: int = 50,
+    char_chunk_size: int = 100_000,
+    provider: Optional[EmbeddingProvider] = None,
+) -> tuple[list[list[int]], list[str]]:
     # Split the text into character-sized chunks before tokenizing to avoid
     # sending enormous documents to the tokenizer in one request.
-    all_tokens: list[dict] = []
+    active_provider = _resolve_embedding_provider(provider)
+    all_tokens: list[TokenPiece] = []
     for i in range(0, len(text), char_chunk_size):
         sub_text = text[i : i + char_chunk_size]
-        sub_tokens = await embedding_server.tokenize(sub_text)
+        sub_tokens = await active_provider.tokenize(sub_text)
         all_tokens.extend(sub_tokens)
 
     token_ids: list[list[int]] = []
@@ -62,8 +74,8 @@ async def get_token_chunks(text: str, max_tokens: int = 400, overlap: int = 50, 
         chunk_tokens: list[int] = []
         chunk_text = ''
         for piece in chunk:
-            chunk_tokens.append(int(piece["id"]))
-            piece_content = piece["piece"]
+            chunk_tokens.append(piece.id)
+            piece_content = piece.piece
             if isinstance(piece_content, str):
                 chunk_text += piece_content
             elif isinstance(piece_content, list):
@@ -75,8 +87,14 @@ async def get_token_chunks(text: str, max_tokens: int = 400, overlap: int = 50, 
     return token_ids, text_chunks
 
 
-async def semantic_search(query: str, top_k: int, scopes: Optional[List[str]] = None) -> list[SearchHit]:
-    embed_results = await embedding_server.embed(EMBEDDING_MODEL, query)
+async def semantic_search(
+    query: str,
+    top_k: int,
+    scopes: Optional[List[str]] = None,
+    provider: Optional[EmbeddingProvider] = None,
+) -> list[SearchHit]:
+    active_provider = _resolve_embedding_provider(provider)
+    embed_results = await active_provider.embed(EMBEDDING_MODEL, query)
     query_vec = embed_results[0]
 
     base_query = """
@@ -89,8 +107,9 @@ async def semantic_search(query: str, top_k: int, scopes: Optional[List[str]] = 
     if scopes:
         where_clauses = []
         for scope in scopes:
-            where_clauses.append("file_path LIKE %s")
-            new_params.append(f"{scope}/%")
+            prefix = f"{scope}/"
+            where_clauses.append("left(file_path, char_length(%s)) = %s")
+            new_params.extend([prefix, prefix])
 
         base_query += " WHERE " + " OR ".join(where_clauses)
 
@@ -114,7 +133,12 @@ def _batched(iterable, n: int):
         yield batch
 
 
-async def _index_file(repo: RepositoryConfig, relative_path: str, full_path: Path) -> Optional[IndexedFile]:
+async def _index_file(
+    repo: RepositoryConfig,
+    relative_path: str,
+    full_path: Path,
+    provider: EmbeddingProvider,
+) -> Optional[IndexedFile]:
     """Read, hash and tokenize a single file. Returns None if unchanged or unreadable."""
     if Path(relative_path).suffix.lower() not in INDEXED_EXTENSIONS:
         logger.debug("%s - skipping unhandled extension", relative_path)
@@ -128,17 +152,18 @@ async def _index_file(repo: RepositoryConfig, relative_path: str, full_path: Pat
         return None
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()
+    indexed_path = f"{repo.internal_name}/{relative_path}"
     async with database.mk_conn() as conn:
-        existing = await documents.get_document_by_path(conn, relative_path)
+        existing = await documents.get_document_by_path(conn, indexed_path)
     if existing and existing[1] == file_hash:
         logger.debug("%s - unchanged checksum %s", relative_path, file_hash)
         return None
 
     logger.info("%s - to be indexed", relative_path)
-    token_ids, chunk_texts = await get_token_chunks(file_text)
+    token_ids, chunk_texts = await get_token_chunks(file_text, provider=provider)
     logger.debug("%s - tokenized into %s chunks", relative_path, len(chunk_texts))
     return IndexedFile(
-        relative_path=relative_path,
+        relative_path=indexed_path,
         file_hash=file_hash,
         file_text=file_text,
         token_ids=token_ids,
@@ -146,10 +171,14 @@ async def _index_file(repo: RepositoryConfig, relative_path: str, full_path: Pat
     )
 
 
-async def _process_file_batch(repo: RepositoryConfig, files: list[tuple[str, Path]]) -> None:
+async def _process_file_batch(
+    repo: RepositoryConfig,
+    files: list[tuple[str, Path]],
+    provider: EmbeddingProvider,
+) -> None:
     """Tokenize a batch of files in parallel, batch-embed all chunks, then bulk-upsert to DB."""
     # Step 1: parallel tokenization
-    tasks = [_index_file(repo, rel, full) for rel, full in files]
+    tasks = [_index_file(repo, rel, full, provider) for rel, full in files]
     indexed_files: list[IndexedFile] = [r for r in await asyncio.gather(*tasks) if r is not None]
 
     if not indexed_files:
@@ -172,7 +201,7 @@ async def _process_file_batch(repo: RepositoryConfig, files: list[tuple[str, Pat
     # Step 3: embed in sub-batches
     all_embeddings: list[list[float]] = []
     for sub_batch in _batched(all_token_ids, EMBED_BATCH_SIZE):
-        sub_embeddings = await embedding_server.embed(EMBEDDING_MODEL, sub_batch)
+        sub_embeddings = await provider.embed(EMBEDDING_MODEL, sub_batch)
         all_embeddings.extend(sub_embeddings)
 
     assert len(all_embeddings) == len(all_chunk_texts)
@@ -203,8 +232,17 @@ async def _process_file_batch(repo: RepositoryConfig, files: list[tuple[str, Pat
     logger.info("%s - %s files indexed (%s chunks, %s embeddings)", repo_name, len(indexed_files), total_plans, len(all_embeddings))
 
 
-async def synchronize():
+async def clear_index() -> None:
+    """Clear indexed documents and their dependent chunks."""
+    async with _sync_lock:
+        async with database.mk_conn() as conn, conn.cursor() as cur:
+            await cur.execute("TRUNCATE TABLE documents RESTART IDENTITY CASCADE")
+            await conn.commit()
+
+
+async def synchronize(provider: Optional[EmbeddingProvider] = None) -> None:
     """Incrementally sync repositories using parallel batch processing."""
+    active_provider = _resolve_embedding_provider(provider)
     if _sync_lock.locked():
         logger.info("Indexing is already running, skipping")
         return
@@ -218,7 +256,7 @@ async def synchronize():
             for batch_idx, file_batch in enumerate(_batched(repo_docs, FILE_BATCH_SIZE)):
                 logger.info("Repository %s - batch %s (%s files)", repo.internal_name, batch_idx, len(file_batch))
                 try:
-                    await _process_file_batch(repo, file_batch)
+                    await _process_file_batch(repo, file_batch, active_provider)
                 except Exception:
                     logger.exception("Repository %s - batch %s failed", repo.internal_name, batch_idx)
 

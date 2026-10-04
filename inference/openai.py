@@ -30,33 +30,32 @@ from tools import Tool
 
 logger = get_logger(__name__)
 
+def _build_system_prompt(context: ChatContext, today: Optional[datetime.date] = None) -> str:
+    current_date = today or datetime.date.today()
+    sections = [f"Current date: {current_date.isoformat()}"]
+
+    if context.scopes:
+        repositories = "\n".join(
+            f"- /repositories/{scope.internal_name} (policy: {scope.security_policy})"
+            for scope in context.scopes
+        )
+        sections.append(f"Available repositories:\n{repositories}")
+
+    if context.instructions and context.instructions.strip():
+        sections.append(f"Agent instructions:\n{context.instructions.strip()}")
+
+    return "\n\n".join(sections)
+
+
 def _to_oai_messages(context: ChatContext) -> list[ChatCompletionMessageParam]:
     result: list[ChatCompletionMessageParam] = []
-
-    system_content = f"""
-    The date is {datetime.date.today()}.
-    """
-
-    # Build system prompt from scopes
-    if context.scopes:
-        scopes_content = f"""
-        You have access to following repositories:
-        {'\n'.join(f"- /repositories/{s.internal_name} - {s.security_policy}" for s in context.scopes)}
-        """
-        system_content += "\n" + scopes_content
-        logger.debug(system_content)
-    
-    if context.instructions:
-        instructions_content = f"""
-        Additional instructions:
-        {context.instructions}
-        """
-        system_content += "\n" + context.instructions
-        logger.debug(instructions_content)
-
-    logger.debug(system_content)
+    system_content = _build_system_prompt(context)
+    logger.debug(
+        "Built system prompt with %d repository scopes and agent instructions=%s",
+        len(context.scopes),
+        bool(context.instructions and context.instructions.strip()),
+    )
     result.append({'role': 'system', 'content': system_content})
-
 
     pending_thinking: Optional[str] = None
 

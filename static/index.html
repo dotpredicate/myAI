@@ -289,6 +289,9 @@
     .repo-form { background: #f9f9f9; border: 1px solid #ddd; border-radius: 4px; padding: 10px; margin-bottom: 10px; }
     .repo-form .field { margin-bottom: 8px; }
 
+    .index-actions { display: grid; gap: 8px; margin-bottom: 10px; }
+    .index-status { min-height: 1.3em; margin-bottom: 8px; }
+
     /* Model Settings */
     #modelSettingsContainer { display: none; }
     #modelSettingsContainer.visible { display: block; }
@@ -484,7 +487,11 @@
       <div class="repo-panels">
         <div class="repo-sidebar">
           <h3>Repositories</h3>
-          <button id="updateIndexBtn" class="btn btn-primary btn-block" style="margin-bottom:10px">Update index</button>
+          <div class="index-actions">
+            <button id="updateIndexBtn" class="btn btn-primary btn-block">Update index</button>
+            <button id="clearIndexBtn" class="btn btn-reject btn-block">Clear index</button>
+          </div>
+          <div id="indexStatus" class="index-status summary-line" aria-live="polite"></div>
           <div class="repo-form" id="addRepoFormContainer">
             <div class="field"><label>Name</label><input id="addRepoName" class="input" placeholder="Display name"></div>
             <div class="field"><label>Path</label><div class="path-input-wrap"><input id="addRepoPath" class="input" placeholder="Full path to folder"><button class="btn" id="addRepoBrowse" title="Pick a folder">Browse</button></div></div>
@@ -533,6 +540,11 @@
     let gpuStatusInterval = null;
     let llamaServersInterval = null;
     let activeStreamAbortController = null;
+
+    function escapeHTML(value) {
+      const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+      return String(value ?? '').replace(/[&<>"']/g, char => entities[char]);
+    }
 
     function switchView(name) {
       currentView = name;
@@ -768,7 +780,7 @@
       allAgents.forEach(a => {
         const item = document.createElement('div');
         item.className = 'menu-item';
-        item.innerHTML = `<span>${a.display_name || a.internal_name}</span>`;
+        item.innerHTML = `<span>${escapeHTML(a.display_name || a.internal_name)}</span>`;
         item.addEventListener('click', () => selectAgent(a.internal_name));
         container.appendChild(item);
       });
@@ -827,7 +839,7 @@
         item.className = 'menu-item';
         const label = (a.repository_internal_name || (repo ? repo.display_name || repo.internal_name : '?')) + (a.security_policy_override ? ` (${a.security_policy_override})` : '');
         const badges = repo ? badgeHtml(repo) : '';
-        item.innerHTML = `<span>${label}</span><span>${badges}<span class="conv-delete-btn" data-repo-id="${a.repository_id}">&times;</span></span>`;
+        item.innerHTML = `<span>${escapeHTML(label)}</span><span>${badges}<span class="conv-delete-btn" data-repo-id="${escapeHTML(a.repository_id)}">&times;</span></span>`;
         item.querySelector('.conv-delete-btn').addEventListener('click', e => {
           const rid = parseInt(e.target.dataset.repoId);
           const updated = accessList.filter(x => x.repository_id !== rid);
@@ -929,7 +941,7 @@
       const label = repo.display_name || repo.internal_name;
       const overrideLabel = policy ? ` (${policy})` : '';
       const badges = badgeHtml(repo);
-      item.innerHTML = `<span>${label}${overrideLabel}</span><span>${badges}<span class="conv-delete-btn" data-repo-id="${repoId}">&times;</span></span>`;
+      item.innerHTML = `<span>${escapeHTML(label)}${escapeHTML(overrideLabel)}</span><span>${badges}<span class="conv-delete-btn" data-repo-id="${escapeHTML(repoId)}">&times;</span></span>`;
       item.querySelector('.conv-delete-btn').addEventListener('click', e => {
         item.remove();
       });
@@ -1054,7 +1066,9 @@
       const typeCls = r.repo_type === 'git' ? 'badge-git' : 'badge-plain';
       const secMap = { 'read-only': 'badge-ro', 'privileged-write': 'badge-pw', 'write': 'badge-w' };
       const secLabel = { 'read-only': 'RO', 'privileged-write': 'PW', 'write': 'W' };
-      return `<span class="badge ${typeCls}">${r.repo_type}</span><span class="badge ${secMap[r.security_policy]}">${secLabel[r.security_policy]}</span>`;
+      const securityClass = secMap[r.security_policy] || 'badge-ro';
+      const securityLabel = secLabel[r.security_policy] || 'RO';
+      return `<span class="badge ${typeCls}">${escapeHTML(r.repo_type)}</span><span class="badge ${securityClass}">${securityLabel}</span>`;
     }
 
     async function loadRepositories() {
@@ -1102,7 +1116,7 @@
         const item = document.createElement('div');
         item.className = 'menu-item';
         const label = r.display_name || r.internal_name;
-        item.innerHTML = `<span>${label}</span><span>${badgeHtml(r)}</span>`;
+        item.innerHTML = `<span>${escapeHTML(label)}</span><span>${badgeHtml(r)}</span>`;
         const actions = document.createElement('span');
         actions.className = 'conv-delete-btn';
         actions.textContent = '×';
@@ -1142,13 +1156,13 @@
         crumbs += '<span class="browse-crumb" data-path="/">~</span>';
         parts.forEach(p => {
           acc += '/' + p;
-          crumbs += ` / <span class="browse-crumb" data-path="${acc}">${p}</span>`;
+          crumbs += ` / <span class="browse-crumb" data-path="${escapeHTML(acc)}">${escapeHTML(p)}</span>`;
         });
         crumbs += ' <button class="btn browse-select-btn" id="browseSelectHere">Select</button>';
 
         let html = `<div class="browse-header">${crumbs}</div>`;
         data.entries.forEach(e => {
-          html += `<div class="browse-entry" data-path="${e.path}">📁 ${e.name}</div>`;
+          html += `<div class="browse-entry" data-path="${escapeHTML(e.path)}">📁 ${escapeHTML(e.name)}</div>`;
         });
         overlay.innerHTML = html;
 
@@ -1249,7 +1263,7 @@
       const detailName = document.getElementById('repoDetailName');
       if (repo) {
         const label = repo.display_name || repo.internal_name;
-        detailName.innerHTML = `${label} ${badgeHtml(repo)}`;
+        detailName.innerHTML = `${escapeHTML(label)} ${badgeHtml(repo)}`;
         const meta = document.getElementById('repoMeta') || (() => {
           const m = document.createElement('div');
           m.id = 'repoMeta';
@@ -1305,7 +1319,7 @@
         data.results.forEach(r => {
           const div = document.createElement('div');
           div.className = 'repo-result-item';
-          div.innerHTML = `<strong>${r.title}</strong> (score ${r.score.toFixed(4)})<br>${r.snippet}`;
+          div.innerHTML = `<strong>${escapeHTML(r.title)}</strong> (score ${escapeHTML(r.score.toFixed(4))})<br>${escapeHTML(r.snippet)}`;
           resultsContainer.appendChild(div);
         });
       } catch {
@@ -1327,7 +1341,7 @@
         const pill = document.createElement('div');
         pill.className = 'scope-pill';
         const label = s.internalName + scopePolicyLabel(s);
-        pill.innerHTML = `<span>${label}</span><span class="remove-btn" data-index="${idx}">&times;</span>`;
+        pill.innerHTML = `<span>${escapeHTML(label)}</span><span class="remove-btn" data-index="${escapeHTML(idx)}">&times;</span>`;
         pill.querySelector('.remove-btn').addEventListener('click', e => {
           const i = parseInt(e.target.dataset.index);
           activeScopes.splice(i, 1);
@@ -1491,7 +1505,7 @@
         } else if (this.state.type === 'tool_call') {
           const det = document.createElement('details');
           det.dataset.mode = 'function_call';
-          det.innerHTML = `<summary>Function Call: ${chunk.name}</summary>`;
+          det.innerHTML = `<summary>Function Call: ${escapeHTML(chunk.name)}</summary>`;
           const body = document.createElement('div');
           body.className = 'msg-body';
           const pre = document.createElement('pre');
@@ -1506,7 +1520,7 @@
             if (rd.type === 'replace_proposal' || rd.type === 'diff_proposal') {
               const d = document.createElement('div');
               d.className = 'diff-view';
-              d.innerHTML = `<strong>Diff (${rd.target})</strong><br>`;
+              d.innerHTML = `<strong>Diff (${escapeHTML(rd.target)})</strong><br>`;
               d.append(rd.diff);
               out.appendChild(d);
             } else {
@@ -1795,9 +1809,44 @@
 
     document.getElementById('repoSearchBtn').addEventListener('click', searchInRepo);
 
-    document.getElementById('updateIndexBtn').addEventListener('click', () => {
-      fetch('/api/sync', { method: 'POST' })
-        .catch(e => console.error('Sync failed', e));
+    document.getElementById('updateIndexBtn').addEventListener('click', async event => {
+      const button = event.currentTarget;
+      const clearButton = document.getElementById('clearIndexBtn');
+      const status = document.getElementById('indexStatus');
+      button.disabled = true;
+      clearButton.disabled = true;
+      status.textContent = 'Starting index update...';
+      try {
+        const response = await fetch('/api/sync', { method: 'POST' });
+        if (!response.ok) throw new Error('Failed to start index update');
+        status.textContent = 'Index update started.';
+      } catch (error) {
+        status.textContent = error.message || 'Failed to start index update.';
+      } finally {
+        button.disabled = false;
+        clearButton.disabled = false;
+      }
+    });
+
+    document.getElementById('clearIndexBtn').addEventListener('click', async event => {
+      if (!confirm('Clear the search index? Source repository files will not be changed.')) return;
+      const button = event.currentTarget;
+      const updateButton = document.getElementById('updateIndexBtn');
+      const status = document.getElementById('indexStatus');
+      button.disabled = true;
+      updateButton.disabled = true;
+      status.textContent = 'Clearing index...';
+      try {
+        const response = await fetch('/api/search/index', { method: 'DELETE' });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to clear index');
+        status.textContent = 'Index cleared. Select “Update index” to rebuild it.';
+      } catch (error) {
+        status.textContent = error.message || 'Failed to clear index.';
+      } finally {
+        button.disabled = false;
+        updateButton.disabled = false;
+      }
     });
 
     document.getElementById('sendBtn').addEventListener('click', sendPrompt);
@@ -1850,17 +1899,17 @@
           q.parameters && (q.parameters / 1e9).toFixed(2) + 'B params',
           q.context_length + ' ctx'
         ].filter(Boolean).join(' · ');
-        const error = q.error ? `<div class="summary-line error">${q.error}</div>` : '';
-        const button = q.error ? '' : `<button class="btn btn-primary model-benchmark" data-quant="${q.quant}">Benchmark</button>`;
+        const error = q.error ? `<div class="summary-line error">${escapeHTML(q.error)}</div>` : '';
+        const button = q.error ? '' : `<button class="btn btn-primary model-benchmark" data-quant="${escapeHTML(q.quant)}">Benchmark</button>`;
         return `<div class="model-item">
-          <div><span class="badge badge-plain">${q.quant || ''}</span> ${button}</div>
-          <div class="summary-line">${q.filename || ''}</div>
+          <div><span class="badge badge-plain">${escapeHTML(q.quant || '')}</span> ${button}</div>
+          <div class="summary-line">${escapeHTML(q.filename || '')}</div>
           <div class="summary-line">${gb(q.size_bytes)}${meta ? ' · ' + meta : ''}</div>
           ${error}
           <div class="summary-line model-benchmark-result"></div>
         </div>`;
       }).join('');
-      const architectureLine = architecture ? `<div class="summary-meta">Architecture: ${architecture}</div>` : '';
+      const architectureLine = architecture ? `<div class="summary-meta">Architecture: ${escapeHTML(architecture)}</div>` : '';
       return `${architectureLine}
         <div class="model-list">${rows || '<div class="summary-line">No quants found</div>'}</div>`;
     }
@@ -1891,7 +1940,7 @@
         });
         allBenchmarkButton.disabled = !(data.quants || []).some(q => !q.error);
       } catch (e) {
-        infoBox.innerHTML = `<div class="summary-line error">${e.message}</div>`;
+        infoBox.innerHTML = `<div class="summary-line error">${escapeHTML(e.message)}</div>`;
       } finally {
         loadButton.disabled = false;
       }
@@ -1911,7 +1960,7 @@
         if (!res.ok) throw new Error(data.detail || 'Benchmark failed');
         result.innerHTML = renderModelSummary(data);
       } catch (e) {
-        result.innerHTML = `<span class="summary-line error">${e.message}</span>`;
+        result.innerHTML = `<span class="summary-line error">${escapeHTML(e.message)}</span>`;
       } finally {
         button.disabled = false;
         button.textContent = 'Benchmark';
@@ -1929,7 +1978,7 @@
         if (!res.ok) throw new Error(data.detail || 'Benchmark failed');
         result.innerHTML = renderModelSummary(data, true);
       } catch (e) {
-        result.innerHTML = `<div class="summary-line error">${e.message}</div>`;
+        result.innerHTML = `<div class="summary-line error">${escapeHTML(e.message)}</div>`;
       } finally {
         button.disabled = false;
         button.textContent = 'Benchmark all';
@@ -1940,8 +1989,8 @@
       const gb = b => b ? (b / (1024 ** 3)).toFixed(2) : 'N/A';
       if (!results.length) return '<div class="summary-line error">Benchmark failed</div>';
       return results.map(r => {
-        const label = includeQuant && r.quant ? `<strong>${r.quant}</strong> · ` : '';
-        if (r.error) return `<div class="summary-line error">${label}${r.error}</div>`;
+        const label = includeQuant && r.quant ? `<strong>${escapeHTML(r.quant)}</strong> · ` : '';
+        if (r.error) return `<div class="summary-line error">${label}${escapeHTML(r.error)}</div>`;
         return `<div class="summary-line">${label}<strong>${r.tps ? r.tps.toFixed(1) : 'N/A'} tok/s</strong> · prefill ${r.pp_tps ? r.pp_tps.toFixed(0) : 'N/A'} tok/s · ${gb(r.size_bytes)} GB</div>`;
       }).join('');
     }
@@ -1973,10 +2022,10 @@
             <div class="stat"><span class="label">INT8 TFLOPS</span><span class="value">${d.tflops.int8.tflops ? d.tflops.int8.tflops.toFixed(2) : 'Error'}</span></div>
             <div class="stat"><span class="label">Bandwidth</span><span class="value">${d.bandwidth.gb_s.toFixed(2)} GB/s</span></div>`;
         } else {
-          box.innerHTML = `<div class="stat"><span class="label">Error</span><span class="value">${d.message}</span></div>`;
+          box.innerHTML = `<div class="stat"><span class="label">Error</span><span class="value">${escapeHTML(d.message)}</span></div>`;
         }
       } catch (e) { 
-        box.innerHTML = `<div class="stat"><span class="label">Error</span><span class="value">${e.message}</span></div>`; 
+        box.innerHTML = `<div class="stat"><span class="label">Error</span><span class="value">${escapeHTML(e.message)}</span></div>`;
       } finally { 
         btn.disabled = false;
         btn.textContent = 'Run Benchmark'; 
