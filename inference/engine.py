@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, AsyncIterator, Optional, TypeAlias, Union
 
 from domain import ConversationElement, ScopeSpec
@@ -55,8 +56,6 @@ class Model:
     id: str
     created: int
     owned_by: str
-
-from enum import StrEnum
 
 
 class InferenceParamType(StrEnum):

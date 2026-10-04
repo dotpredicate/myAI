@@ -1,7 +1,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 
-from fastapi import BackgroundTasks, FastAPI, Body
+from fastapi import BackgroundTasks, FastAPI, Body, Query
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from database import init_database
@@ -11,7 +11,7 @@ from repositories import router as repositories_router
 from agents import router as agents_router
 from log_config import get_logger, setup_logging
 from search import synchronize, semantic_search
-from inference import registry, estimator, llama_cpp_server
+from inference import registry, benchmark, llama_cpp_server
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.hf_gguf import list_cached_models
 
@@ -95,16 +95,40 @@ async def search(payload: dict = Body(...)):
     return JSONResponse(content={'results': results})
 
 
-@app.get('/api/estimate')
-async def estimate_model(model_id: str, n_ctx: int = 2048, device_metric: Optional[str] = None):
-    data = await estimator.estimate_vram_remote(model_id, n_ctx=n_ctx, device_metric=device_metric)
-    return JSONResponse(content=data)
+@app.get('/models/{model:path}/info')
+async def model_info_endpoint(model: str):
+    return JSONResponse(content=await benchmark.model_info(model))
+
+
+@app.get('/models/{model:path}/benchmark')
+async def benchmark_model_endpoint(
+    model: str,
+    quant: Optional[list[str]] = Query(default=None),
+    n_gen: int = 128,
+    n_prompt: int = 512,
+    repetitions: int = 1,
+):
+    return JSONResponse(content=await benchmark.benchmark_model(
+        model, n_gen=n_gen, n_prompt=n_prompt, repetitions=repetitions, quants=quant
+    ))
 
 
 @app.get('/api/gpu-stats')
 async def gpu_stats():
-    stats = estimator.get_gpu_stats()
+    stats = benchmark.get_gpu_stats()
     return JSONResponse(content={"free": stats.free_bytes, "total": stats.total_bytes})
+
+
+@app.get('/api/llama-cpp/servers')
+async def llama_cpp_servers():
+    return JSONResponse(content={"servers": llama_cpp_server.get_llama_server_status()})
+
+
+@app.post('/api/llama-cpp/servers/{port}/stop')
+async def stop_llama_cpp_server(port: str):
+    if not port.isdigit() or not await llama_cpp_server.stop_llama_server(port):
+        return JSONResponse(status_code=404, content={"error": f"llama.cpp server on port {port} not found"})
+    return JSONResponse(content={"status": "stopped", "port": port})
 
 
 @app.post("/api/sync")

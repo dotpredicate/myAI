@@ -20,6 +20,39 @@ class TestAgents(BaseTestCase):
         self.assertEqual(data["internal_name"], "test_agent")
         self.assertEqual(data["display_name"], "Test Agent")
 
+    async def test_inference_config_round_trips_explicit_values_and_empty_config(self):
+        payload = {
+            "display_name": "Config Agent",
+            "internal_name": "config_agent",
+            "description": "Testing inference config",
+            "instructions": "Test instructions",
+            "provider_key": "mock_e2e",
+            "model_id": "dummy_model",
+            "inference_config": {"n_ctx": 512, "temperature": 0},
+            "repository_access": [],
+        }
+        create_res = await self.client.post("/api/agents", json=payload)
+        self.assertEqual(create_res.status_code, 201, create_res.text)
+        self.assertEqual(
+            create_res.json()["inference_config"],
+            {"n_ctx": 512, "temperature": 0},
+        )
+
+        update_res = await self.client.put(
+            "/api/agents/config_agent",
+            json={"inference_config": {}},
+        )
+        self.assertEqual(update_res.status_code, 200, update_res.text)
+        self.assertEqual(update_res.json()["inference_config"], {})
+
+        list_res = await self.client.get("/api/agents")
+        self.assertEqual(list_res.status_code, 200)
+        agent = next(
+            item for item in list_res.json()["agents"]
+            if item["internal_name"] == "config_agent"
+        )
+        self.assertEqual(agent["inference_config"], {})
+
     async def test_create_agent_missing_fields(self):
         payload = {
             "display_name": "",

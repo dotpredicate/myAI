@@ -228,8 +228,18 @@
       overflow-y: auto;
       margin-bottom: 16px;
     }
-    .model-item { padding: 4px 8px; border-bottom: 1px solid #eee; }
+    .model-item { padding: 4px 8px; border-bottom: 1px solid #eee; cursor: pointer; }
+    .model-item:hover { background: #eef4ff; }
+    .model-item.selected { background: #e0edff; font-weight: 600; }
     .model-item:last-child { border-bottom: none; }
+
+    .summary-title { font-weight: 600; margin-bottom: 6px; word-break: break-all; }
+    .summary-meta { margin-top: 6px; opacity: 0.7; font-size: 0.8em; }
+    .summary-block { padding: 6px 0; border-bottom: 1px solid #eee; }
+    .summary-block:last-child { border-bottom: none; }
+    .summary-line { padding: 1px 0; }
+    .summary-line.error { color: #c62828; }
+    .model-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 
     .result-box {
       margin-top: 12px;
@@ -355,6 +365,7 @@
     <div id="inferenceView" class="view">
       <div class="tabs">
         <button class="tab active" data-tab="system">System</button>
+        <button class="tab" data-tab="llamaCpp">Llama.cpp</button>
         <button class="tab" data-tab="models">Models</button>
       </div>
 
@@ -382,28 +393,42 @@
         </div>
       </div>
 
+      <div id="llamaCppTab" class="tab-pane">
+        <div class="card">
+          <div class="msg-header">
+            <h3>Llama.cpp servers</h3>
+            <button id="refreshLlamaServersBtn" class="btn">Refresh</button>
+          </div>
+          <p class="summary-meta">Managed instances. Idle instances are stopped automatically after five minutes.</p>
+          <div id="llamaServersList" class="model-list"></div>
+        </div>
+      </div>
+
       <div id="modelsTab" class="tab-pane">
         <div class="pane-grid">
           <div>
-            <h2 style="margin-top:0">Cached HuggingFace Models</h2>
-            <div id="cachedModelsList" class="model-list"></div>
-            <p><a href="https://huggingface.co/models?search=gguf" target="_blank">Search for GGUF models on HuggingFace</a></p>
-          </div>
-          <div>
-            <h2 style="margin-top:0">Estimation Tool</h2>
+            <h3>Models</h3>
             <div class="field">
-              <label>Select Model (or HF alias)</label>
-              <div class="field-row">
-                <select id="modelsEstimateSelect" style="flex:1"></select>
-                <input type="text" id="modelsEstimateInput" style="flex:1" placeholder="OR paste HF Model Alias...">
+              <label>HuggingFace model or alias</label>
+              <input type="text" id="modelsEstimateInput" placeholder="org/model or org/model:Q4_K_M">
+            </div>
+            <button id="showModelInfoBtn" class="btn btn-primary btn-block">Load model</button>
+            <h4>Cached models</h4>
+            <div id="cachedModelsList" class="model-list"></div>
+            <p><a href="https://huggingface.co/models?search=gguf" target="_blank">Search GGUF models</a></p>
+          </div>
+          <div class="card" id="modelDetail">
+            <div id="modelDetailPlaceholder">
+              Select a cached model or enter a HuggingFace model above
+            </div>
+            <div id="modelDetailContent" hidden="true">
+              <div class="model-detail-header">
+                <h3 id="modelDetailName"></h3>
+                <button id="benchmarkAllBtn" class="btn btn-primary" disabled>Benchmark all</button>
               </div>
+              <div id="modelInfoBox"></div>
+              <div id="modelBenchmarkAllResult" class="summary-block"></div>
             </div>
-            <div class="field" style="margin-top:10px">
-              <label>Hardware Profile (TFLOPS;Bandwidth)</label>
-              <input type="text" id="modelsDeviceMetricInput" placeholder="e.g. 35TFLOPS;900GBps">
-            </div>
-            <button id="estimateBtnModels" class="btn btn-primary btn-block" style="margin-top:10px">Estimate</button>
-            <div id="estimateResultModels" class="result-box"></div>
           </div>
         </div>
       </div>
@@ -429,10 +454,7 @@
               <div class="field"><label>Instructions</label><textarea id="agentInstructions" class="input" rows="4" placeholder="Agent instructions"></textarea></div>
               <div class="field"><label>Provider</label><select id="agentProviderSelect"></select></div>
               <div class="field"><label>Model</label><select id="agentModelSelect"></select></div>
-              <div class="field-row">
-                <div class="field"><label>Context Size (n_ctx)</label><input type="number" id="agentNctx" value="4096" min="512"></div>
-                <div class="field"><label>Temperature</label><input type="number" id="agentTemperature" value="0.7" min="0" max="2" step="0.05"></div>
-              </div>
+              <div id="agentInferenceConfigFields"></div>
               <div class="field"><label>Repository Access</label>
                 <div id="agentRepoAccessList" style="margin-bottom:8px"></div>
                 <div class="field-row">
@@ -509,6 +531,7 @@
     let selectedConversationId = null;
     let currentView = 'chat';
     let gpuStatusInterval = null;
+    let llamaServersInterval = null;
     let activeStreamAbortController = null;
 
     function switchView(name) {
@@ -517,6 +540,7 @@
       if (name === 'chat') {
         document.getElementById('chatView').classList.add('active');
         clearGpuInterval();
+        clearLlamaServersInterval();
       } else if (name === 'inference') {
         document.getElementById('inferenceView').classList.add('active');
         const activeTab = document.querySelector('.tab.active');
@@ -525,9 +549,11 @@
       } else if (name === 'agents') {
         document.getElementById('agentsView').classList.add('active');
         clearGpuInterval();
+        clearLlamaServersInterval();
       } else if (name === 'repositories') {
         document.getElementById('repositoriesView').classList.add('active');
         clearGpuInterval();
+        clearLlamaServersInterval();
       }
     }
 
@@ -538,12 +564,21 @@
       if (gpuStatusInterval) { clearInterval(gpuStatusInterval); gpuStatusInterval = null; }
     }
 
+    function startLlamaServersInterval() {
+      if (!llamaServersInterval) llamaServersInterval = setInterval(updateLlamaServers, 5000);
+    }
+
+    function clearLlamaServersInterval() {
+      if (llamaServersInterval) { clearInterval(llamaServersInterval); llamaServersInterval = null; }
+    }
+
     function switchInferenceTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       document.querySelectorAll('.tab-pane').forEach(t => t.classList.remove('active'));
       document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
       document.getElementById(name + 'Tab').classList.add('active');
       if (name === 'system') { updateGpuStatus(); startGpuInterval(); } else clearGpuInterval();
+      if (name === 'llamaCpp') { updateLlamaServers(); startLlamaServersInterval(); } else clearLlamaServersInterval();
     }
 
     async function updateGpuStatus() {
@@ -561,6 +596,51 @@
           <div class="stat"><span class="label">Used</span><span class="value">${usedGB} GB</span></div>
           <div class="stat"><span class="label">Usage</span><span class="value">${pct}%</span></div>`;
       } catch { grid.innerHTML = '<div class="stat"><span class="label">Error</span><span class="value">—</span></div>'; }
+    }
+
+    async function updateLlamaServers() {
+      const list = document.getElementById('llamaServersList');
+      try {
+        const res = await fetch('/api/llama-cpp/servers');
+        const data = await res.json();
+        list.innerHTML = '';
+        if (!data.servers || data.servers.length === 0) {
+          list.innerHTML = '<div class="summary-line">No running llama.cpp servers.</div>';
+          return;
+        }
+        data.servers.forEach(server => {
+          const item = document.createElement('div');
+          item.className = 'model-item';
+          const title = document.createElement('div');
+          title.className = 'summary-title';
+          title.textContent = server.model;
+          const details = document.createElement('div');
+          details.className = 'summary-line';
+          details.textContent = `Port ${server.port} · PID ${server.pid} · ${server.status} · ${server.active_requests} active · idle ${server.idle_seconds}s`;
+          const kill = document.createElement('button');
+          kill.className = 'btn btn-reject';
+          kill.textContent = 'Kill';
+          kill.disabled = server.status !== 'running';
+          kill.onclick = () => stopLlamaServer(server.port, kill);
+          item.append(title, details, kill);
+          list.appendChild(item);
+        });
+      } catch (e) {
+        list.innerHTML = '<div class="summary-line error">Failed to load llama.cpp servers.</div>';
+      }
+    }
+
+    async function stopLlamaServer(port, button) {
+      if (!confirm(`Stop llama.cpp server on port ${port}?`)) return;
+      button.disabled = true;
+      try {
+        const res = await fetch(`/api/llama-cpp/servers/${encodeURIComponent(port)}/stop`, { method: 'POST' });
+        if (!res.ok) throw new Error('Failed to stop server');
+        await updateLlamaServers();
+      } catch (e) {
+        showErrorNotification(e.message);
+        button.disabled = false;
+      }
     }
 
     async function loadAgents() {
@@ -585,6 +665,7 @@
 
     function populateAgentFormSelects() {
       const pSelect = document.getElementById('agentProviderSelect');
+      const selectedProvider = pSelect.value;
       pSelect.innerHTML = '<option value="">Select provider...</option>';
       const providers = document.getElementById('providerSelect').options;
       for (const opt of providers) {
@@ -593,7 +674,79 @@
         n.textContent = opt.textContent;
         pSelect.appendChild(n);
       }
-      pSelect.onchange = () => loadModelsForAgentForm(pSelect.value);
+      pSelect.value = selectedProvider;
+      pSelect.onchange = () => {
+        loadModelsForAgentForm(pSelect.value);
+        loadAgentInferenceSettings(pSelect.value);
+      };
+    }
+
+    function renderInferenceConfigFields(container, params, config, onChange) {
+      container.innerHTML = '';
+      params.forEach(param => {
+        const row = document.createElement('div');
+        row.className = 'field';
+        const label = document.createElement('label');
+        label.textContent = param.description || param.name;
+        const input = param.type === 'bool'
+          ? document.createElement('select')
+          : document.createElement('input');
+        input.className = 'input';
+        input.dataset.name = param.name;
+        input.dataset.type = param.type;
+
+        if (param.type === 'bool') {
+          input.innerHTML = '<option value="">Use default</option><option value="true">true</option><option value="false">false</option>';
+          input.value = config[param.name] === undefined || config[param.name] === null
+            ? ''
+            : String(config[param.name]);
+          input.addEventListener('change', onChange);
+        } else {
+          input.type = param.type === 'str' ? 'text' : 'number';
+          if (param.type === 'int' || param.type === 'float') {
+            input.step = param.step ?? (param.type === 'int' ? 1 : 0.01);
+            if (param.min !== undefined && param.min !== null) input.min = param.min;
+            if (param.max !== undefined && param.max !== null) input.max = param.max;
+          }
+          input.value = config[param.name] ?? '';
+          input.addEventListener('input', onChange);
+        }
+
+        row.appendChild(label);
+        row.appendChild(input);
+        container.appendChild(row);
+      });
+    }
+
+    function readInferenceConfig(container) {
+      const config = {};
+      container.querySelectorAll('input, select').forEach(input => {
+        if (input.dataset.type === 'bool') {
+          if (input.value !== '') config[input.dataset.name] = input.value === 'true';
+        } else if (input.value.trim() !== '') {
+          const value = input.dataset.type === 'int'
+            ? Number.parseInt(input.value, 10)
+            : input.dataset.type === 'float'
+              ? Number.parseFloat(input.value)
+              : input.value;
+          if (typeof value === 'string' || Number.isFinite(value)) {
+            config[input.dataset.name] = value;
+          }
+        }
+      });
+      return config;
+    }
+
+    async function loadAgentInferenceSettings(providerKey, config = {}) {
+      const fields = document.getElementById('agentInferenceConfigFields');
+      if (!providerKey) {
+        renderInferenceConfigFields(fields, [], {}, () => {});
+        return;
+      }
+      const res = await fetch(`/api/providers/${encodeURIComponent(providerKey)}/inference-params`);
+      if (!res.ok) throw new Error(`Failed to load inference parameters for ${providerKey}`);
+      const params = await res.json();
+      renderInferenceConfigFields(fields, params, config, () => {});
     }
 
     async function loadModelsForAgentForm(providerKey) {
@@ -635,8 +788,7 @@
       document.getElementById('agentInternalName').value = '';
       document.getElementById('agentDescription').value = '';
       document.getElementById('agentInstructions').value = '';
-      document.getElementById('agentNctx').value = '4096';
-      document.getElementById('agentTemperature').value = '0.7';
+      renderInferenceConfigFields(document.getElementById('agentInferenceConfigFields'), [], {}, () => {});
       document.getElementById('agentDeleteBtn').style.display = 'none';
       document.getElementById('agentProviderSelect').value = '';
       document.getElementById('agentModelSelect').innerHTML = '<option value="">Select model...</option>';
@@ -661,10 +813,8 @@
       loadModelsForAgentForm(agent.provider_key).then(() => {
         document.getElementById('agentModelSelect').value = agent.model_id || '';
       });
-      // Set inference config
-      const ic = agent.inference_config || {};
-      document.getElementById('agentNctx').value = ic.n_ctx || 4096;
-      document.getElementById('agentTemperature').value = ic.temperature || 0.7;
+      // Render provider-specific inference config using the same fields as chat.
+      loadAgentInferenceSettings(agent.provider_key, agent.inference_config || {});
       renderAgentRepoAccess(agent.repository_access || []);
     }
 
@@ -694,8 +844,7 @@
       const instructions = document.getElementById('agentInstructions').value.trim();
       const providerKey = document.getElementById('agentProviderSelect').value;
       const modelId = document.getElementById('agentModelSelect').value;
-      const nctx = parseInt(document.getElementById('agentNctx').value) || 4096;
-      const temp = parseFloat(document.getElementById('agentTemperature').value) || 0.7;
+      const inferenceConfig = readInferenceConfig(document.getElementById('agentInferenceConfigFields'));
 
       if (!displayName || !internalName || !providerKey || !modelId) {
         alert('Name, key, provider and model are required');
@@ -721,7 +870,7 @@
         instructions,
         provider_key: providerKey,
         model_id: modelId,
-        inference_config: { n_ctx: nctx, temperature: temp },
+        inference_config: inferenceConfig,
         repository_access: repoAccess
       };
 
@@ -741,10 +890,9 @@
         return;
       }
 
-      if (isNew && internalName !== editingAgentInternalName) {
-        editingAgentInternalName = internalName;
-      }
-      loadAgents();
+      const savedAgent = await res.json();
+      await loadAgents();
+      selectAgent(savedAgent.internal_name);
     }
 
     async function deleteAgent() {
@@ -854,57 +1002,24 @@
       if (saved) chatSelect.value = saved;
       chatSelect.addEventListener('change', () => localStorage.setItem('selectedModel', chatSelect.value));
 
-      const estSelect = document.getElementById('modelsEstimateSelect');
-      estSelect.innerHTML = '<option value="" disabled selected>Select from cache...</option>';
-      data.models.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m.id; opt.textContent = m.name; estSelect.appendChild(opt);
-      });
-      const savedMetrics = localStorage.getItem('deviceMetrics');
-      if (savedMetrics) document.getElementById('modelsDeviceMetricInput').value = savedMetrics;
       await loadModelSettings(providerKey);
     }
 
     async function loadModelSettings(providerKey) {
       const container = document.getElementById('modelSettingsContainer');
       const fields = document.getElementById('modelSettingsFields');
-      const hasAgent = document.getElementById('agentSelect').value;
-
-      if (hasAgent) { container.classList.remove('visible'); return; }
-
       const res = await fetch(`/api/providers/${encodeURIComponent(providerKey)}/inference-params`);
       const params = await res.json();
-      if (params.length === 0) { container.classList.remove('visible'); return; }
-
-      fields.innerHTML = '';
       const modelId = document.getElementById('modelSelect').value;
       const saved = JSON.parse(localStorage.getItem(`cfg:${providerKey}:${modelId}`) || '{}');
-
-      params.forEach(p => {
-        const row = document.createElement('div'); row.className = 'field-row';
-        row.innerHTML = `<label>${p.description || p.name}</label>`;
-        const inp = document.createElement('input');
-        inp.type = 'number'; inp.className = 'input';
-        inp.step = p.step || (p.type === 'int' ? 1 : 0.01);
-        if (p.min !== undefined) inp.min = p.min;
-        if (p.max !== undefined) inp.max = p.max;
-        inp.value = saved[p.name] ?? '';
-        inp.onchange = () => {
-          const cfg = {};
-          fields.querySelectorAll('input').forEach(el => { if (el.value) cfg[el.dataset.name] = el.dataset.type === 'int' ? parseInt(el.value) : parseFloat(el.value); });
-          localStorage.setItem(`cfg:${providerKey}:${modelId}`, JSON.stringify(cfg));
-        };
-        inp.dataset.name = p.name; inp.dataset.type = p.type;
-        row.appendChild(inp); fields.appendChild(row);
+      renderInferenceConfigFields(fields, params, saved, () => {
+        localStorage.setItem(`cfg:${providerKey}:${modelId}`, JSON.stringify(readInferenceConfig(fields)));
       });
-
-      container.classList.add('visible');
+      container.classList.toggle('visible', params.length > 0 && !document.getElementById('agentSelect').value);
     }
 
     function getModelSettings() {
-      const p = document.getElementById('providerSelect').value;
-      const m = document.getElementById('modelSelect').value;
-      return JSON.parse(localStorage.getItem(`cfg:${p}:${m}`) || '{}');
+      return readInferenceConfig(document.getElementById('modelSettingsFields'));
     }
 
     document.getElementById('modelSettingsToggle').addEventListener('click', () => {
@@ -923,7 +1038,14 @@
         div.innerHTML = '';
         data.models.forEach(m => {
           const el = document.createElement('div');
-          el.className = 'model-item'; el.textContent = m; div.appendChild(el);
+          el.className = 'model-item'; el.textContent = m;
+          el.addEventListener('click', () => {
+            document.getElementById('modelsEstimateInput').value = m;
+            Array.from(div.children).forEach(c => c.classList.remove('selected'));
+            el.classList.add('selected');
+            loadModelInfo(m);
+          });
+          div.appendChild(el);
         });
       } catch (e) { console.error("Failed to load cached models", e); }
     }
@@ -1690,6 +1812,7 @@
     });
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchInferenceTab(t.dataset.tab)));
+    document.getElementById('refreshLlamaServersBtn').addEventListener('click', updateLlamaServers);
     document.getElementById('inferenceBtnSide').addEventListener('click', () => switchView('inference'));
     document.getElementById('agentsBtnSide').addEventListener('click', () => switchView('agents'));
     document.getElementById('reposBtnSide').addEventListener('click', () => switchView('repositories'));
@@ -1718,38 +1841,117 @@
         });
       }, 500);
     });
-    document.getElementById('estimateBtnModels').addEventListener('click', async () => {
-      const select = document.getElementById('modelsEstimateSelect');
-      const input = document.getElementById('modelsEstimateInput');
-      const dm = document.getElementById('modelsDeviceMetricInput').value;
-      const mid = input.value || select.value;
-      if (!mid) return;
-      localStorage.setItem('deviceMetrics', dm);
-      let url = `/api/estimate?model_id=${encodeURIComponent(mid)}`;
-      if (dm) url += `&device_metric=${encodeURIComponent(dm)}`;
-      const res = await fetch(url);
-      const data = await res.json();
-      const box = document.getElementById('estimateResultModels');
-      box.style.display = 'block';
-      if (data.error) {
-        box.textContent = 'Error: ' + data.error;
-        box.className = 'result-box error';
-      } else {
-        const v = (data.vram / (1024**3)).toFixed(2);
-        const r = (data.ram / (1024**3)).toFixed(2);
-        const t = data.tps ? data.tps.toFixed(2) : 'N/A';
-        box.textContent = 'Weights Size: ' + v + ' GB\nKV Cache Size: ' + r + ' GB\nTotal: ' + (parseFloat(v) + parseFloat(r)).toFixed(2) + ' GB\nTPS Estimate: ' + t;
-        box.className = 'result-box';
-      }
-    });
+    function renderModelInfo(mid, data) {
+      const gb = b => b ? (b / (1024 ** 3)).toFixed(2) + ' GB' : 'N/A';
+      const quants = data.quants || [];
+      const architecture = quants.find(q => q.architecture)?.architecture;
+      const rows = quants.map(q => {
+        const meta = [
+          q.parameters && (q.parameters / 1e9).toFixed(2) + 'B params',
+          q.context_length + ' ctx'
+        ].filter(Boolean).join(' · ');
+        const error = q.error ? `<div class="summary-line error">${q.error}</div>` : '';
+        const button = q.error ? '' : `<button class="btn btn-primary model-benchmark" data-quant="${q.quant}">Benchmark</button>`;
+        return `<div class="model-item">
+          <div><span class="badge badge-plain">${q.quant || ''}</span> ${button}</div>
+          <div class="summary-line">${q.filename || ''}</div>
+          <div class="summary-line">${gb(q.size_bytes)}${meta ? ' · ' + meta : ''}</div>
+          ${error}
+          <div class="summary-line model-benchmark-result"></div>
+        </div>`;
+      }).join('');
+      const architectureLine = architecture ? `<div class="summary-meta">Architecture: ${architecture}</div>` : '';
+      return `${architectureLine}
+        <div class="model-list">${rows || '<div class="summary-line">No quants found</div>'}</div>`;
+    }
 
-    document.getElementById('modelsEstimateSelect').addEventListener('change', e => { 
-      document.getElementById('modelsEstimateInput').value = ''; 
-    });
-    document.getElementById('modelsEstimateInput').addEventListener('input', e => { 
-      if (e.target.value) {
-        document.getElementById('modelsEstimateSelect').value = ''; 
+    async function loadModelInfo(mid) {
+      mid = mid.trim();
+      if (!mid) return;
+      const detailPlaceholder = document.getElementById('modelDetailPlaceholder');
+      const detailContent = document.getElementById('modelDetailContent');
+      const infoBox = document.getElementById('modelInfoBox');
+      const allBenchmarkButton = document.getElementById('benchmarkAllBtn');
+      const allBenchmarkResult = document.getElementById('modelBenchmarkAllResult');
+      const loadButton = document.getElementById('showModelInfoBtn');
+      loadButton.disabled = true;
+      allBenchmarkButton.disabled = true;
+      allBenchmarkResult.innerHTML = '';
+      detailPlaceholder.hidden = true;
+      detailContent.hidden = false;
+      document.getElementById('modelDetailName').textContent = mid;
+      infoBox.textContent = 'Loading model info...';
+      try {
+        const res = await fetch(`/models/${encodeURI(mid)}/info`);
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || `Request failed (${res.status})`);
+        infoBox.innerHTML = renderModelInfo(mid, data);
+        infoBox.querySelectorAll('.model-benchmark').forEach(button => {
+          button.addEventListener('click', () => runModelBenchmark(mid, button.dataset.quant, button));
+        });
+        allBenchmarkButton.disabled = !(data.quants || []).some(q => !q.error);
+      } catch (e) {
+        infoBox.innerHTML = `<div class="summary-line error">${e.message}</div>`;
+      } finally {
+        loadButton.disabled = false;
       }
+    }
+
+    async function runModelBenchmark(mid, quant, button) {
+      const row = button.closest('.model-item');
+      const result = row.querySelector('.model-benchmark-result');
+      button.disabled = true;
+      button.textContent = 'Running...';
+      result.textContent = 'Running...';
+      const params = new URLSearchParams();
+      params.set('quant', quant);
+      try {
+        const res = await fetch(`/models/${encodeURI(mid)}/benchmark?${params}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Benchmark failed');
+        result.innerHTML = renderModelSummary(data);
+      } catch (e) {
+        result.innerHTML = `<span class="summary-line error">${e.message}</span>`;
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Benchmark';
+      }
+    }
+
+    async function runAllModelBenchmarks(mid, button) {
+      const result = document.getElementById('modelBenchmarkAllResult');
+      button.disabled = true;
+      button.textContent = 'Running...';
+      result.innerHTML = '<div class="summary-line">Benchmarking all quants...</div>';
+      try {
+        const res = await fetch(`/models/${encodeURI(mid)}/benchmark`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Benchmark failed');
+        result.innerHTML = renderModelSummary(data, true);
+      } catch (e) {
+        result.innerHTML = `<div class="summary-line error">${e.message}</div>`;
+      } finally {
+        button.disabled = false;
+        button.textContent = 'Benchmark all';
+      }
+    }
+
+    function renderModelSummary(results, includeQuant = false) {
+      const gb = b => b ? (b / (1024 ** 3)).toFixed(2) : 'N/A';
+      if (!results.length) return '<div class="summary-line error">Benchmark failed</div>';
+      return results.map(r => {
+        const label = includeQuant && r.quant ? `<strong>${r.quant}</strong> · ` : '';
+        if (r.error) return `<div class="summary-line error">${label}${r.error}</div>`;
+        return `<div class="summary-line">${label}<strong>${r.tps ? r.tps.toFixed(1) : 'N/A'} tok/s</strong> · prefill ${r.pp_tps ? r.pp_tps.toFixed(0) : 'N/A'} tok/s · ${gb(r.size_bytes)} GB</div>`;
+      }).join('');
+    }
+
+    document.getElementById('showModelInfoBtn').addEventListener('click', () => loadModelInfo(document.getElementById('modelsEstimateInput').value));
+    document.getElementById('modelsEstimateInput').addEventListener('keydown', e => {
+      if (e.key === 'Enter') loadModelInfo(e.target.value);
+    });
+    document.getElementById('benchmarkAllBtn').addEventListener('click', () => {
+      runAllModelBenchmarks(document.getElementById('modelDetailName').textContent, document.getElementById('benchmarkAllBtn'));
     });
 
     document.getElementById('runBenchmarkBtn').addEventListener('click', async () => {
