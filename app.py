@@ -11,7 +11,7 @@ from repositories import router as repositories_router
 from agents import router as agents_router
 from log_config import get_logger, setup_logging
 from search import synchronize, semantic_search, clear_index
-from inference import registry, benchmark, llama_cpp_server
+from inference import managed_processes, registry, benchmark
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.hf_gguf import list_cached_models
 
@@ -23,7 +23,7 @@ async def lifespan(app: FastAPI):
     await init_database()
     asyncio.create_task(synchronize())
     yield
-    await llama_cpp_server.stop_llama_servers()
+    await managed_processes.stop_servers()
 
 app = FastAPI(title="MyAI FastAPI", lifespan=lifespan)
 
@@ -125,15 +125,15 @@ async def gpu_stats():
     return JSONResponse(content={"free": stats.free_bytes, "total": stats.total_bytes})
 
 
-@app.get('/api/llama-cpp/servers')
-async def llama_cpp_servers():
-    return JSONResponse(content={"servers": llama_cpp_server.get_llama_server_status()})
+@app.get('/api/managed-processes/list')
+async def managed_processes_list():
+    return JSONResponse(content={"servers": managed_processes.get_server_status()})
 
 
-@app.post('/api/llama-cpp/servers/{port}/stop')
-async def stop_llama_cpp_server(port: str):
-    if not port.isdigit() or not await llama_cpp_server.stop_llama_server(port):
-        return JSONResponse(status_code=404, content={"error": f"llama.cpp server on port {port} not found"})
+@app.post('/api/managed-processes/{port}/stop')
+async def stop_managed_process_endpoint(port: str):
+    if not port.isdigit() or not await managed_processes.stop_server(port):
+        return JSONResponse(status_code=404, content={"error": f"process on port {port} not found"})
     return JSONResponse(content={"status": "stopped", "port": port})
 
 

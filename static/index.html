@@ -368,7 +368,7 @@
     <div id="inferenceView" class="view">
       <div class="tabs">
         <button class="tab active" data-tab="system">System</button>
-        <button class="tab" data-tab="llamaCpp">Llama.cpp</button>
+        <button class="tab" data-tab="managedProcesses">Managed processes</button>
         <button class="tab" data-tab="models">Models</button>
       </div>
 
@@ -396,14 +396,14 @@
         </div>
       </div>
 
-      <div id="llamaCppTab" class="tab-pane">
+      <div id="managedProcessesTab" class="tab-pane">
         <div class="card">
           <div class="msg-header">
-            <h3>Llama.cpp servers</h3>
-            <button id="refreshLlamaServersBtn" class="btn">Refresh</button>
+            <h3>Managed processes</h3>
+            <button id="refreshManagedProcessesBtn" class="btn">Refresh</button>
           </div>
           <p class="summary-meta">Managed instances. Idle instances are stopped automatically after five minutes.</p>
-          <div id="llamaServersList" class="model-list"></div>
+          <div id="managedProcessesList" class="model-list"></div>
         </div>
       </div>
 
@@ -538,7 +538,7 @@
     let selectedConversationId = null;
     let currentView = 'chat';
     let gpuStatusInterval = null;
-    let llamaServersInterval = null;
+    let managedProcessesInterval = null;
     let activeStreamAbortController = null;
 
     function escapeHTML(value) {
@@ -552,7 +552,7 @@
       if (name === 'chat') {
         document.getElementById('chatView').classList.add('active');
         clearGpuInterval();
-        clearLlamaServersInterval();
+        clearManagedProcessesInterval();
       } else if (name === 'inference') {
         document.getElementById('inferenceView').classList.add('active');
         const activeTab = document.querySelector('.tab.active');
@@ -561,11 +561,11 @@
       } else if (name === 'agents') {
         document.getElementById('agentsView').classList.add('active');
         clearGpuInterval();
-        clearLlamaServersInterval();
+        clearManagedProcessesInterval();
       } else if (name === 'repositories') {
         document.getElementById('repositoriesView').classList.add('active');
         clearGpuInterval();
-        clearLlamaServersInterval();
+        clearManagedProcessesInterval();
       }
     }
 
@@ -576,12 +576,12 @@
       if (gpuStatusInterval) { clearInterval(gpuStatusInterval); gpuStatusInterval = null; }
     }
 
-    function startLlamaServersInterval() {
-      if (!llamaServersInterval) llamaServersInterval = setInterval(updateLlamaServers, 5000);
+    function startManagedProcessesInterval() {
+      if (!managedProcessesInterval) managedProcessesInterval = setInterval(updateManagedProcesses, 5000);
     }
 
-    function clearLlamaServersInterval() {
-      if (llamaServersInterval) { clearInterval(llamaServersInterval); llamaServersInterval = null; }
+    function clearManagedProcessesInterval() {
+      if (managedProcessesInterval) { clearInterval(managedProcessesInterval); managedProcessesInterval = null; }
     }
 
     function switchInferenceTab(name) {
@@ -590,7 +590,7 @@
       document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
       document.getElementById(name + 'Tab').classList.add('active');
       if (name === 'system') { updateGpuStatus(); startGpuInterval(); } else clearGpuInterval();
-      if (name === 'llamaCpp') { updateLlamaServers(); startLlamaServersInterval(); } else clearLlamaServersInterval();
+      if (name === 'managedProcesses') { updateManagedProcesses(); startManagedProcessesInterval(); } else clearManagedProcessesInterval();
     }
 
     async function updateGpuStatus() {
@@ -610,14 +610,14 @@
       } catch { grid.innerHTML = '<div class="stat"><span class="label">Error</span><span class="value">—</span></div>'; }
     }
 
-    async function updateLlamaServers() {
-      const list = document.getElementById('llamaServersList');
+    async function updateManagedProcesses() {
+      const list = document.getElementById('managedProcessesList');
       try {
-        const res = await fetch('/api/llama-cpp/servers');
+        const res = await fetch('/api/managed-processes/list');
         const data = await res.json();
         list.innerHTML = '';
         if (!data.servers || data.servers.length === 0) {
-          list.innerHTML = '<div class="summary-line">No running llama.cpp servers.</div>';
+          list.innerHTML = '<div class="summary-line">No running processes.</div>';
           return;
         }
         data.servers.forEach(server => {
@@ -628,27 +628,27 @@
           title.textContent = server.model;
           const details = document.createElement('div');
           details.className = 'summary-line';
-          details.textContent = `Port ${server.port} · PID ${server.pid} · ${server.status} · ${server.active_requests} active · idle ${server.idle_seconds}s`;
+          details.textContent = `${server.tag} · Port ${server.port} · PID ${server.pid} · ${server.status} · ${server.active_requests} active · idle ${server.idle_seconds}s`;
           const kill = document.createElement('button');
           kill.className = 'btn btn-reject';
           kill.textContent = 'Kill';
           kill.disabled = server.status !== 'running';
-          kill.onclick = () => stopLlamaServer(server.port, kill);
+          kill.onclick = () => stopManagedProcess(server.port, kill);
           item.append(title, details, kill);
           list.appendChild(item);
         });
       } catch (e) {
-        list.innerHTML = '<div class="summary-line error">Failed to load llama.cpp servers.</div>';
+        list.innerHTML = '<div class="summary-line error">Failed to load managed processes.</div>';
       }
     }
 
-    async function stopLlamaServer(port, button) {
-      if (!confirm(`Stop llama.cpp server on port ${port}?`)) return;
+    async function stopManagedProcess(port, button) {
+      if (!confirm(`Stop process on port ${port}?`)) return;
       button.disabled = true;
       try {
-        const res = await fetch(`/api/llama-cpp/servers/${encodeURIComponent(port)}/stop`, { method: 'POST' });
+        const res = await fetch(`/api/managed-processes/${encodeURIComponent(port)}/stop`, { method: 'POST' });
         if (!res.ok) throw new Error('Failed to stop server');
-        await updateLlamaServers();
+        await updateManagedProcesses();
       } catch (e) {
         showErrorNotification(e.message);
         button.disabled = false;
@@ -1861,7 +1861,7 @@
     });
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchInferenceTab(t.dataset.tab)));
-    document.getElementById('refreshLlamaServersBtn').addEventListener('click', updateLlamaServers);
+    document.getElementById('refreshManagedProcessesBtn').addEventListener('click', updateManagedProcesses);
     document.getElementById('inferenceBtnSide').addEventListener('click', () => switchView('inference'));
     document.getElementById('agentsBtnSide').addEventListener('click', () => switchView('agents'));
     document.getElementById('reposBtnSide').addEventListener('click', () => switchView('repositories'));
