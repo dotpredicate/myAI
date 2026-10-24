@@ -105,7 +105,10 @@ class TestHybridFlow(BaseTestCase):
         result = json.loads(tool_calls[-1]["element"]["result"])
         self.assertEqual(result["type"], "replace_proposal")
         self.assertEqual(result["status"], "pending")
-        self.assertTrue(tool_calls[-1]["element"]["is_blocking"])
+
+        approval_requests = [m for m in conv["messages"] if m["element"]["type"] == "approval_request"]
+        self.assertEqual(len(approval_requests), 1)
+        self.assertEqual(approval_requests[0]["element"]["original_message_id"], tool_calls[-1]["id"])
 
 
 if __name__ == "__main__":

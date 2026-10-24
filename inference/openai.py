@@ -21,7 +21,8 @@ from inference import (
 from domain import (
     Message,
     Thinking,
-    ToolCallFinishedOrBlocked,
+    ToolCall,
+    ApprovalRequest,
     ToolCallResult,
     ToolCallDecision,
 )
@@ -59,6 +60,12 @@ def _to_oai_messages(context: ChatContext) -> list[ChatCompletionMessageParam]:
 
     pending_thinking: Optional[str] = None
 
+    blocked_ids = {
+        element.original_message_id
+        for _, element in context.messages
+        if isinstance(element, ApprovalRequest)
+    }
+
     for message_id, element in context.messages:
         match element:
             case Thinking():
@@ -72,7 +79,7 @@ def _to_oai_messages(context: ChatContext) -> list[ChatCompletionMessageParam]:
                     logger.debug("Added thinking: %s", msg)
                 result.append(cast(ChatCompletionMessageParam, msg))
 
-            case ToolCallFinishedOrBlocked():
+            case ToolCall():
                 tc: dict[str, object] = {
                     'role': 'assistant',
                     'tool_calls': [{
@@ -89,12 +96,15 @@ def _to_oai_messages(context: ChatContext) -> list[ChatCompletionMessageParam]:
                     tc['content'] = ''
                     pending_thinking = None
                 result.append(cast(ChatCompletionMessageParam, tc))
-                if element.status == 'completed':
+                if message_id not in blocked_ids:
                     result.append({
                         'role': 'tool',
                         'tool_call_id': str(message_id),
                         'content': str(element.result)
                     })
+
+            case ApprovalRequest():
+                pass
 
             case ToolCallResult():
                 pending_thinking = None  # drop trailing thinking, defensive

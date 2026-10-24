@@ -170,6 +170,9 @@
     .btn-block { width: 100%; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
 
+    .decision-note { margin-top: 8px; font-size: 13px; }
+    .tool-section { margin-top: 1em; }
+
     input, select, textarea {
       font-size: 13px;
       padding: 5px 8px;
@@ -1370,6 +1373,36 @@
       document.querySelectorAll('details[data-message-id]').forEach(e => e.classList.remove('blocked'));
     }
 
+    function renderToolCallDecision(msgId, decision, comment) {
+      const target = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
+      if (!target) return;
+      const ap = target.querySelector('.action-panel');
+      if (ap) ap.remove();
+      const det = target.querySelector('details[data-mode="function_call"]');
+      if (det && !det.querySelector('.decision-note')) {
+        const note = document.createElement('div');
+        note.className = 'decision-note';
+        note.textContent = decision === 'approve'
+          ? '✓ Approved'
+          : '✗ Rejected' + (comment ? ': ' + comment : '');
+        det.appendChild(note);
+      }
+      if (blockingMessageId === msgId) clearBlock();
+    }
+
+    function renderToolCallOutput(msgId, result) {
+      const target = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
+      const det = target ? target.querySelector('details[data-mode="function_call"]') : null;
+      if (!det || det.querySelector('.tool-execution-output')) return;
+      const out = document.createElement('div');
+      out.className = 'tool-section tool-execution-output';
+      out.innerHTML = '<strong>Output:</strong>';
+      const pre = document.createElement('pre');
+      pre.textContent = result;
+      out.appendChild(pre);
+      det.appendChild(out);
+    }
+
     function showErrorNotification(message) {
       let stack = document.getElementById('notificationStack');
       if (!stack) {
@@ -1490,7 +1523,9 @@
           this.state.full = { content: '' };
           makeCopy(this.state.full);
         } else if (type === 'tool_call') {
-          this.state.blocking = false;
+          // content rendered in write()
+        } else if (type === 'approval_request' || type === 'tool_call_decision' || type === 'tool_call_result') {
+          wrapper.hidden = true;
         } else {
           const div = document.createElement('div');
           div.textContent = 'Unknown: ' + type;
@@ -1513,24 +1548,22 @@
           pre.textContent = 'Input:\n' + txt;
           body.appendChild(pre);
           const out = document.createElement('div');
-          out.style.marginTop = '1em';
-          out.innerHTML = '<strong>Output:</strong>';
+          out.className = 'tool-section';
+          let rd = null;
           if (chunk.result) {
-            const rd = JSON.parse(chunk.result);
-            if (rd.type === 'replace_proposal' || rd.type === 'diff_proposal') {
-              const d = document.createElement('div');
-              d.className = 'diff-view';
-              d.innerHTML = `<strong>Diff (${escapeHTML(rd.target)})</strong><br>`;
-              d.append(rd.diff);
-              out.appendChild(d);
-            } else {
-              const p = document.createElement('pre');
-              p.textContent = chunk.result;
-              out.appendChild(p);
-            }
-          } else if (chunk.status === 'pending') {
-            const p = document.createElement('div');
-            p.textContent = ' (Pending...)'; p.style.fontStyle = 'italic';
+            try { rd = JSON.parse(chunk.result); } catch { /* non-JSON result */ }
+          }
+          if (rd && (rd.type === 'replace_proposal' || rd.type === 'diff_proposal')) {
+            out.innerHTML = '<strong>Preview:</strong>';
+            const d = document.createElement('div');
+            d.className = 'diff-view';
+            d.innerHTML = `<strong>Diff (${escapeHTML(rd.target)})</strong><br>`;
+            d.append(rd.diff);
+            out.appendChild(d);
+          } else if (chunk.result) {
+            out.innerHTML = '<strong>Output:</strong>';
+            const p = document.createElement('pre');
+            p.textContent = chunk.result;
             out.appendChild(p);
           } else {
             const p = document.createElement('div');
@@ -1539,31 +1572,35 @@
           }
           body.appendChild(out);
           det.appendChild(body);
-          if (chunk.is_blocking) {
-            this.state.blocking = true;
-          }
           this.wrapper.appendChild(det);
+        } else if (this.state.type === 'approval_request') {
+          const msgId = chunk.original_message_id;
+          const target = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
+          const c = target ? target.querySelector('details[data-mode="function_call"]') : null;
+          if (c && !c.querySelector('.action-panel')) {
+            const p = document.createElement('div');
+            p.className = 'action-panel';
+            const a = document.createElement('button');
+            a.className = 'btn btn-approve'; a.textContent = 'Approve';
+            a.addEventListener('click', () => handleDecision(msgId, 'approve'));
+            const r = document.createElement('button');
+            r.className = 'btn btn-reject'; r.textContent = 'Reject';
+            r.addEventListener('click', () => handleDecision(msgId, 'reject'));
+            p.appendChild(a);
+            p.appendChild(r);
+            c.appendChild(p);
+          }
+          blockingMessageId = msgId;
+        } else if (this.state.type === 'tool_call_decision') {
+          renderToolCallDecision(chunk.original_message_id, chunk.decision, chunk.comment);
+        } else if (this.state.type === 'tool_call_result') {
+          renderToolCallOutput(chunk.original_message_id, chunk.result);
         }
       }
 
       finalize(id, sequenceId) {
         this.wrapper.dataset.messageId = id;
         this.wrapper.dataset.sequenceId = sequenceId;
-        if (this.state.type === 'tool_call' && this.state.blocking) {
-          const c = this.wrapper.querySelector('details[data-mode="function_call"]');
-          const p = document.createElement('div');
-          p.className = 'action-panel';
-          const a = document.createElement('button');
-          a.className = 'btn btn-approve'; a.textContent = 'Approve';
-          a.addEventListener('click', () => handleDecision(id, 'approve'));
-          const r = document.createElement('button');
-          r.className = 'btn btn-reject'; r.textContent = 'Reject';
-          r.addEventListener('click', () => handleDecision(id, 'reject'));
-          p.appendChild(a); 
-          p.appendChild(r);
-          c.appendChild(p);
-          blockingMessageId = id;
-        }
         if (this.state.type === 'message') smd.parser_end(this.state.parser);
         this.state = { type: null };
       }
@@ -1751,6 +1788,7 @@
         body: JSON.stringify({ decision, comment: comment || '' })
       });
       if (res.ok) {
+        const d = await res.json();
         const w = document.querySelector(`.message-wrapper[data-message-id='${msgId}']`);
         if (w) { 
           const a = w.querySelector('.action-panel');
@@ -1759,6 +1797,8 @@
           if (r) r.remove(); 
         }
         clearBlock();
+        renderToolCallDecision(msgId, decision, comment);
+        if (d.result) renderToolCallOutput(msgId, d.result);
         await resumeConversation(selectedConversationId);
       }
     }

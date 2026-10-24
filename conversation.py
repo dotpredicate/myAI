@@ -9,7 +9,8 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from domain import (
     Message,
     Thinking,
-    ToolCallFinishedOrBlocked,
+    ToolCall,
+    ApprovalRequest,
     ToolCallResult,
     ToolCallDecision,
     ConversationElement,
@@ -74,8 +75,21 @@ class ToolCallEvent(BaseModel):
     name: str
     parameters: str
     result: str
-    is_blocking: bool
-    status: Literal['pending'] | Literal['completed']
+
+class ApprovalRequestEvent(BaseModel):
+    type: Literal['approval_request'] = 'approval_request'
+    original_message_id: int
+
+class ToolCallDecisionEvent(BaseModel):
+    type: Literal['tool_call_decision'] = 'tool_call_decision'
+    original_message_id: int
+    decision: Literal['approve', 'reject']
+    comment: Optional[str] = None
+
+class ToolCallResultEvent(BaseModel):
+    type: Literal['tool_call_result'] = 'tool_call_result'
+    original_message_id: int
+    result: str
 
 class ElementFinalized(BaseModel):
     type: Literal['finalized'] = 'finalized'
@@ -86,7 +100,7 @@ class GenerationErrorEvent(BaseModel):
     type: Literal['generation_error'] = 'generation_error'
     message: str
 
-StreamEvent = Union[MessageChunk, ThinkingChunk, ElementFinalized, ToolCallEvent, GenerationErrorEvent]
+StreamEvent = Union[MessageChunk, ThinkingChunk, ElementFinalized, ToolCallEvent, ApprovalRequestEvent, ToolCallDecisionEvent, ToolCallResultEvent, GenerationErrorEvent]
 
 class StoredMessageRecord(BaseModel):
     id: int
@@ -147,8 +161,16 @@ class ActiveGeneration:
             elif isinstance(event, ToolCallEvent):
                 self.buffered_element = None
                 self.pending_events.append(event)
-                if event.is_blocking:
-                    self.status = 'blocked'
+            elif isinstance(event, ApprovalRequestEvent):
+                self.buffered_element = None
+                self.pending_events.append(event)
+                self.status = 'blocked'
+            elif isinstance(event, ToolCallDecisionEvent):
+                self.buffered_element = None
+                self.pending_events.append(event)
+            elif isinstance(event, ToolCallResultEvent):
+                self.buffered_element = None
+                self.pending_events.append(event)
             elif isinstance(event, ElementFinalized):
                 self.buffered_element = None
                 self.pending_events.clear()
@@ -216,25 +238,34 @@ def stored_record_to_stream_events(record: StoredMessageRecord) -> list[StreamEv
             return [MessageChunk(content=content, role=author), finalized]
         case Thinking(content=content):
             return [ThinkingChunk(content=content), finalized]
-        case ToolCallFinishedOrBlocked(name=name, parameters=parameters, result=result, is_blocking=is_blocking, status=status):
+        case ToolCall(name=name, parameters=parameters, result=result):
             return [
                 ToolCallEvent(
                     name=name,
                     parameters=parameters,
                     result=result,
-                    is_blocking=is_blocking,
-                    status=status,
+                ),
+                finalized,
+            ]
+        case ApprovalRequest(original_message_id=original_message_id):
+            return [
+                ApprovalRequestEvent(original_message_id=original_message_id),
+                finalized,
+            ]
+        case ToolCallDecision(original_message_id=original_message_id, decision=decision, comment=comment):
+            return [
+                ToolCallDecisionEvent(
+                    original_message_id=original_message_id,
+                    decision=decision,
+                    comment=comment,
                 ),
                 finalized,
             ]
         case ToolCallResult(original_message_id=original_message_id, result=result):
             return [
-                ToolCallEvent(
-                    name=f"tool_result:{original_message_id}",
-                    parameters="",
+                ToolCallResultEvent(
+                    original_message_id=original_message_id,
                     result=result,
-                    is_blocking=False,
-                    status='completed',
                 ),
                 finalized,
             ]
@@ -491,12 +522,10 @@ async def prompt_conversation(
                         assert isinstance(aggregated_element, FinishedToolCall)
                         # Pass the extracted scopes to the tool call
                         tool_result = await run_tool_call(name, parameters, False, scopes)
-                        result_element = ToolCallFinishedOrBlocked(
+                        result_element = ToolCall(
                             name=name,
                             parameters=parameters,
                             result=tool_result.result,
-                            is_blocking=tool_result.is_blocking,
-                            status='pending' if tool_result.is_blocking else 'completed',
                             scopes=scopes
                         )
                         record = await insert_message(conn, conv_id, 'assistant', result_element)
@@ -504,21 +533,24 @@ async def prompt_conversation(
                             name=name,
                             parameters=parameters,
                             result=tool_result.result,
-                            is_blocking=tool_result.is_blocking,
-                            status='pending' if tool_result.is_blocking else 'completed',
                         )
                         messages.append((record.id, result_element))
+                        yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
                         if tool_result.is_blocking:
+                            approval_element = ApprovalRequest(original_message_id=record.id)
+                            approval_record = await insert_message(conn, conv_id, 'assistant', approval_element)
                             async with conn.cursor() as cur:
                                 await cur.execute(
                                     "UPDATE conversations SET blocking_message_id = %s WHERE id = %s",
                                     (record.id, conv_id),
                                 )
+                            messages.append((approval_record.id, approval_element))
+                            yield ApprovalRequestEvent(original_message_id=record.id)
+                            yield ElementFinalized(id=approval_record.id, sequence_id=approval_record.sequence_id)
                             run_next_loop = False
                         else:
                             run_next_loop = True
                         await conn.commit()
-                        yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
             if delta is not None:
                 if isinstance(delta, StreamingMessage):
                     yield MessageChunk(content=delta.content)
@@ -652,7 +684,8 @@ async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optio
             'messages': messages
         }
 
-async def decide_tool_call(conn: AsyncConnection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> bool:
+async def decide_tool_call(conn: AsyncConnection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> Optional[str]:
+    """Returns the execution result on approve, None on reject."""
     async with conn.cursor() as cur:
         await conn.set_autocommit(False)
         await cur.execute('SELECT elements FROM messages WHERE id = %s AND conversation_id = %s', (msg_id, conv_id))
@@ -672,9 +705,9 @@ async def decide_tool_call(conn: AsyncConnection, conv_id: int, msg_id: int, dec
         await insert_message(conn, conv_id, 'assistant', decision_elem)
         await cur.execute('UPDATE conversations SET blocking_message_id = NULL WHERE id = %s', (conv_id,))
 
-        executed = False
+        execution_result: Optional[str] = None
         if decision == 'approve':
-            if not isinstance(elem, ToolCallFinishedOrBlocked):
+            if not isinstance(elem, ToolCall):
                 raise ValueError('original message is not a tool call')
 
             # FIXME: A new approach to this
@@ -684,10 +717,10 @@ async def decide_tool_call(conn: AsyncConnection, conv_id: int, msg_id: int, dec
                 result=result.result,
             )
             await insert_message(conn, conv_id, 'system', result_elem)
-            executed = True
+            execution_result = result.result
         
         await conn.commit()
-        return executed
+        return execution_result
 
 async def delete_conversation(conn: AsyncConnection, conv_id: int) -> bool:
     state = await get_active_generation(conv_id)
@@ -789,8 +822,8 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
 
     try:
         async with mk_conn() as conn:
-            executed = await decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
-        return JSONResponse(content={'status': 'success', 'executed': executed})
+            result = await decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
+        return JSONResponse(content={'status': 'success', 'executed': result is not None, 'result': result})
     except ValueError as e:
         return JSONResponse(status_code=400, content={'error': str(e)})
     except Exception as e:

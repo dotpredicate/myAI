@@ -20,16 +20,19 @@ A generation is started in the background, runs the generation loop, and applies
 
 - `MessageChunk` / `ThinkingChunk` - streamed token by token.
 - `ToolCallEvent` - tool call (not streamed).
+- `ApprovalRequestEvent` - a tool call needs user approval; blocks the conversation stack, references the tool call via `original_message_id`.
+- `ToolCallDecisionEvent` - user approved/rejected a tool call, with optional comment.
+- `ToolCallResultEvent` - execution result of an approved tool call.
 - `ElementFinalized` - element persisted, with `id` and `sequence_id`.
 - `GenerationErrorEvent` - generation failed.
 
-The buffer holds only streamed elements (message/thinking). Tool calls go to pending events instead.
+The buffer holds only streamed elements (message/thinking). Tool calls and approval requests go to pending events instead.
 
 ## Lifecycle
 
 1. **Prompt** - insert user message, stream assistant response.
 2. **Generate** - call provider; continue loop after non-blocking tool calls.
-3. **Blocking tool call** - set `blocking_message_id`; front-end must approve/reject.
+3. **Blocking tool call** - persist an `ApprovalRequest` element referencing the `ToolCall` and set `blocking_message_id` (denormalized state); front-end must approve/reject.
 4. **Decide** - approve runs tool (privileged), reject inserts `ToolCallDecision`; both clear the block. Does not auto-resume; client calls Continue.
 5. **Continue** - re-enter the loop with full history.
 6. **Delete** - remove conversation and messages, cancel active generation.

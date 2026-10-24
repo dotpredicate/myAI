@@ -9,18 +9,16 @@ class TestDomain(unittest.TestCase):
         self.assertTrue(scope_policy_is_escalation(SecurityPolicy.WRITE, SecurityPolicy.PRIVILEGED_WRITE))
         self.assertFalse(scope_policy_is_escalation(None, SecurityPolicy.READ_ONLY))
 
-    def test_tool_call_finished_or_blocked_with_scopes(self):
-        from domain import ScopeSpec, ToolCallFinishedOrBlocked, stored_element_adapter
+    def test_tool_call_with_scopes(self):
+        from domain import ScopeSpec, ToolCall, stored_element_adapter
         scopes = [
             ScopeSpec(internal_name="repo1", security_policy=SecurityPolicy.READ_ONLY),
             ScopeSpec(internal_name="repo2", security_policy=SecurityPolicy.WRITE)
         ]
-        elem = ToolCallFinishedOrBlocked(
+        elem = ToolCall(
             name="test_tool",
             parameters='{"p": 1}',
             result="{}",
-            is_blocking=True,
-            status="pending",
             scopes=scopes
         )
         
@@ -37,20 +35,35 @@ class TestDomain(unittest.TestCase):
         self.assertEqual(parsed.scopes[0].internal_name, "repo1")
         self.assertEqual(parsed.scopes[1].security_policy, SecurityPolicy.WRITE)
 
-    def test_tool_call_finished_or_blocked_no_scopes(self):
-        from domain import ToolCallFinishedOrBlocked, stored_element_adapter
-        elem = ToolCallFinishedOrBlocked(
+    def test_tool_call_no_scopes(self):
+        from domain import ToolCall, stored_element_adapter
+        elem = ToolCall(
             name="test_tool",
             parameters='{"p": 1}',
             result="{}",
-            is_blocking=False,
-            status="completed"
         )
         self.assertEqual(elem.scopes, [])
         
         dumped = elem.model_dump()
         parsed = stored_element_adapter.validate_python(dumped)
         self.assertEqual(parsed.scopes, [])
+
+    def test_approval_request_round_trip(self):
+        from domain import ApprovalRequest, ToolCall, stored_element_adapter
+        elem = ApprovalRequest(original_message_id=42)
+
+        dumped = elem.model_dump()
+        self.assertEqual(dumped['type'], 'approval_request')
+
+        parsed = stored_element_adapter.validate_python(dumped)
+        self.assertIsInstance(parsed, ApprovalRequest)
+        self.assertEqual(parsed.original_message_id, 42)
+
+        # Not confused with a tool call
+        tool_call = stored_element_adapter.validate_python(
+            ToolCall(name="t", parameters="{}", result="{}").model_dump()
+        )
+        self.assertNotIsInstance(tool_call, ApprovalRequest)
 
     def test_security_policy_values(self):
         self.assertEqual(SecurityPolicy.READ_ONLY, 'read-only')

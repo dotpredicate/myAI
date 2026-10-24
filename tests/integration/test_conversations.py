@@ -218,6 +218,49 @@ class TestConversations(BaseTestCase):
         messages = details["messages"]
         self.assertEqual(messages[-1]["element"]["type"], "tool_call_result")
 
+    async def test_stream_replays_approval_request_and_decision(self):
+        conversation_id, blocking_id = await self._setup_blocking_conversation()
+
+        res = await self.client.post(
+            f"/api/conversations/{conversation_id}/tool_calls/{blocking_id}/decide",
+            json={"decision": "reject", "comment": "not now"},
+        )
+        self.assertEqual(res.status_code, 200)
+
+        res = await self.client.get(f"/api/conversations/{conversation_id}/stream")
+        self.assertEqual(res.status_code, 200)
+        events = await _read_ndjson_response(res)
+
+        approval_events = [e for e in events if e["type"] == "approval_request"]
+        self.assertEqual(len(approval_events), 1)
+        self.assertEqual(approval_events[0]["original_message_id"], blocking_id)
+
+        decision_events = [e for e in events if e["type"] == "tool_call_decision"]
+        self.assertEqual(len(decision_events), 1)
+        self.assertEqual(decision_events[0]["original_message_id"], blocking_id)
+        self.assertEqual(decision_events[0]["decision"], "reject")
+        self.assertEqual(decision_events[0]["comment"], "not now")
+
+    async def test_approve_returns_result_and_stream_replays_it(self):
+        conversation_id, blocking_id = await self._setup_blocking_conversation()
+
+        res = await self.client.post(
+            f"/api/conversations/{conversation_id}/tool_calls/{blocking_id}/decide",
+            json={"decision": "approve"},
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.json()["executed"])
+        self.assertIn("applied", res.json()["result"])
+
+        res = await self.client.get(f"/api/conversations/{conversation_id}/stream")
+        self.assertEqual(res.status_code, 200)
+        events = await _read_ndjson_response(res)
+
+        result_events = [e for e in events if e["type"] == "tool_call_result"]
+        self.assertEqual(len(result_events), 1)
+        self.assertEqual(result_events[0]["original_message_id"], blocking_id)
+        self.assertIn("applied", result_events[0]["result"])
+
     async def test_continue_after_decide_resumes_generation(self):
         conversation_id, blocking_id = await self._setup_blocking_conversation()
 

@@ -52,14 +52,16 @@ class Thinking(BaseModel):
     type: Literal['thinking'] = 'thinking'
     content: str
 
-class ToolCallFinishedOrBlocked(BaseModel):
+class ToolCall(BaseModel):
     type: Literal['tool_call'] = 'tool_call'
     name: str
     parameters: str
     result: str
-    is_blocking: bool
-    status: Literal['pending'] | Literal['completed']
     scopes: List[ScopeSpec] = []
+
+class ApprovalRequest(BaseModel):
+    type: Literal['approval_request'] = 'approval_request'
+    original_message_id: int
 
 class ToolCallResult(BaseModel):
     type: Literal['tool_call_result'] = 'tool_call_result'
@@ -75,7 +77,8 @@ class ToolCallDecision(BaseModel):
 ConversationElement = Union[
     Message, 
     Thinking, 
-    ToolCallFinishedOrBlocked, 
+    ToolCall,
+    ApprovalRequest,
     ToolCallResult, 
     ToolCallDecision
 ]
