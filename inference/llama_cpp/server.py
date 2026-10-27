@@ -2,23 +2,16 @@ import asyncio
 from dataclasses import dataclass
 import httpx
 import openai
-import os
-import socket
 from typing import Any, AsyncIterator, Optional
 
+import inference.managed_processes as mp
 from inference.engine import ChatContext, EmbeddingInput, EmbeddingProvider, InferenceProvider, Model, StreamingElement, FinishedElement, InferenceParam, InferenceParamType, TokenPiece
-from inference.hf_gguf import list_cached_models
-from .managed_processes import _server_processes, lazy_start_server, track_server_activity
+from inference.managed_processes import get_free_port
+from .gguf import list_cached_models
 from .openai import DeltaProcessor, _to_oai_messages, _to_oai_tools
 from log_config import get_logger
 
 logger = get_logger(__name__)
-
-
-def get_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(('', 0))
-        return s.getsockname()[1]
 
 
 def _parse_tokenization_response(payload: object) -> list[TokenPiece]:
@@ -52,8 +45,6 @@ def _parse_tokenization_response(payload: object) -> list[TokenPiece]:
 class ModelServer:
     port: str
     client: openai.AsyncOpenAI
-    ready_event: asyncio.Event
-    start_lock: asyncio.Lock
 
 
 class LlamaCppServerProvider(InferenceProvider):
@@ -66,26 +57,24 @@ class LlamaCppServerProvider(InferenceProvider):
         key = (n_ctx, model_id)
         if key in self._model_servers:
             server = self._model_servers[key]
-            managed = _server_processes.get(server.port)
-            if managed is not None and managed.process.poll() is None:
-                await server.ready_event.wait()
+            managed = mp.get_managed_process(server.port)
+            if managed is not None and managed.process is not None and managed.process.poll() is None:
+                await mp.wait_server_ready(server.port)
                 return server
 
         async with self._creation_lock:
             if key in self._model_servers:
                 server = self._model_servers[key]
-                managed = _server_processes.get(server.port)
-                if managed is not None and managed.process.poll() is None:
-                    await server.ready_event.wait()
+                managed = mp.get_managed_process(server.port)
+                if managed is not None and managed.process is not None and managed.process.poll() is None:
+                    await mp.wait_server_ready(server.port)
                     return server
                 self._model_servers.pop(key, None)
 
             port = str(get_free_port())
-            ready_event = asyncio.Event()
-            start_lock = asyncio.Lock()
-            endpoint = os.getenv('LLAMA_CPP_ENDPOINT', f'http://localhost:{port}')
+            endpoint = f'http://localhost:{port}'
             client = openai.AsyncOpenAI(api_key='dummy', base_url=endpoint)
-            server = ModelServer(port=port, client=client, ready_event=ready_event, start_lock=start_lock)
+            server = ModelServer(port=port, client=client)
             self._model_servers[key] = server
 
         args = [
@@ -101,7 +90,7 @@ class LlamaCppServerProvider(InferenceProvider):
                 resp = await client.get(f"http://localhost:{port}/v1/models")
                 return resp.status_code in (200, 401)
 
-        await lazy_start_server(port, "llama.cpp", model_id, cmd, start_lock, ready_event, readiness_check=_check)
+        await mp.ensure_server_started(port, "llama.cpp", model_id, cmd, readiness_check=_check)
         return server
 
     async def run_chat_completion_stream(
@@ -113,7 +102,7 @@ class LlamaCppServerProvider(InferenceProvider):
         n_ctx: Optional[int] = inference_config.get('n_ctx')
         temperature: Optional[float] = inference_config.get('temperature')
         server = await self._get_or_start_server(model_id, n_ctx)
-        async with track_server_activity(server.port):
+        async with mp.track_server_activity(server.port):
             raw_stream = await server.client.chat.completions.create(
                 model=model_id,
                 messages=_to_oai_messages(context),
@@ -172,10 +161,8 @@ class LlamaCppEmbeddingServer(EmbeddingProvider):
         self.model = model
         self.endpoint = f'http://localhost:{port}'
         self._client = openai.AsyncOpenAI(api_key='dummy', base_url=self.endpoint + '/v1')
-        self.ready_event = asyncio.Event()
-        self.start_lock = asyncio.Lock()
 
-    async def _lazy_start(self):
+    async def _ensure_started(self):
         async def _check() -> bool:
             async with httpx.AsyncClient(timeout=1.0) as client:
                 resp = await client.post(
@@ -184,20 +171,20 @@ class LlamaCppEmbeddingServer(EmbeddingProvider):
                 )
                 return resp.status_code == 200
         cmd = ["llama-server", "--port", self.port, "--embedding", "-hf", self.model]
-        await lazy_start_server(self.port, "llama.cpp", self.model, cmd, self.start_lock, self.ready_event, readiness_check=_check)
+        await mp.ensure_server_started(self.port, "llama.cpp", self.model, cmd, readiness_check=_check)
 
     async def embed(self, model: str, input: EmbeddingInput) -> list[list[float]]:
         if model != self.model:
         # FIXME
             raise ValueError(f"This llama.cpp server only supports {self.model}, but attempted to embed with {model}")
-        await self._lazy_start()
-        async with track_server_activity(self.port):
+        await self._ensure_started()
+        async with mp.track_server_activity(self.port):
             resp = await self._client.embeddings.create(model=model, input=input)
             return [e.embedding for e in resp.data]
 
     async def tokenize(self, text: str) -> list[TokenPiece]:
-        await self._lazy_start()
-        async with track_server_activity(self.port):
+        await self._ensure_started()
+        async with mp.track_server_activity(self.port):
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.post(
                     f"{self.endpoint}/tokenize",

@@ -9,11 +9,14 @@ from typing import Optional
 from conversation import router as conversations_router
 from repositories import router as repositories_router
 from agents import router as agents_router
+from images import router as images_router
+from inference.sd_cpp.router import router as sd_cpp_router
 from log_config import get_logger, setup_logging
 from search import synchronize, semantic_search, clear_index
-from inference import managed_processes, registry, benchmark
+from inference import managed_processes, registry
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
-from inference.hf_gguf import list_cached_models
+from inference.llama_cpp import benchmark
+from inference.llama_cpp.gguf import list_cached_models
 
 logger = get_logger(__name__)
 
@@ -79,6 +82,8 @@ async def get_cached_models():
 app.include_router(repositories_router)
 app.include_router(agents_router)
 app.include_router(conversations_router)
+app.include_router(images_router)
+app.include_router(sd_cpp_router)
 
 
 @app.post('/api/search')
@@ -127,7 +132,7 @@ async def gpu_stats():
 
 @app.get('/api/managed-processes/list')
 async def managed_processes_list():
-    return JSONResponse(content={"servers": managed_processes.get_server_status()})
+    return {"servers": managed_processes.get_server_status()}
 
 
 @app.post('/api/managed-processes/{port}/stop')

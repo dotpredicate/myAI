@@ -68,6 +68,13 @@
     .view { display: none; flex: 1; flex-direction: column; overflow: hidden; }
     .view.active { display: flex; }
 
+    /* Image generation */
+    #imagesView { overflow-y: auto; padding: 10px; }
+    #imageParamsFields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 10px; }
+    #imageGenCard { max-width: 720px; }
+    #imageGenResult img { max-width: 100%; border: 1px solid #ddd; border-radius: 4px; margin-top: 10px; display: block; }
+    #imageGenResult .btn { display: inline-block; margin-top: 8px; text-decoration: none; color: inherit; }
+
     /* Chat window */
     #chatHistory { flex: 1; padding: 10px; overflow: auto; background: #fff; }
     #inputArea { padding: 10px; background: #fff; border-top: 1px solid #eee; }
@@ -325,6 +332,7 @@
       <div id="conversationList"></div>
     </div>
     <div id="sidebarFooter">
+      <button id="imagesBtnSide" class="menu-item">Images</button>
       <button id="inferenceBtnSide" class="menu-item">Inference</button>
       <button id="agentsBtnSide" class="menu-item">Agents</button>
       <button id="reposBtnSide" class="menu-item">Repositories</button>
@@ -485,6 +493,47 @@
       </div>
     </div>
 
+    <!-- Images -->
+    <div id="imagesView" class="view">
+      <div class="card" id="imageGenCard">
+        <h3>Image generation</h3>
+        <div class="field">
+          <label>Model</label>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <select id="imageModelSelect" style="flex:1;"></select>
+            <button id="imageAddModelBtn" class="btn">Add model</button>
+            <button id="imageDeleteModelBtn" class="btn btn-reject">Delete</button>
+          </div>
+          <div id="imageModelHint" class="summary-line"></div>
+        </div>
+        <div id="imageAddModelPanel" class="card" style="display:none; margin-bottom:12px;">
+          <h3>Add image model</h3>
+          <div class="field">
+            <label>Name</label>
+            <input id="imageModelName" class="input" placeholder="e.g. Qwen 2.1 Q8">
+          </div>
+          <div class="field">
+            <label>Recipe</label>
+            <select id="imageRecipeSelect"></select>
+          </div>
+          <div class="summary-line">Files come from the model directory (MYAI_SD_MODEL_DIRS).</div>
+          <div id="imageRecipeFields"></div>
+          <div class="btn-row">
+            <button id="imageSaveModelBtn" class="btn btn-primary">Save</button>
+            <button id="imageCancelModelBtn" class="btn">Cancel</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Prompt</label>
+          <textarea id="imagePrompt" class="input" rows="4" placeholder="a lovely cat"></textarea>
+        </div>
+        <div id="imageParamsFields"></div>
+        <button id="imageGenerateBtn" class="btn btn-primary btn-block">Generate</button>
+        <div id="imageGenStatus" class="summary-line"></div>
+        <div id="imageGenResult"></div>
+      </div>
+    </div>
+
     <!-- Repositories -->
     <div id="repositoriesView" class="view">
       <div class="repo-panels">
@@ -565,6 +614,10 @@
         document.getElementById('agentsView').classList.add('active');
         clearGpuInterval();
         clearManagedProcessesInterval();
+      } else if (name === 'images') {
+        document.getElementById('imagesView').classList.add('active');
+        clearGpuInterval();
+        clearManagedProcessesInterval();
       } else if (name === 'repositories') {
         document.getElementById('repositoriesView').classList.add('active');
         clearGpuInterval();
@@ -631,7 +684,7 @@
           title.textContent = server.model;
           const details = document.createElement('div');
           details.className = 'summary-line';
-          details.textContent = `${server.tag} · Port ${server.port} · PID ${server.pid} · ${server.status} · ${server.active_requests} active · idle ${server.idle_seconds}s`;
+          details.textContent = `${server.provider} · Port ${server.port} · PID ${server.pid} · ${server.status} · ${server.active_requests} active · idle ${server.idle_seconds}s`;
           const kill = document.createElement('button');
           kill.className = 'btn btn-reject';
           kill.textContent = 'Kill';
@@ -717,7 +770,7 @@
             : String(config[param.name]);
           input.addEventListener('change', onChange);
         } else {
-          input.type = param.type === 'str' ? 'text' : 'number';
+          input.type = param.type === 'int' || param.type === 'float' ? 'number' : 'text';
           if (param.type === 'int' || param.type === 'float') {
             input.step = param.step ?? (param.type === 'int' ? 1 : 0.01);
             if (param.min !== undefined && param.min !== null) input.min = param.min;
@@ -1417,6 +1470,226 @@
       setTimeout(() => item.remove(), 5000);
     }
 
+    let imageGenerating = false;
+    let imageParamsRequest = 0;
+    let imageModels = [];
+    let imageRecipes = [];
+    let imageFiles = [];
+
+    function selectedImageModel() {
+      const value = document.getElementById('imageModelSelect').value;
+      return imageModels.find(model => String(model.id) === value) || null;
+    }
+
+    function updateImageModelHint() {
+      const model = selectedImageModel();
+      const hint = document.getElementById('imageModelHint');
+      const button = document.getElementById('imageGenerateBtn');
+      if (!model) {
+        hint.textContent = 'No image models yet. Use "Add model" to register one.';
+        button.disabled = true;
+        return;
+      }
+      if (model.available) {
+        hint.textContent = '';
+        button.disabled = false;
+      } else {
+        hint.textContent = 'Missing: ' + (model.missing || []).join(', ');
+        button.disabled = true;
+      }
+    }
+
+    async function loadImageModels(selectId) {
+      const select = document.getElementById('imageModelSelect');
+      try {
+        const res = await fetch('/api/sd-cpp/models');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        imageModels = data.models || [];
+        select.innerHTML = '';
+        if (!imageModels.length) {
+          const option = document.createElement('option');
+          option.value = '';
+          option.textContent = 'No models';
+          select.appendChild(option);
+        } else {
+          imageModels.forEach(model => {
+            const option = document.createElement('option');
+            option.value = String(model.id);
+            option.textContent = model.name + (model.available ? '' : ' (unavailable)');
+            if (String(model.id) === String(selectId || data.default)) option.selected = true;
+            select.appendChild(option);
+          });
+        }
+        updateImageModelHint();
+        await loadImageParams();
+      } catch (e) {
+        showErrorNotification('Failed to load image models: ' + e.message);
+      }
+    }
+
+    async function loadImageParams() {
+      const model = document.getElementById('imageModelSelect').value;
+      const fields = document.getElementById('imageParamsFields');
+      if (!model) {
+        fields.innerHTML = '';
+        return;
+      }
+      const requestId = ++imageParamsRequest;
+      try {
+        const res = await fetch(`/api/sd-cpp/inference-params?model=${encodeURIComponent(model)}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const params = await res.json();
+        if (requestId !== imageParamsRequest) return;
+        const defaults = {};
+        params.forEach(p => { if (p.default !== null) defaults[p.name] = p.default; });
+        renderInferenceConfigFields(fields, params, defaults, () => {});
+      } catch (e) {
+        showErrorNotification('Failed to load image parameters: ' + e.message);
+      }
+    }
+
+    function renderImageRecipeFields() {
+      const recipeId = document.getElementById('imageRecipeSelect').value;
+      const recipe = imageRecipes.find(item => item.id === recipeId);
+      const container = document.getElementById('imageRecipeFields');
+      container.innerHTML = '';
+      if (!recipe) return;
+      recipe.slots.forEach(slot => {
+        const field = document.createElement('div');
+        field.className = 'field';
+        const label = document.createElement('label');
+        label.textContent = slot.label + (slot.required ? ' *' : '');
+        const select = document.createElement('select');
+        select.dataset.slot = slot.id;
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = slot.required ? 'select file' : 'none';
+        select.appendChild(empty);
+        const categories = slot.categories || [];
+        imageFiles
+          .filter(file => !categories.length || categories.includes(file.category))
+          .forEach(file => {
+            const option = document.createElement('option');
+            option.value = file.id;
+            option.textContent = file.name;
+            select.appendChild(option);
+          });
+        field.appendChild(label);
+        field.appendChild(select);
+        container.appendChild(field);
+      });
+    }
+
+    async function showImageModelForm() {
+      document.getElementById('imageAddModelPanel').style.display = 'block';
+      document.getElementById('imageModelName').value = '';
+      try {
+        const [recipesResponse, filesResponse] = await Promise.all([
+          fetch('/api/sd-cpp/recipes'),
+          fetch('/api/sd-cpp/files'),
+        ]);
+        if (!recipesResponse.ok) throw new Error(`recipes: HTTP ${recipesResponse.status}`);
+        if (!filesResponse.ok) throw new Error(`files: HTTP ${filesResponse.status}`);
+        imageRecipes = (await recipesResponse.json()).recipes || [];
+        imageFiles = (await filesResponse.json()).files || [];
+        const select = document.getElementById('imageRecipeSelect');
+        select.innerHTML = '';
+        imageRecipes.forEach(recipe => {
+          const option = document.createElement('option');
+          option.value = recipe.id;
+          option.textContent = recipe.name || recipe.id;
+          select.appendChild(option);
+        });
+        renderImageRecipeFields();
+      } catch (e) {
+        showErrorNotification('Failed to open model form: ' + e.message);
+      }
+    }
+
+    function hideImageModelForm() {
+      document.getElementById('imageAddModelPanel').style.display = 'none';
+    }
+
+    async function saveImageModel() {
+      const name = document.getElementById('imageModelName').value.trim();
+      const recipe = document.getElementById('imageRecipeSelect').value;
+      if (!name) { showErrorNotification('Model name is required'); return; }
+      if (!recipe) { showErrorNotification('Recipe is required'); return; }
+      const files = {};
+      document.querySelectorAll('#imageRecipeFields select[data-slot]').forEach(select => {
+        if (select.value) files[select.dataset.slot] = select.value;
+      });
+      try {
+        const res = await fetch('/api/sd-cpp/models', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, recipe, files }),
+        });
+        const data = await res.json();
+        if (!res.ok) { showErrorNotification(data.error || 'Failed to add model'); return; }
+        document.getElementById('imageAddModelPanel').style.display = 'none';
+        await loadImageModels(data.id);
+      } catch (e) {
+        showErrorNotification('Failed to add model: ' + e.message);
+      }
+    }
+
+    async function deleteImageModel() {
+      const model = selectedImageModel();
+      if (!model) return;
+      if (!confirm(`Remove image model "${model.name}" from myAI? Model files are removed from the library, not from the Hugging Face cache.`)) return;
+      try {
+        const res = await fetch(`/api/sd-cpp/models/${encodeURIComponent(model.id)}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) { showErrorNotification(data.error || 'Failed to delete model'); return; }
+        await loadImageModels();
+      } catch (e) {
+        showErrorNotification('Failed to delete model: ' + e.message);
+      }
+    }
+
+    async function generateImage() {
+      if (imageGenerating) return;
+      const model = selectedImageModel();
+      if (!model || !model.available) { showErrorNotification('Select an available image model'); return; }
+      const prompt = document.getElementById('imagePrompt').value.trim();
+      if (!prompt) { showErrorNotification('Prompt is required'); return; }
+      imageGenerating = true;
+      const btn = document.getElementById('imageGenerateBtn');
+      const status = document.getElementById('imageGenStatus');
+      btn.disabled = true;
+      status.textContent = 'Generating...';
+      const params = readInferenceConfig(document.getElementById('imageParamsFields'));
+      try {
+        const res = await fetch('/api/images/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: String(model.id), prompt, params }),
+        });
+        const data = await res.json();
+        if (!res.ok) { showErrorNotification(data.error || 'Generation failed'); return; }
+        const result = document.getElementById('imageGenResult');
+        result.innerHTML = '';
+        const img = document.createElement('img');
+        img.src = 'data:image/png;base64,' + data.image;
+        img.alt = prompt;
+        const link = document.createElement('a');
+        link.className = 'btn';
+        link.textContent = 'Download';
+        link.download = 'myai-image.png';
+        link.href = img.src;
+        result.appendChild(img);
+        result.appendChild(link);
+      } catch (e) {
+        showErrorNotification('Generation failed: ' + e.message);
+      } finally {
+        status.textContent = '';
+        imageGenerating = false;
+        updateImageModelHint();
+      }
+    }
+
     function abortActiveStream() {
       if (activeStreamAbortController) {
         activeStreamAbortController.abort();
@@ -1902,6 +2175,17 @@
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchInferenceTab(t.dataset.tab)));
     document.getElementById('refreshManagedProcessesBtn').addEventListener('click', updateManagedProcesses);
+    document.getElementById('imagesBtnSide').addEventListener('click', () => switchView('images'));
+    document.getElementById('imageGenerateBtn').addEventListener('click', generateImage);
+    document.getElementById('imageModelSelect').addEventListener('change', () => {
+      updateImageModelHint();
+      loadImageParams();
+    });
+    document.getElementById('imageAddModelBtn').addEventListener('click', showImageModelForm);
+    document.getElementById('imageDeleteModelBtn').addEventListener('click', deleteImageModel);
+    document.getElementById('imageSaveModelBtn').addEventListener('click', saveImageModel);
+    document.getElementById('imageCancelModelBtn').addEventListener('click', hideImageModelForm);
+    document.getElementById('imageRecipeSelect').addEventListener('change', renderImageRecipeFields);
     document.getElementById('inferenceBtnSide').addEventListener('click', () => switchView('inference'));
     document.getElementById('agentsBtnSide').addEventListener('click', () => switchView('agents'));
     document.getElementById('reposBtnSide').addEventListener('click', () => switchView('repositories'));
@@ -1916,6 +2200,7 @@
     loadRepositories();
     initAddRepoForm();
     loadAgents();
+    loadImageModels();
     // Populate agent form's repo select when repos are loaded
     document.getElementById('addRepoConfirm').addEventListener('click', () => {
       setTimeout(() => {

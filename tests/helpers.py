@@ -13,7 +13,11 @@ import database
 from inference.engine import (
     EmbeddingInput,
     EmbeddingProvider,
+    ImageGenerationRequest,
+    ImageProvider,
     InferenceProvider,
+    InferenceParam,
+    InferenceParamType,
     Model,
     ChatContext,
     TokenPiece,
@@ -81,6 +85,30 @@ class MockE2EProvider(InferenceProvider):
         return self.models
 
 
+class MockImageProvider(ImageProvider):
+
+    model_id = "mock-image"
+
+    def __init__(self) -> None:
+        self.requests: list[ImageGenerationRequest] = []
+        self.result = "aGVsbG8="
+        self.error: Optional[Exception] = None
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        return [{"id": self.model_id, "name": "Mock Image", "available": True, "missing": []}]
+
+    async def get_inference_params(self, model_id: str) -> list[InferenceParam]:
+        if model_id != self.model_id:
+            return []
+        return [InferenceParam(name="steps", type=InferenceParamType.INT, default=20)]
+
+    async def generate_image(self, request: ImageGenerationRequest) -> str:
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
 class DeterministicEmbeddingProvider(EmbeddingProvider):
 
     def __init__(self) -> None:
@@ -103,15 +131,16 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from app import app
         import database
-        from inference.registry import registry
+        from inference.registry import registry, image_registry
         import system
 
         registry._providers.clear()
+        image_registry._providers.clear()
         async with database.mk_conn() as conn, conn.cursor() as cur:
             await conn.set_autocommit(False)
             await cur.execute(
                 "TRUNCATE agents, agent_repository_access, conversations, "
-                "messages, repositories, documents RESTART IDENTITY CASCADE;"
+                "messages, repositories, documents, sd_cpp_image_models RESTART IDENTITY CASCADE;"
             )
             await conn.commit()
 
@@ -126,6 +155,9 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
 
         self.mock_provider = MockE2EProvider()
         registry.register("mock_e2e", "Mock E2E", "", self.mock_provider)
+
+        self.mock_image_provider = MockImageProvider()
+        image_registry.register("stable-diffusion.cpp", "Mock Image", "", self.mock_image_provider)
 
     async def _helper_create_repo(
         self,

@@ -30,6 +30,7 @@ Project structure:
 - `./tools.py` - tool execution logic
 - `./log_config.py` - logging configuration
 - `./inference/` - AI protocol handling (stateless), split into submodules
+- `./images.py` - image generation routes
 - `./migrations/` - folder with migration scripts
 - `./static/` - static resources deployed by the server, web front-end
 - `./doc/` - design and documentation
@@ -55,7 +56,8 @@ At startup, the module scans the `migrations` folder for SQL files, sorts them i
 - Test with `python -m unittest`
 
 ### Simplifications for now
-- the only available inference provider is embedded llama.cpp server
+- the only available language model model provider is embedded llama.cpp server
+- image generation uses an embedded stable-diffusion.cpp server; models are user-registered presets in `sd_cpp_image_models` (recipe + file IDs from `MYAI_SD_MODEL_DIRS`)
 - web UI only, no mobile, minimal styling
 - single user, no log-in
 - no cloud integrations

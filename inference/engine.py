@@ -84,6 +84,7 @@ class InferenceParamType(StrEnum):
     FLOAT = "float"
     BOOL = "bool"
     STR = "str"
+    FILE = "file"
 
 
 @dataclass(frozen=True)
@@ -119,3 +120,40 @@ class InferenceProvider(ABC):
 
     def get_inference_params(self) -> list[InferenceParam]:
         return []
+
+
+@dataclass(frozen=True)
+class ImageGenerationRequest:
+    model: str
+    prompt: str
+    params: dict[str, Any]
+
+
+class ImageProvider(ABC):
+    """Abstract interface for a text-to-image provider.
+
+    Lifecycle management (start/stop server etc.) is implementation-specific.
+    """
+
+    @abstractmethod
+    async def generate_image(self, request: ImageGenerationRequest) -> str:
+        """Generate an image and return it base64-encoded."""
+        ...
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        return []
+
+    async def get_inference_params(self, model_id: str) -> list[InferenceParam]:
+        return []
+
+    async def list_recipes(self) -> list[dict[str, Any]]:
+        return []
+
+    async def list_files(self) -> list[dict[str, Any]]:
+        return []
+
+    async def add_model(self, name: str, recipe: str, files: dict[str, str]) -> dict[str, Any]:
+        raise NotImplementedError("this image provider does not support adding models")
+
+    async def remove_model(self, model_id: str) -> bool:
+        return False

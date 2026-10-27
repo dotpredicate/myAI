@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional, TypedDict
 
 from log_config import get_logger
-from .hf_gguf import download_file_slice, get_gguf_split_info, list_gguf_quants, resolve_hf_alias
+from .gguf import download_file_slice, get_gguf_split_info, list_gguf_quants, resolve_hf_alias
 
 logger = get_logger(__name__)
 

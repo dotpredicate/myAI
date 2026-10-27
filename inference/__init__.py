@@ -14,6 +14,8 @@ from .engine import (
     ChatContext as ChatContext,
     InferenceParam as InferenceParam,
     InferenceParamType as InferenceParamType,
+    ImageGenerationRequest as ImageGenerationRequest,
+    ImageProvider as ImageProvider,
 )
-from .llama_cpp_server import LlamaCppEmbeddingServer as LlamaCppEmbeddingServer
 from .registry import registry as registry
+from .registry import image_registry as image_registry

@@ -1,6 +1,6 @@
 import unittest
 
-from inference import llama_cpp_server as module
+from inference.llama_cpp import server as module
 from inference.engine import TokenPiece
 
 

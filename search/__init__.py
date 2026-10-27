@@ -9,7 +9,7 @@ import database
 from . import documents
 from repositories import get_repositories, get_repo_documents, RepositoryConfig
 from inference import EmbeddingProvider, TokenPiece
-from inference.llama_cpp_server import LlamaCppEmbeddingServer
+from inference.llama_cpp.server import LlamaCppEmbeddingServer
 from log_config import get_logger
 
 _sync_lock = asyncio.Lock()

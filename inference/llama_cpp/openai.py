@@ -6,7 +6,7 @@ from openai.types.chat.chat_completion_chunk import ChatCompletionChunk
 from openai.types.chat.chat_completion_tool_union_param import ChatCompletionToolUnionParam
 from openai.types.shared_params.function_definition import FunctionDefinition
 
-from inference import (
+from inference.engine import (
     StreamingMessage,
     StreamingThinking,
     StreamingToolCall,

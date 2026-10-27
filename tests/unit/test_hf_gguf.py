@@ -1,6 +1,6 @@
 import unittest
 
-from inference.hf_gguf import get_gguf_split_info, list_gguf_quants
+from inference.llama_cpp.gguf import get_gguf_split_info, list_gguf_quants
 
 
 class FakeApi:

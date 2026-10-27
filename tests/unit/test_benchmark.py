@@ -1,6 +1,6 @@
 import unittest
 
-from inference.benchmark import (
+from inference.llama_cpp.benchmark import (
     ModelQuantInfo,
     _model_info_result,
     _quant_info_from_header,
