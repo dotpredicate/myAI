@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "rootDir": "public/ts",
+    "outDir": "public/js",
+    "target": "es2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noUncheckedIndexedAccess": true,
+    "isolatedModules": true,
+    "sourceMap": true,
+    "inlineSources": false,
+    "allowJs": false
+  },
+  "include": ["public/ts/**/*.ts"],
+  "exclude": ["public/js"]
+}

@@ -117,16 +117,19 @@ async def _benchmark_one(repo_id: str, filename: str, quant: str, n_gen: int, n_
     if "error" in header:
         return {"quant": quant, "error": header["error"]}
 
+    path: Optional[Path] = None
     try:
         path = await _build_synthetic(repo_id, filename, header["tensor_data_offset"], header["size"])
         bench = await _run_llama_bench(str(path), n_gen, n_prompt, repetitions)
-        try:
-            os.remove(path)
-        except OSError:
-            pass
     except Exception as e:
         logger.exception("Benchmark failed for %s", quant)
         return {"quant": quant, "error": f"Benchmark failed: {str(e)}"}
+    finally:
+        if path is not None:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
     if "error" in bench:
         return {"quant": quant, "error": bench["error"]}
@@ -181,6 +184,11 @@ _BENCH_DIR = Path(os.path.expanduser("~/.cache/myai/benchmark"))
 
 
 async def _build_synthetic(repo_id: str, filename: str, offset: int, size: int) -> Path:
+    if get_gguf_split_info(filename)["count"] > 1:
+        raise ValueError("Benchmarking split GGUF models is not supported")
+    if offset <= 0 or size <= 0:
+        raise ValueError("Could not read the GGUF header from HuggingFace")
+
     header = await download_file_slice(repo_id, filename, 0, offset)
     _BENCH_DIR.mkdir(parents=True, exist_ok=True)
     path = _BENCH_DIR / "synthetic.gguf"
@@ -190,8 +198,8 @@ async def _build_synthetic(repo_id: str, filename: str, offset: int, size: int) 
     return path
 
 
-async def _run_llama_bench(path: str, n_gen: int, n_prompt: int, repetitions: int) -> dict:
-    cmd = [
+def _bench_cmd(path: str, n_gen: int, n_prompt: int, repetitions: int) -> list[str]:
+    return [
         "llama-bench", "-m", path,
         "-ngl", "99",
         "-fa", "on",
@@ -200,13 +208,36 @@ async def _run_llama_bench(path: str, n_gen: int, n_prompt: int, repetitions: in
         "-r", str(repetitions),
         "-o", "json",
     ]
+
+
+def _extract_bench_error(stderr: str) -> str:
+    lines = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    for line in reversed(lines):
+        if "error loading model:" in line:
+            return line.split("error loading model:", 1)[1].strip()[:300]
+    for line in reversed(lines):
+        if "error:" in line:
+            detail = line.split("error:", 1)[1].strip()
+            if "failed to load model" not in detail:
+                return detail[:300]
+    return (lines[-1][:300] if lines else "unknown error")
+
+
+async def _run_llama_bench(path: str, n_gen: int, n_prompt: int, repetitions: int) -> dict:
+    cmd = _bench_cmd(path, n_gen, n_prompt, repetitions)
     try:
         proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            # A plain llama-bench run only reports "failed to load model".
+            # Re-run verbosely so the actual reason (unsupported architecture,
+            # out of memory, corrupt header, ...) reaches the user.
+            verbose = await asyncio.to_thread(
+                subprocess.run, [*cmd, "-v"], capture_output=True, text=True
+            )
+            detail = _extract_bench_error(verbose.stderr) or _extract_bench_error(proc.stderr)
+            return {"error": f"llama-bench error: {detail}"}
     except Exception as e:
         return {"error": f"llama-bench failed: {str(e)}"}
-    if proc.returncode != 0:
-        detail = (proc.stderr or "").strip().split("error:")[-1].strip()[:200]
-        return {"error": f"llama-bench error: {detail}"}
     try:
         return parse_llama_bench_output(json.loads(proc.stdout))
     except ValueError:

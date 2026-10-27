@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" href="data:,">
+  <title>myAI</title>
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <h1 class="brand">myAI</h1>
+      <button class="btn btn-primary new-chat" id="new-chat" type="button">+ New conversation</button>
+      <div class="conversation-panel">
+        <h2>Conversations</h2>
+        <div id="conversation-list" class="conversation-list"></div>
+      </div>
+      <nav class="primary-nav">
+        <a href="#/chat" data-nav="chat">Chat</a>
+        <a href="#/images" data-nav="images">Images</a>
+        <a href="#/inference/system" data-nav="inference">Inference</a>
+        <a href="#/agents" data-nav="agents">Agents</a>
+        <a href="#/repositories" data-nav="repositories">Repositories</a>
+      </nav>
+    </aside>
+    <div class="workspace">
+      <main id="main" class="main" tabindex="-1"></main>
+    </div>
+  </div>
+  <div id="notifications" class="notifications"></div>
+  <script type="module" src="/js/app.js"></script>
+</body>
+</html>

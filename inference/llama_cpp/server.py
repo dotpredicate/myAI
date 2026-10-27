@@ -49,7 +49,7 @@ class ModelServer:
 
 class LlamaCppServerProvider(InferenceProvider):
 
-    def __init__(self):
+    def __init__(self) -> None:
         self._model_servers: dict[tuple[Optional[int], str], ModelServer] = {}
         self._creation_lock = asyncio.Lock()
 

@@ -1,8 +1,9 @@
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Body, Query
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from database import init_database
 from typing import Optional
@@ -30,10 +31,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MyAI FastAPI", lifespan=lifespan)
 
-
-@app.get("/")
-async def read_index():
-    return FileResponse("static/index.html")
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend" / "public"
 
 
 @app.get('/api/providers')
@@ -178,4 +176,4 @@ async def run_gpu_benchmark(
         )
 
 # Mount static files
-app.mount("/", StaticFiles(directory="static"), name="static")
+app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
