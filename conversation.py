@@ -32,6 +32,7 @@ from inference import (
 )
 from repositories import get_repo_by_id, get_repo_by_name
 from tools import Tool, run_tool_call, TOOL_REGISTRY
+import system
 
 from log_config import get_logger
 from database import mk_conn
@@ -521,7 +522,7 @@ async def prompt_conversation(
                     case FinishedToolCall(name=name, parameters=parameters):
                         assert isinstance(aggregated_element, FinishedToolCall)
                         # Pass the extracted scopes to the tool call
-                        tool_result = await run_tool_call(name, parameters, False, scopes)
+                        tool_result = await run_tool_call(name, parameters, False, scopes, conv_id)
                         result_element = ToolCall(
                             name=name,
                             parameters=parameters,
@@ -711,7 +712,7 @@ async def decide_tool_call(conn: AsyncConnection, conv_id: int, msg_id: int, dec
                 raise ValueError('original message is not a tool call')
 
             # FIXME: A new approach to this
-            result = await run_tool_call(elem.name, elem.parameters, privileged=True, scopes=elem.scopes)
+            result = await run_tool_call(elem.name, elem.parameters, privileged=True, scopes=elem.scopes, conversation_id=conv_id)
             result_elem = ToolCallResult(
                 original_message_id=msg_id,
                 result=result.result,
@@ -739,6 +740,7 @@ async def delete_conversation(conn: AsyncConnection, conv_id: int) -> bool:
         await cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conv_id,))
         await cur.execute("DELETE FROM conversations WHERE id = %s", (conv_id,))
         await conn.commit()
+        system.remove_workspace(conv_id)
         return True
 
 @router.post('/api/conversations/prompt')

@@ -51,8 +51,8 @@ class TestSystem(unittest.TestCase):
         vpath = Path("/repositories/my_repo/foo.py")
         expected_vroot = Path("/repositories")
         safe, err = is_safe_vpath(vpath, expected_vroot, allowed_scopes=[])
-        self.assertTrue(safe)
-        self.assertEqual(err, "")
+        self.assertFalse(safe)
+        self.assertIn("not in allowed scopes", err)
 
     def test_vpath_to_realpath(self):
         vpath = Path("/workspace/my_project/src/main.py")

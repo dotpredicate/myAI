@@ -40,8 +40,9 @@ class TestSearch(BaseTestCase):
         await search.synchronize(provider=provider)
 
         result = await run_semantic_search(
-            "run_semantic_search",
+            "search",
             json.dumps({"prompt": "repository notes", "top_k": 10}),
+            conversation_id=1,
             scopes=[ScopeSpec(internal_name="first_repo", security_policy=SecurityPolicy.READ_ONLY)],
             embedding_provider=provider,
         )

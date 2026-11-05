@@ -22,7 +22,7 @@ class TestE2EFlows(BaseTestCase):
 
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
-                name="run_shell_command",
+                name="bash",
                 parameters=json.dumps({"command": "cat /repositories/reader_repo/data.txt"}),
             )),
             Yield(finished=FinishedMessage(content="The file contains: secret-data-42")),
@@ -50,8 +50,6 @@ class TestE2EFlows(BaseTestCase):
         f = Path(self._repo_dir.name, "hello.txt")
         f.write_text("Hello, World!", encoding="utf-8")
 
-        Path(self._workspace_dir.name, "new.txt").write_text("Hello, Agent!", encoding="utf-8")
-
         await self.client.post("/api/repositories", json={
             "display_name": "Editor Repo",
             "internal_name": "editor_repo",
@@ -61,7 +59,11 @@ class TestE2EFlows(BaseTestCase):
 
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
-                name="propose_replace",
+                name="bash",
+                parameters=json.dumps({"command": "printf 'Hello, Agent!' > /workspace/new.txt"}),
+            )),
+            Yield(finished=FinishedToolCall(
+                name="replace_file",
                 parameters=json.dumps({
                     "target": "/repositories/editor_repo/hello.txt",
                     "source": "/workspace/new.txt",
@@ -73,6 +75,7 @@ class TestE2EFlows(BaseTestCase):
             "provider_key": "mock_e2e",
             "model_id": "m",
             "prompt": "replace hello.txt",
+            "scopes": [{"internal_name": "editor_repo"}],
         })
         self.assertEqual(resp.status_code, 200)
 
@@ -102,7 +105,7 @@ class TestE2EFlows(BaseTestCase):
 
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
-                name="run_shell_command",
+                name="bash",
                 parameters=json.dumps({"command": "ls /repositories/"}),
             )),
             Yield(finished=FinishedMessage(content="Found repos: alpha, beta, gamma")),

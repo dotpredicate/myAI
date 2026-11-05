@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import suppress
 import os
+import shutil
 from pathlib import Path
 from typing import NamedTuple, Optional, List
 from domain import ScopeSpec, SecurityPolicy, RepositoryConfig
@@ -9,10 +10,18 @@ from repositories import get_repo_by_name
 
 # Paths and configuration
 REPOSITORIES_VROOT = "/repositories"
-WORKSPACE_DIR = os.getenv('WORKSPACE_DIR', os.path.expanduser('~/.myai/workspace'))
+WORKSPACES_ROOT = Path(os.getenv('MYAI_WORKSPACES_DIR', os.path.expanduser('~/.myai/workspaces')))
 WORKSPACE_VROOT = "/workspace"
 
-os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
+def _workspace_dir_for(conversation_id: int) -> Path:
+    path = WORKSPACES_ROOT / str(conversation_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def remove_workspace(conversation_id: int) -> None:
+    shutil.rmtree(WORKSPACES_ROOT / str(conversation_id), ignore_errors=True)
 
 
 def is_safe_vpath(vpath: Path, expected_vroot: Path, allowed_scopes: Optional[List[ScopeSpec]] = None) -> tuple[bool, str]:
@@ -24,22 +33,25 @@ def is_safe_vpath(vpath: Path, expected_vroot: Path, allowed_scopes: Optional[Li
         if not vpath.is_relative_to(expected_vroot):
             return False, f"Path must be under {expected_vroot}"
 
-        if allowed_scopes:
-            vpath_str = str(vpath)
-            match_found = False
+        if allowed_scopes is not None:
             for scope in allowed_scopes:
-                prefix = f"{expected_vroot}/{scope.internal_name}"
-                if vpath_str.startswith(prefix):
-                    match_found = True
-                    break
+                scope_root = expected_vroot / scope.internal_name
+                if vpath == scope_root or vpath.is_relative_to(scope_root):
+                    return True, ""
 
-            if not match_found:
-                names = [s.internal_name for s in allowed_scopes]
-                return False, f"Access denied: path is not in allowed scopes {names}"
+            names = [s.internal_name for s in allowed_scopes]
+            return False, f"Access denied: path is not in allowed scopes {names}"
 
         return True, ""
     except Exception as e:
         return False, f"Path validation error: {str(e)}"
+
+
+def is_safe_realpath(realpath: Path, expected_root: Path) -> bool:
+    try:
+        return realpath.resolve(strict=False).is_relative_to(expected_root.resolve(strict=False))
+    except (OSError, RuntimeError):
+        return False
 
 
 def vpath_to_realpath(vpath: Path, vroot: str, base_dir: str) -> Path:
@@ -51,6 +63,18 @@ def vpath_to_realpath(vpath: Path, vroot: str, base_dir: str) -> Path:
         parts = parts[1:]
 
     return Path(base_dir) / Path(*parts)
+
+
+def resolve_workspace_vpath(vpath: Path, conversation_id: int) -> Optional[Path]:
+    safe, _ = is_safe_vpath(vpath, Path(WORKSPACE_VROOT))
+    if not safe:
+        return None
+
+    root = _workspace_dir_for(conversation_id)
+    realpath = vpath_to_realpath(vpath, WORKSPACE_VROOT, str(root))
+    if not is_safe_realpath(realpath, root):
+        return None
+    return realpath
 
 
 async def get_repo_from_vpath(vpath: Path) -> Optional[RepositoryConfig]:
@@ -87,17 +111,22 @@ class ShellResult(NamedTuple):
     stderr: str
 
 
-async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]] = None) -> ShellResult:
-    workspace_path = os.path.abspath(WORKSPACE_DIR)
+async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]], conversation_id: int) -> ShellResult:
+    workspace_path = os.path.abspath(str(_workspace_dir_for(conversation_id)))
 
     bwrap_args = [
         "bwrap",
+        "--clearenv",
         "--ro-bind", "/usr", "/usr",
         "--ro-bind", "/lib", "/lib",
         "--ro-bind", "/lib64", "/lib64",
         "--ro-bind", "/bin", "/bin",
         "--proc", "/proc",
         "--dev", "/dev",
+        "--tmpfs", "/tmp",
+        "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin",
+        "--setenv", "HOME", WORKSPACE_VROOT,
+        "--setenv", "TMPDIR", "/tmp",
         "--unshare-all",
         "--bind", workspace_path, WORKSPACE_VROOT,
         "--chdir", "/",

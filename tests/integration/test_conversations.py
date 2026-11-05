@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
+import system
 from tests.helpers import BaseTestCase, Wait, Yield
 from inference.engine import FinishedMessage, FinishedToolCall, StreamingMessage
 
@@ -142,7 +143,7 @@ class TestConversations(BaseTestCase):
         await _read_ndjson_response(res)
 
     async def _setup_blocking_conversation(self) -> tuple[int, int]:
-        """Create a conversation that ends on a blocking propose_replace tool call.
+        """Create a conversation that ends on a blocking replace_file tool call.
 
         Returns (conversation_id, blocking_message_id).
         """
@@ -155,12 +156,15 @@ class TestConversations(BaseTestCase):
         })
 
         source_rel = "source.txt"
-        Path(self._workspace_dir.name, source_rel).write_text("new content", encoding="utf-8")
         Path(self._repo_dir.name, "target.txt").write_text("old content", encoding="utf-8")
 
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
-                name="propose_replace",
+                name="bash",
+                parameters=json.dumps({"command": f"printf 'new content' > /workspace/{source_rel}"}),
+            )),
+            Yield(finished=FinishedToolCall(
+                name="replace_file",
                 parameters=json.dumps({
                     "target": f"/repositories/{repo_name}/target.txt",
                     "source": f"/workspace/{source_rel}",
@@ -172,6 +176,7 @@ class TestConversations(BaseTestCase):
             "prompt": "replace the file",
             "provider_key": "mock_e2e",
             "model_id": "model-1",
+            "scopes": [{"internal_name": repo_name}],
         })
         self.assertEqual(res.status_code, 200)
         await _read_ndjson_response(res)
@@ -283,6 +288,16 @@ class TestConversations(BaseTestCase):
         self.assertEqual(events[0]["type"], "message")
         self.assertEqual(events[0]["content"], "done after continue")
         self.assertEqual(events[1]["type"], "finalized")
+
+    async def test_delete_conversation_removes_workspace(self):
+        conversation_id, _ = await self._setup_blocking_conversation()
+        workspace = system.WORKSPACES_ROOT / str(conversation_id)
+        self.assertTrue(workspace.exists())
+
+        res = await self.client.delete(f"/api/conversations/{conversation_id}")
+
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(workspace.exists())
 
 
 if __name__ == "__main__":

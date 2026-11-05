@@ -2,34 +2,43 @@ import json
 import unittest
 from pathlib import Path
 from tests.helpers import BaseTestCase
+from domain import ScopeSpec, SecurityPolicy
 from tools import run_shell_command, run_propose_replace, run_propose_diff
 
 
 class TestTools(BaseTestCase):
+    conversation_id = 1
+
+    @property
+    def workspace_dir(self) -> Path:
+        path = Path(self._workspace_dir.name) / str(self.conversation_id)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     async def test_run_shell_command_basic(self):
-        result = await run_shell_command("run_shell_command", '{"command": "echo hello"}', scopes=[])
+        result = await run_shell_command("bash", '{"command": "echo hello"}', conversation_id=self.conversation_id, scopes=[])
         parsed = json.loads(result.result)
         self.assertEqual(parsed["returncode"], 0)
         self.assertEqual(parsed["stdout"].strip(), "hello")
 
     async def test_run_shell_command_stderr(self):
-        result = await run_shell_command("run_shell_command", '{"command": "echo stderr >&2"}', scopes=[])
+        result = await run_shell_command("bash", '{"command": "echo stderr >&2"}', conversation_id=self.conversation_id, scopes=[])
         parsed = json.loads(result.result)
         self.assertEqual(parsed["returncode"], 0)
         self.assertEqual(parsed["stderr"].strip(), "stderr")
 
     async def test_run_shell_command_nonzero_exit(self):
-        result = await run_shell_command("run_shell_command", '{"command": "exit 42"}', scopes=[])
+        result = await run_shell_command("bash", '{"command": "exit 42"}', conversation_id=self.conversation_id, scopes=[])
         parsed = json.loads(result.result)
         self.assertEqual(parsed["returncode"], 42)
 
     async def test_run_shell_command_missing_command(self):
         with self.assertRaises((ValueError, KeyError)):
-            await run_shell_command("run_shell_command", '{"not_command": "hello"}', scopes=[])
+            await run_shell_command("bash", '{"not_command": "hello"}', conversation_id=self.conversation_id, scopes=[])
 
     async def test_run_shell_command_invalid_json(self):
         with self.assertRaises(ValueError):
-            await run_shell_command("run_shell_command", "not json", scopes=[])
+            await run_shell_command("bash", "not json", conversation_id=self.conversation_id, scopes=[])
 
     async def test_run_propose_replace_success(self):
         # Create a repository so the vpath resolver works
@@ -41,10 +50,11 @@ class TestTools(BaseTestCase):
             "security": "write",
         })
         self.assertEqual(create_res.status_code, 201)
+        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
 
         # Create a source file in the workspace
         source_rel = "source.txt"
-        source_real = Path(self._workspace_dir.name) / source_rel
+        source_real = self.workspace_dir / source_rel
         source_real.write_text("new content", encoding="utf-8")
 
         # Target file in the repo
@@ -56,9 +66,10 @@ class TestTools(BaseTestCase):
         source_vpath = f"/workspace/{source_rel}"
 
         result = await run_propose_replace(
-            "propose_replace",
+            "replace_file",
             json.dumps({"target": target_vpath, "source": source_vpath}),
-            scopes=[],
+            conversation_id=self.conversation_id,
+            scopes=[scope],
         )
         parsed = json.loads(result.result)
         self.assertEqual(parsed["type"], "replace_proposal")
@@ -76,36 +87,113 @@ class TestTools(BaseTestCase):
             "path": self._repo_dir.name,
             "security": "write",
         })
+        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
 
         result = await run_propose_replace(
-            "propose_replace",
+            "replace_file",
             json.dumps({
                 "target": f"/repositories/{repo_name}/target.txt",
                 "source": "/workspace/nonexistent.txt",
             }),
-            scopes=[],
+            conversation_id=self.conversation_id,
+            scopes=[scope],
         )
         parsed = json.loads(result.result)
         self.assertIn("Source file not found", parsed["error"])
 
     async def test_run_propose_replace_resolve_error(self):
-        # No repo exists -> target resolve fails
+        scope = ScopeSpec(internal_name="nonexistent_repo", security_policy=SecurityPolicy.WRITE)
         result = await run_propose_replace(
-            "propose_replace",
+            "replace_file",
             '{"target": "/repositories/nonexistent_repo/file.txt", "source": "/workspace/source.txt"}',
-            scopes=[],
+            conversation_id=self.conversation_id,
+            scopes=[scope],
         )
         parsed = json.loads(result.result)
         self.assertEqual(parsed["error"], "Could not resolve target repository path")
 
     async def test_run_propose_replace_missing_source(self):
+        repo_name = "test_replace_missing_source"
+        await self.client.post("/api/repositories", json={
+            "display_name": "Test Replace Missing Source",
+            "internal_name": repo_name,
+            "path": self._repo_dir.name,
+            "security": "write",
+        })
+        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
+        (Path(self._repo_dir.name) / "target.txt").write_text("old content", encoding="utf-8")
+
         result = await run_propose_replace(
-            "propose_replace",
-            '{"target": "/repositories", "source": "/workspace/source.txt"}',
+            "replace_file",
+            json.dumps({
+                "target": f"/repositories/{repo_name}/target.txt",
+                "source": "/workspace/source.txt",
+            }),
+            conversation_id=self.conversation_id,
+            scopes=[scope],
+        )
+        parsed = json.loads(result.result)
+        self.assertIn("Source file not found", parsed["error"])
+
+    async def test_run_propose_replace_requires_matching_scope(self):
+        repo_name = "test_replace_scope"
+        await self.client.post("/api/repositories", json={
+            "display_name": "Test Replace Scope",
+            "internal_name": repo_name,
+            "path": self._repo_dir.name,
+            "security": "write",
+        })
+
+        result = await run_propose_replace(
+            "replace_file",
+            json.dumps({
+                "target": f"/repositories/{repo_name}/target.txt",
+                "source": "/workspace/source.txt",
+            }),
+            conversation_id=self.conversation_id,
             scopes=[],
         )
         parsed = json.loads(result.result)
-        self.assertEqual(parsed["error"], "Could not resolve target repository path")
+        self.assertIn("Access denied", parsed["error"])
+
+    async def test_run_propose_replace_rejects_prefix_escape(self):
+        result = await run_propose_replace(
+            "replace_file",
+            json.dumps({
+                "target": "/repositories/foobar/target.txt",
+                "source": "/workspace/source.txt",
+            }),
+            conversation_id=self.conversation_id,
+            scopes=[ScopeSpec(internal_name="foo", security_policy=SecurityPolicy.WRITE)],
+        )
+        parsed = json.loads(result.result)
+        self.assertIn("Access denied", parsed["error"])
+
+    async def test_run_propose_replace_rejects_symlink_escape(self):
+        repo_name = "test_replace_symlink"
+        await self.client.post("/api/repositories", json={
+            "display_name": "Test Replace Symlink",
+            "internal_name": repo_name,
+            "path": self._repo_dir.name,
+            "security": "write",
+        })
+        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
+
+        outside = Path(self._repo_dir.name) / "outside.txt"
+        outside.write_text("secret", encoding="utf-8")
+        (self.workspace_dir / "leak.txt").symlink_to(outside)
+
+        result = await run_propose_replace(
+            "replace_file",
+            json.dumps({
+                "target": f"/repositories/{repo_name}/target.txt",
+                "source": "/workspace/leak.txt",
+            }),
+            conversation_id=self.conversation_id,
+            scopes=[scope],
+        )
+        parsed = json.loads(result.result)
+        self.assertIn("escapes the workspace", parsed["error"])
 
     async def test_run_propose_diff_success(self):
         repo_name = "test_diff_success"
@@ -116,6 +204,7 @@ class TestTools(BaseTestCase):
             "security": "write",
         })
         self.assertEqual(create_res.status_code, 201)
+        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
 
         # Create a target file in the repo
         target_rel = "greeting.txt"
@@ -124,7 +213,7 @@ class TestTools(BaseTestCase):
 
         # Create a diff file in the workspace
         diff_rel = "patch.diff"
-        diff_real = Path(self._workspace_dir.name) / diff_rel
+        diff_real = self.workspace_dir / diff_rel
         # A unified diff that changes "Hello, World!" to "Hello, Bob!"
         diff_content = (
             "--- greeting.txt\n"
@@ -139,9 +228,10 @@ class TestTools(BaseTestCase):
         diff_vpath = f"/workspace/{diff_rel}"
 
         result = await run_propose_diff(
-            "propose_diff",
+            "apply_patch",
             json.dumps({"target": target_vpath, "diff_path": diff_vpath}),
-            scopes=[],
+            conversation_id=self.conversation_id,
+            scopes=[scope],
         )
         parsed = json.loads(result.result)
         self.assertEqual(parsed["type"], "diff_proposal")
@@ -159,27 +249,31 @@ class TestTools(BaseTestCase):
             "path": self._repo_dir.name,
             "security": "write",
         })
+        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
 
         diff_rel = "patch.diff"
-        diff_real = Path(self._workspace_dir.name) / diff_rel
+        diff_real = self.workspace_dir / diff_rel
         diff_real.write_text("dummy diff", encoding="utf-8")
 
         result = await run_propose_diff(
-            "propose_diff",
+            "apply_patch",
             json.dumps({
                 "target": f"/repositories/{repo_name}/nonexistent.txt",
                 "diff_path": f"/workspace/{diff_rel}",
             }),
-            scopes=[],
+            conversation_id=self.conversation_id,
+            scopes=[scope],
         )
         parsed = json.loads(result.result)
         self.assertIn("Target file not found", parsed["error"])
 
     async def test_run_propose_diff_resolve_error(self):
+        scope = ScopeSpec(internal_name="test", security_policy=SecurityPolicy.WRITE)
         result = await run_propose_diff(
-            "propose_diff",
+            "apply_patch",
             '{"target": "/repositories/test/file.txt", "diff_path": "/workspace/patch.diff"}',
-            scopes=[],
+            conversation_id=self.conversation_id,
+            scopes=[scope],
         )
         parsed = json.loads(result.result)
         self.assertEqual(parsed["error"], "Could not resolve target repository path")

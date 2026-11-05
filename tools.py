@@ -6,8 +6,7 @@ import difflib
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable, TypedDict
 
-import system
-from system import REPOSITORIES_VROOT, WORKSPACE_VROOT, get_repo_from_vpath, is_safe_vpath, resolve_repo_vpath, run_sandboxed_command, vpath_to_realpath
+from system import REPOSITORIES_VROOT, get_repo_from_vpath, is_safe_realpath, is_safe_vpath, resolve_repo_vpath, resolve_workspace_vpath, run_sandboxed_command
 from domain import SecurityPolicy, ScopeSpec
 
 if TYPE_CHECKING:
@@ -26,16 +25,16 @@ class ToolCallResult:
 class Tool(TypedDict):
     name: str
     schema: FunctionDefinition
-    executor: Callable[[str, str, bool, list[ScopeSpec]], Awaitable[ToolCallResult]]
+    executor: Callable[[str, str, int, bool, list[ScopeSpec]], Awaitable[ToolCallResult]]
 
 
-async def run_shell_command(name: str, parameters: str, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
+async def run_shell_command(name: str, parameters: str, conversation_id: int, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
     params = json.loads(parameters)
     command: str = params['command']
     if not isinstance(command, str):
         raise ValueError('Cannot parse the command field. Double-check if input is valid JSON.')
 
-    shell = await run_sandboxed_command(command, scopes=scopes)
+    shell = await run_sandboxed_command(command, scopes=scopes, conversation_id=conversation_id)
 
     output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
     return ToolCallResult(output_str)
@@ -43,6 +42,7 @@ async def run_shell_command(name: str, parameters: str, privileged: bool = False
 async def run_semantic_search(
     name: str,
     parameters: str,
+    conversation_id: int,
     privileged: bool = False,
     scopes: list[ScopeSpec] = [],
     embedding_provider: "EmbeddingProvider | None" = None,
@@ -64,7 +64,7 @@ async def run_semantic_search(
         return ToolCallResult(json.dumps({"error": f"search failed: {exc}"}))
     return ToolCallResult(result=json.dumps({"results": [result._asdict() for result in results]}))
 
-async def run_propose_replace(name: str, parameters: str, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
+async def run_propose_replace(name: str, parameters: str, conversation_id: int, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
     try:
         params = json.loads(parameters)
         target_vpath_str = params.get("target")
@@ -85,14 +85,15 @@ async def run_propose_replace(name: str, parameters: str, privileged: bool = Fal
         if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
             return ToolCallResult(json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
 
-        source_safe, source_err = is_safe_vpath(source_vpath, Path(WORKSPACE_VROOT))
-        if not source_safe:
-            return ToolCallResult(json.dumps({"error": source_err}))
-        
         target_realpath = await resolve_repo_vpath(target_vpath)
         if not target_realpath:
             return ToolCallResult(json.dumps({"error": "Could not resolve target repository path"}))
-        source_realpath = vpath_to_realpath(source_vpath, WORKSPACE_VROOT, system.WORKSPACE_DIR)
+        source_realpath = resolve_workspace_vpath(source_vpath, conversation_id)
+        if source_realpath is None:
+            return ToolCallResult(json.dumps({"error": f"Source path escapes the workspace: {source_vpath}"}))
+
+        if target_repo and not is_safe_realpath(target_realpath, Path(target_repo.path)):
+            return ToolCallResult(json.dumps({"error": f"Target path escapes the repository: {target_vpath}"}))
         
         if not source_realpath.exists():
             return ToolCallResult(json.dumps({"error": f"Source file not found: {source_vpath}"}))
@@ -136,7 +137,7 @@ async def run_propose_replace(name: str, parameters: str, privileged: bool = Fal
     except Exception as e:
         return ToolCallResult(json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
-async def run_propose_diff(name: str, parameters: str, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
+async def run_propose_diff(name: str, parameters: str, conversation_id: int, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
     try:
         params = json.loads(parameters)
         target_vpath_str = params.get("target")
@@ -157,14 +158,15 @@ async def run_propose_diff(name: str, parameters: str, privileged: bool = False,
         if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
             return ToolCallResult(json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
 
-        diff_safe, diff_err = is_safe_vpath(diff_vpath, Path(WORKSPACE_VROOT))
-        if not diff_safe:
-            return ToolCallResult(json.dumps({"error": diff_err}))
-        
         target_realpath = await resolve_repo_vpath(target_vpath)
         if not target_realpath:
             return ToolCallResult(json.dumps({"error": "Could not resolve target repository path"}))
-        diff_realpath = vpath_to_realpath(diff_vpath, WORKSPACE_VROOT, system.WORKSPACE_DIR)
+        diff_realpath = resolve_workspace_vpath(diff_vpath, conversation_id)
+        if diff_realpath is None:
+            return ToolCallResult(json.dumps({"error": f"Diff path escapes the workspace: {diff_vpath}"}))
+
+        if target_repo and not is_safe_realpath(target_realpath, Path(target_repo.path)):
+            return ToolCallResult(json.dumps({"error": f"Target path escapes the repository: {target_vpath}"}))
         
         if not target_realpath.exists():
             return ToolCallResult(json.dumps({"error": f"Target file not found: {target_vpath}"}))
@@ -208,10 +210,10 @@ async def run_propose_diff(name: str, parameters: str, privileged: bool = False,
 
 TOOL_REGISTRY: list[Tool] = [
     {
-        "name": "run_shell_command",
+        "name": "bash",
         "schema": {
-            "name": "run_shell_command",
-            "description": "Execute a shell command and return the output.",
+            "name": "bash",
+            "description": "Execute a shell command in the sandbox and return stdout, stderr and the exit code.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -223,11 +225,11 @@ TOOL_REGISTRY: list[Tool] = [
         "executor": run_shell_command
     },
     {
-        "name": "run_semantic_search",
+        "name": "search",
         "schema": {
-            "name": "run_semantic_search",
+            "name": "search",
             "description": (
-                "Search the repositories for the most relevant documents "
+                "Search the indexed repositories for the most relevant documents "
                 "based on a natural-language prompt."
             ),
             "parameters": {
@@ -250,10 +252,10 @@ TOOL_REGISTRY: list[Tool] = [
         "executor": run_semantic_search
     },
     {
-        "name": "propose_replace",
+        "name": "replace_file",
         "schema": {
-            "name": "propose_replace",
-            "description": "Propose replacing a target file in the repositories folder with a source file from the workspace.",
+            "name": "replace_file",
+            "description": "Replace a file in the repositories folder with a file from the workspace. Requires user approval.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -266,10 +268,10 @@ TOOL_REGISTRY: list[Tool] = [
         "executor": run_propose_replace
     },
     {
-        "name": "propose_diff",
+        "name": "apply_patch",
         "schema": {
-            "name": "propose_diff",
-            "description": "Propose applying a diff file from the workspace to a target file in the repositories.",
+            "name": "apply_patch",
+            "description": "Apply a unified diff from the workspace to a file in the repositories. Requires user approval.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -283,11 +285,11 @@ TOOL_REGISTRY: list[Tool] = [
     }
 ]
 
-async def run_tool_call(name: str, parameters: str, privileged: bool, scopes: list[ScopeSpec]) -> ToolCallResult:
+async def run_tool_call(name: str, parameters: str, privileged: bool, scopes: list[ScopeSpec], conversation_id: int) -> ToolCallResult:
     for entry in TOOL_REGISTRY:
         if entry["name"] == name:
             try:
-                return await entry["executor"](name, parameters, privileged, scopes)
+                return await entry["executor"](name, parameters, conversation_id, privileged, scopes)
             except Exception as exc:
                 return ToolCallResult(json.dumps({"error": f"Uncaught error: {exc}"}))
     

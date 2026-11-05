@@ -3,7 +3,7 @@ import unittest
 
 from domain import Message, ScopeSpec, SecurityPolicy
 from inference.engine import ChatContext
-from inference.llama_cpp.openai import _build_system_prompt
+from inference.llama_cpp.openai import ENVIRONMENT_PROMPT, _build_system_prompt
 
 
 class TestSystemPrompt(unittest.TestCase):
@@ -25,17 +25,21 @@ class TestSystemPrompt(unittest.TestCase):
         self.assertEqual(
             prompt,
             "Current date: 2026-01-02\n\n"
+            f"{ENVIRONMENT_PROMPT}\n\n"
             "Available repositories:\n"
             "- /repositories/project (policy: read-only)\n\n"
             "Agent instructions:\nBe concise.",
         )
+        self.assertIn("bubblewrap (bwrap)", prompt)
+        self.assertIn("/workspace", prompt)
+        self.assertIn("no network access", prompt)
 
     def test_omits_empty_optional_sections(self):
         context = ChatContext(messages=[], scopes=[], tools=[], instructions=None)
 
         self.assertEqual(
             _build_system_prompt(context, today=datetime.date(2026, 1, 2)),
-            "Current date: 2026-01-02",
+            "Current date: 2026-01-02\n\n" + ENVIRONMENT_PROMPT,
         )
 
 

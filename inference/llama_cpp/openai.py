@@ -31,9 +31,22 @@ from tools import Tool
 
 logger = get_logger(__name__)
 
+ENVIRONMENT_PROMPT = """## Environment
+- You work in a Linux sandbox built with bubblewrap (bwrap). Shell commands
+  run as `bash -c` and return stdout, stderr and the exit code.
+- /workspace is your writable scratch directory for this conversation.
+- /tmp is ephemeral; it is cleared between commands.
+- Repositories are mounted under /repositories according to their policies:
+  read-only cannot be changed, privileged-write only through an approved change,
+  write can be modified directly.
+- Only these system paths are available: /usr, /lib, /lib64, /bin, /proc, /dev.
+- The host filesystem, including /home, is not visible.
+- There is no network access, no GPU, no audio and no access to other host devices.
+- Only system-installed binaries are available; you cannot install packages."""
+
 def _build_system_prompt(context: ChatContext, today: Optional[datetime.date] = None) -> str:
     current_date = today or datetime.date.today()
-    sections = [f"Current date: {current_date.isoformat()}"]
+    sections = [f"Current date: {current_date.isoformat()}", ENVIRONMENT_PROMPT]
 
     if context.scopes:
         repositories = "\n".join(

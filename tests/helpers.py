@@ -3,6 +3,7 @@ import time
 import unittest
 import tempfile
 import atexit
+from pathlib import Path
 import httpx
 import logging
 from typing import AsyncIterator, Optional, Any, List, Tuple
@@ -146,7 +147,7 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
 
         self._workspace_dir = tempfile.TemporaryDirectory()
         self._repo_dir = tempfile.TemporaryDirectory()
-        system.WORKSPACE_DIR = self._workspace_dir.name
+        system.WORKSPACES_ROOT = Path(self._workspace_dir.name)
 
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),

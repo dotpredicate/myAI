@@ -14,10 +14,10 @@ from inference.engine import FinishedToolCall
 class TestHybridFlow(BaseTestCase):
 
     async def test_mock_model_triggers_real_shell_command(self):
-        """Mock issues run_shell_command -> real subprocess executes it."""
+        """Mock issues bash -> real subprocess executes it."""
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
-                name="run_shell_command",
+                name="bash",
                 parameters=json.dumps({"command": "echo hello-world"}),
             )),
         )
@@ -44,7 +44,7 @@ class TestHybridFlow(BaseTestCase):
         """Verify mock parameters are correctly passed to the real tool."""
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
-                name="run_shell_command",
+                name="bash",
                 parameters=json.dumps({"command": "echo arg1 arg2"}),
             )),
         )
@@ -64,8 +64,8 @@ class TestHybridFlow(BaseTestCase):
         result = json.loads(tool_calls[-1]["element"]["result"])
         self.assertEqual(result["stdout"].strip(), "arg1 arg2")
 
-    async def test_mock_model_triggers_propose_replace(self):
-        """Mock issues propose_replace -> system generates a real proposal."""
+    async def test_mock_model_triggers_replace_file(self):
+        """Mock issues replace_file -> system generates a real proposal."""
         repo_name = "test_replace_hybrid"
         await self.client.post("/api/repositories", json={
             "display_name": "Test Replace Hybrid",
@@ -75,12 +75,15 @@ class TestHybridFlow(BaseTestCase):
         })
 
         source_rel = "source.txt"
-        Path(self._workspace_dir.name, source_rel).write_text("new content", encoding="utf-8")
         Path(self._repo_dir.name, "target.txt").write_text("old content", encoding="utf-8")
 
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
-                name="propose_replace",
+                name="bash",
+                parameters=json.dumps({"command": f"printf 'new content' > /workspace/{source_rel}"}),
+            )),
+            Yield(finished=FinishedToolCall(
+                name="replace_file",
                 parameters=json.dumps({
                     "target": f"/repositories/{repo_name}/target.txt",
                     "source": f"/workspace/{source_rel}",
@@ -93,6 +96,7 @@ class TestHybridFlow(BaseTestCase):
             "provider_key": "mock_e2e",
             "model_id": "m",
             "prompt": "replace the file",
+            "scopes": [{"internal_name": repo_name}],
         })
         self.assertEqual(resp.status_code, 200)
 
