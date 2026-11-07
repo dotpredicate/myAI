@@ -1,21 +1,26 @@
+import asyncio
 import unittest
+from unittest import mock
 
 from inference.llama_cpp.benchmark import (
+    HeaderUnavailable,
     ModelQuantInfo,
     _extract_bench_error,
     _model_info_result,
+    _quant_info,
     _quant_info_from_header,
     parse_llama_bench_output,
 )
+from inference.llama_cpp.gguf_header import GgufHeader
 
 
-HEADER = {
-    "tensor_data_offset": 0,
-    "size": 100,
-    "parameters": 123,
-    "architecture": "llama",
-    "context_length": 8192,
-}
+HEADER = GgufHeader(
+    size=100,
+    parameters=123,
+    architecture="llama",
+    context_length=8192,
+    tensor_data_offset=0,
+)
 
 
 class TestModelInfoFormatting(unittest.TestCase):
@@ -29,7 +34,11 @@ class TestModelInfoFormatting(unittest.TestCase):
         self.assertEqual(r["context_length"], 8192)
 
     def test_quant_info_error(self) -> None:
-        r = _quant_info_from_header("Model-Q4_K_M.gguf", "Q4_K_M", {"error": "boom"})
+        with mock.patch(
+            "inference.llama_cpp.benchmark._gguf_header",
+            new=mock.AsyncMock(side_effect=HeaderUnavailable("boom")),
+        ):
+            r = asyncio.run(_quant_info("repo", "Model-Q4_K_M.gguf", "Q4_K_M"))
         self.assertEqual(r["error"], "boom")
 
     def test_model_info_result_includes_all_quants(self) -> None:

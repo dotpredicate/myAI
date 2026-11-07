@@ -1,6 +1,11 @@
 import unittest
 
-from inference.llama_cpp.gguf import get_gguf_split_info, list_gguf_quants
+from inference.llama_cpp.gguf import (
+    SplitInfo,
+    get_gguf_split_info,
+    list_gguf_quants,
+    resolve_hf_alias,
+)
 
 
 class FakeApi:
@@ -48,12 +53,12 @@ class TestListGgufQuants(unittest.TestCase):
     def test_split_info_parses_shard_and_quant(self):
         self.assertEqual(
             get_gguf_split_info("Q4_K_M/Qwen-Q4_K_M-00001-of-00003.gguf"),
-            {"prefix": "Q4_K_M/Qwen-Q4_K_M", "index": 1, "count": 3, "tag": "Q4_K_M"},
+            SplitInfo(prefix="Q4_K_M/Qwen-Q4_K_M", shard=1, shards=3, tag="Q4_K_M"),
         )
 
     def test_dynamic_quant_keeps_ud_prefix(self):
         self.assertEqual(
-            get_gguf_split_info("Muse-Glimmer-30B-UD-Q4_K_XL.gguf")["tag"],
+            get_gguf_split_info("Muse-Glimmer-30B-UD-Q4_K_XL.gguf").tag,
             "UD-Q4_K_XL",
         )
 
@@ -68,6 +73,25 @@ class TestListGgufQuants(unittest.TestCase):
                 ("Model-Q4_K_M.gguf", "Q4_K_M"),
                 ("Model-UD-Q4_K_M.gguf", "UD-Q4_K_M"),
             ],
+        )
+
+
+class TestResolveHfAlias(unittest.TestCase):
+    def test_skips_mmproj(self):
+        api = FakeApi(["mmproj-Model-F16.gguf", "Model-F16.gguf"])
+        self.assertEqual(
+            resolve_hf_alias("org/repo:F16", api=api),
+            ("org/repo", "Model-F16.gguf"),
+        )
+
+    def test_prefers_regular_quant_over_dynamic_shard(self):
+        api = FakeApi([
+            "UD-Q4_K_M/Qwen-UD-Q4_K_M-00001-of-00002.gguf",
+            "Q4_K_M/Qwen-Q4_K_M.gguf",
+        ])
+        self.assertEqual(
+            resolve_hf_alias("org/repo:Q4_K_M", api=api),
+            ("org/repo", "Q4_K_M/Qwen-Q4_K_M.gguf"),
         )
 
 

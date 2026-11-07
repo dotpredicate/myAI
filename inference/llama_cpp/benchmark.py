@@ -5,8 +5,24 @@ import subprocess
 from pathlib import Path
 from typing import Any, NamedTuple, Optional, TypedDict
 
+import httpx
+from huggingface_hub import HfApi, RepoFile, hf_hub_url
 from log_config import get_logger
-from .gguf import download_file_slice, get_gguf_split_info, list_gguf_quants, resolve_hf_alias
+from .gguf import (
+    find_cached_gguf,
+    get_gguf_split_info,
+    list_cached_quants,
+    list_gguf_quants,
+    resolve_cached_alias,
+    resolve_hf_alias,
+)
+from .gguf_header import (
+    GgufHeader,
+    GgufParseError,
+    TruncatedGgufError,
+    parse_gguf_header,
+    read_gguf_header,
+)
 
 logger = get_logger(__name__)
 
@@ -82,20 +98,22 @@ async def model_info(model_alias: str) -> dict:
 
 
 async def _quant_info(repo_id: str, filename: str, quant: str) -> ModelQuantInfo:
-    header = await _gguf_header(repo_id, filename)
+    try:
+        header = await _gguf_header(repo_id, filename)
+    except (OSError, GgufParseError, HeaderUnavailable) as e:
+        return {"quant": quant, "filename": filename, "error": str(e)}
     return _quant_info_from_header(filename, quant, header)
 
 
-def _quant_info_from_header(filename: str, quant: str, header: dict[str, Any]) -> ModelQuantInfo:
-    entry: ModelQuantInfo = {"quant": quant, "filename": filename}
-    if "error" in header:
-        entry["error"] = header["error"]
-        return entry
-    entry["size_bytes"] = header["size"]
-    entry["parameters"] = header["parameters"]
-    entry["architecture"] = header["architecture"]
-    entry["context_length"] = header["context_length"]
-    return entry
+def _quant_info_from_header(filename: str, quant: str, header: GgufHeader) -> ModelQuantInfo:
+    return {
+        "quant": quant,
+        "filename": filename,
+        "size_bytes": header.size,
+        "parameters": header.parameters,
+        "architecture": header.architecture,
+        "context_length": header.context_length,
+    }
 
 
 def _model_info_result(model_alias: str, quants: list[ModelQuantInfo]) -> dict[str, Any]:
@@ -104,8 +122,17 @@ def _model_info_result(model_alias: str, quants: list[ModelQuantInfo]) -> dict[s
 
 def _resolve_targets(alias: str) -> list[tuple[str, str, str]]:
     if ":" in alias:
+        cached = resolve_cached_alias(alias)
+        if cached is not None:
+            repo_id, filename = cached
+            return [(repo_id, filename, get_gguf_split_info(filename).tag or filename)]
         repo_id, filename = resolve_hf_alias(alias)
-        return [(repo_id, filename, get_gguf_split_info(filename)["tag"] or filename)]
+        return [(repo_id, filename, get_gguf_split_info(filename).tag or filename)]
+
+    cached_quants = list_cached_quants(alias)
+    if cached_quants:
+        return [(alias, filename, tag) for filename, tag in cached_quants]
+
     quants = list_gguf_quants(alias)
     if not quants:
         raise ValueError(f"No GGUF quants found for {alias}")
@@ -113,13 +140,14 @@ def _resolve_targets(alias: str) -> list[tuple[str, str, str]]:
 
 
 async def _benchmark_one(repo_id: str, filename: str, quant: str, n_gen: int, n_prompt: int, repetitions: int) -> BenchmarkResult:
-    header = await _gguf_header(repo_id, filename)
-    if "error" in header:
-        return {"quant": quant, "error": header["error"]}
+    try:
+        header = await _gguf_header(repo_id, filename)
+    except (OSError, GgufParseError, HeaderUnavailable) as e:
+        return {"quant": quant, "error": str(e)}
 
     path: Optional[Path] = None
     try:
-        path = await _build_synthetic(repo_id, filename, header["tensor_data_offset"], header["size"])
+        path = await _build_synthetic(repo_id, filename, header.tensor_data_offset, header.size)
         bench = await _run_llama_bench(str(path), n_gen, n_prompt, repetitions)
     except Exception as e:
         logger.exception("Benchmark failed for %s", quant)
@@ -140,56 +168,92 @@ async def _benchmark_one(repo_id: str, filename: str, quant: str, n_gen: int, n_
         "pp_tps": bench["pp_tps"],
         "size_bytes": bench["size_bytes"],
         "parameters": bench["parameters"],
-        "architecture": header["architecture"],
-        "context_length": header["context_length"],
+        "architecture": header.architecture,
+        "context_length": header.context_length,
     }
 
 
-async def _gguf_header(repo_id: str, filename: str) -> dict:
-    cmd = ["./gguf-parser-linux-amd64", "--hf-repo", repo_id, "--hf-file", filename, "--raw", "--json", "--json-pretty=false"]
+class HeaderUnavailable(RuntimeError):
+    """The GGUF header could not be obtained locally or over the network."""
+
+
+REMOTE_HEADER_INITIAL_BYTES = 1 << 20
+REMOTE_HEADER_MAX_BYTES = 64 << 20
+
+
+async def _remote_file_size(repo_id: str, filename: str) -> int:
     try:
-        proc = await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True)
+        entries = await asyncio.to_thread(
+            HfApi().get_paths_info,
+            repo_id,
+            [filename],
+            expand=True,
+            repo_type="model",
+        )
     except Exception as e:
-        return {"error": f"Failed to read header: {str(e)}"}
-    if proc.returncode != 0:
-        return {"error": f"gguf-parser failed: {proc.stderr.strip()[:200]}"}
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError as e:
-        return {"error": f"Failed to parse header: {str(e)}"}
+        raise HeaderUnavailable(f"Failed to read remote file info: {e}") from e
+    if not entries:
+        raise HeaderUnavailable("File not found in repository")
+    entry = entries[0]
+    if not isinstance(entry, RepoFile) or not entry.size:
+        raise HeaderUnavailable("Could not determine remote file size")
+    return int(entry.size)
 
-    kv_map: dict[str, object] = {}
-    for kv in data.get("header", {}).get("metadataKV", []):
-        value = kv.get("value")
-        if not isinstance(value, dict):
-            kv_map[kv.get("key", "")] = value
 
-    context_length = 0
-    for key, value in kv_map.items():
-        if key.endswith(".context_length") and isinstance(value, (int, str)):
-            context_length = int(value)
-            break
+async def download_file_slice(repo_id: str, filename: str, start: int, length: int) -> bytes:
+    """Fetch a byte range, refusing to buffer the whole file if Range is ignored."""
+    end = start + length - 1
+    logger.info("Downloading bytes %s-%s of %s/%s", start, end, repo_id, filename)
+    url = hf_hub_url(repo_id, filename)
+    async with httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0)) as client:
+        async with client.stream("GET", url, headers={"Range": f"bytes={start}-{end}"}) as response:
+            if response.status_code != 206:
+                raise RuntimeError(
+                    f"Range request for {repo_id}/{filename} returned HTTP {response.status_code}"
+                )
+            data = b"".join([chunk async for chunk in response.aiter_bytes()])
+    if len(data) != length:
+        raise RuntimeError(f"Expected {length} bytes of {repo_id}/{filename}, got {len(data)}")
+    return data
 
-    architecture = kv_map.get("general.architecture")
-    return {
-        "tensor_data_offset": data.get("tensorDataStartOffset", 0),
-        "size": data.get("size", 0),
-        "parameters": data.get("modelParameters", 0),
-        "architecture": architecture if isinstance(architecture, str) else "",
-        "context_length": context_length,
-    }
+
+async def _remote_header(repo_id: str, filename: str) -> GgufHeader:
+    """Read a GGUF header over the network, fetching only as many bytes as needed."""
+    size = await _remote_file_size(repo_id, filename)
+    chunk = min(REMOTE_HEADER_INITIAL_BYTES, size)
+    while True:
+        data = await download_file_slice(repo_id, filename, 0, chunk)
+        try:
+            return parse_gguf_header(data, file_size=size)
+        except TruncatedGgufError:
+            if chunk >= min(REMOTE_HEADER_MAX_BYTES, size):
+                raise HeaderUnavailable("GGUF header is too large") from None
+            chunk = min(chunk * 2, REMOTE_HEADER_MAX_BYTES, size)
+
+
+async def _gguf_header(repo_id: str, filename: str) -> GgufHeader:
+    cached = find_cached_gguf(repo_id, filename)
+    if cached is not None:
+        return read_gguf_header(cached)
+    return await _remote_header(repo_id, filename)
 
 
 _BENCH_DIR = Path(os.path.expanduser("~/.cache/myai/benchmark"))
 
 
 async def _build_synthetic(repo_id: str, filename: str, offset: int, size: int) -> Path:
-    if get_gguf_split_info(filename)["count"] > 1:
+    if get_gguf_split_info(filename).shards > 1:
         raise ValueError("Benchmarking split GGUF models is not supported")
     if offset <= 0 or size <= 0:
-        raise ValueError("Could not read the GGUF header from HuggingFace")
+        raise ValueError("Could not read the GGUF header")
 
-    header = await download_file_slice(repo_id, filename, 0, offset)
+    cached = find_cached_gguf(repo_id, filename)
+    if cached is not None:
+        with cached.open("rb") as source:
+            header = source.read(offset)
+    else:
+        header = await download_file_slice(repo_id, filename, 0, offset)
+
     _BENCH_DIR.mkdir(parents=True, exist_ok=True)
     path = _BENCH_DIR / "synthetic.gguf"
     with open(path, "wb") as f:
