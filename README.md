@@ -5,6 +5,7 @@ Like Open WebUI but better suited for me.
 ## Project description
 
 ### Goals
+- Privacy first - registered repositories and workspaces are the only data myAI touches
 - Private and secure place for local model deployment
 - Personal cloud - a centralized place for your data
 - A great search engine
@@ -67,10 +68,6 @@ npm --prefix frontend run check # type-check
 npm --prefix frontend run lint  # type-aware Oxlint
 ```
 
-`tsc` emits despite type errors; `check` is the gate. `lint` runs Oxlint with the type-aware `typescript/no-unnecessary-condition` rule.
-
-### Search
-The index lives in `search/`. `semantic_search` takes an explicit list of resolved repository scopes; an empty list returns no results and never falls back to the whole index. `/api/search` resolves scopes through `scopes.resolve_scopes`: explicit scopes plus every repository the `agent_id` can access. Results carry `cosine_distance` (lower is closer) and are ordered closest first.
 
 ### Migrations
 At startup, the module scans the `migrations` folder for SQL files, sorts them in lexicographic order, executes those that have not yet been applied and records the execution in the `migrations` table
@@ -78,7 +75,7 @@ At startup, the module scans the `migrations` folder for SQL files, sorts them i
 ### Code style
 - Use explicit Python typing
 - Use explicit TypeScript typing
-- Build UI from `frontend/public/ts/components.ts`; use `el()` only for one-off markup
+- When building UI, reuse the shared components (the `components` module)
 - The use of `style` attribute is forbidden
 - Lint and type-check with `./lint.sh` (ruff, mypy, tsc, Oxlint)
 - Test with `./test.sh`
