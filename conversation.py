@@ -744,15 +744,28 @@ async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve
     return result_text
 
 
-async def delete_conversation(conv_id: int) -> bool:
+async def cancel_generation(conv_id: int) -> bool:
+    """Stop a running generation while keeping its transcript and workspace."""
     state = await get_active_generation(conv_id)
-    if state is not None and state.task is not None:
+    if state is None:
+        return False
+
+    cancelled = False
+    if state.task is not None and not state.task.done():
         state.task.cancel()
+        cancelled = True
         try:
             await state.task
         except asyncio.CancelledError:
             pass
+    if state.status == 'running':
         await state.cancel()
+        cancelled = True
+    return cancelled
+
+
+async def delete_conversation(conv_id: int) -> bool:
+    await cancel_generation(conv_id)
     async with mk_conn() as conn:
         async with conn.cursor() as cur:
             await cur.execute("DELETE FROM conversations WHERE id = %s RETURNING id", (conv_id,))
@@ -820,6 +833,17 @@ async def stream_conversation_endpoint(conv_id: int, after_sequence_id: Optional
         stream(),
         media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conv_id)}
     )
+
+@router.post('/api/conversations/{conv_id}/cancel')
+async def cancel_conversation_endpoint(conv_id: int):
+    async with mk_conn() as conn:
+        details = await get_conversation_details(conn, conv_id)
+        if not details:
+            return JSONResponse(status_code=404, content={'error': 'conversation not found'})
+    if not await cancel_generation(conv_id):
+        return JSONResponse(status_code=409, content={'error': 'conversation is not generating'})
+    return JSONResponse(content={'status': 'cancelled', 'id': conv_id})
+
 
 @router.delete('/api/conversations/{conv_id}')
 async def delete_conversation_endpoint(conv_id: int):

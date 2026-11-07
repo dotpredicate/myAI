@@ -142,6 +142,70 @@ class TestConversations(BaseTestCase):
         self.assertEqual(res.status_code, 200)
         await _read_ndjson_response(res)
 
+    async def test_cancel_stops_generation_and_keeps_transcript(self):
+        wait = Wait()
+        self.mock_provider.schedule_stream(
+            Yield(streaming=StreamingMessage(content="partial")),
+            wait,
+            Yield(finished=FinishedMessage(content="never")),
+        )
+
+        prompt_task = asyncio.create_task(self.client.post("/api/conversations/prompt", json={
+            "prompt": "Hello",
+            "provider_key": "mock_e2e",
+            "model_id": "model-1",
+        }))
+        await asyncio.sleep(0.1)
+        conversation_id = (await self.client.get("/api/conversations")).json()[0]["id"]
+        workspace = system.WORKSPACES_ROOT / str(conversation_id)
+        workspace.mkdir(parents=True, exist_ok=True)
+
+        cancel_res = await self.client.post(f"/api/conversations/{conversation_id}/cancel")
+        self.assertEqual(cancel_res.status_code, 200)
+        self.assertEqual(cancel_res.json(), {"status": "cancelled", "id": conversation_id})
+
+        prompt_res = await prompt_task
+        self.assertEqual(prompt_res.status_code, 200)
+        await _read_ndjson_response(prompt_res)
+
+        details = (await self.client.get(f"/api/conversations/{conversation_id}")).json()
+        self.assertEqual([m["element"]["type"] for m in details["messages"]], ["message"])
+        self.assertTrue(workspace.exists())
+
+        self.mock_provider.schedule_stream(
+            Yield(streaming=StreamingMessage(content="after cancel")),
+            Yield(finished=FinishedMessage(content="after cancel")),
+        )
+        again = await self.client.post("/api/conversations/prompt", json={
+            "prompt": "Again",
+            "conversation_id": conversation_id,
+            "provider_key": "mock_e2e",
+            "model_id": "model-1",
+        })
+        self.assertEqual(again.status_code, 200)
+        events = await _read_ndjson_response(again)
+        self.assertEqual(events[0]["content"], "after cancel")
+
+    async def test_cancel_idle_conversation_returns_conflict(self):
+        self.mock_provider.schedule_stream(
+            Yield(streaming=StreamingMessage(content="done")),
+            Yield(finished=FinishedMessage(content="done")),
+        )
+        res = await self.client.post("/api/conversations/prompt", json={
+            "prompt": "Hello",
+            "provider_key": "mock_e2e",
+            "model_id": "model-1",
+        })
+        await _read_ndjson_response(res)
+        conversation_id = int(res.headers["X-Conversation-ID"])
+
+        cancel_res = await self.client.post(f"/api/conversations/{conversation_id}/cancel")
+        self.assertEqual(cancel_res.status_code, 409)
+
+    async def test_cancel_missing_conversation_returns_not_found(self):
+        res = await self.client.post("/api/conversations/9999/cancel")
+        self.assertEqual(res.status_code, 404)
+
     async def _setup_blocking_conversation(self) -> tuple[int, int]:
         """Create a conversation that ends on a blocking replace_file tool call.
 

@@ -43,6 +43,7 @@ interface ChatState {
   modelToken: number;
   streamController: AbortController | null;
   lastAnnouncedBlocking: number | null;
+  stopRequested: boolean;
 }
 
 export function mount(route: Route, options: MountOptions = {}) {
@@ -98,6 +99,7 @@ export function mount(route: Route, options: MountOptions = {}) {
   const hint = InlineHint('Enter for a new line · Ctrl/Cmd+Enter to send');
   const sendButton = Button('Send', { variant: 'primary' });
   const continueButton = Button('Continue');
+  const stopButton = Button('Stop', { variant: 'quiet' });
 
   const composer = el('div', { class: 'composer' },
     composerAlerts,
@@ -106,7 +108,7 @@ export function mount(route: Route, options: MountOptions = {}) {
     selectRow,
     modelStatus,
     settingsDetails,
-    Row(hint, liveStatus, Spacer(), continueButton, sendButton),
+    Row(hint, liveStatus, Spacer(), stopButton, continueButton, sendButton),
   );
 
   root.appendChild(top);
@@ -158,6 +160,7 @@ export function mount(route: Route, options: MountOptions = {}) {
     modelToken: 0,
     streamController: null,
     lastAnnouncedBlocking: null,
+    stopRequested: false,
   };
 
 
@@ -257,6 +260,8 @@ export function mount(route: Route, options: MountOptions = {}) {
     const canWrite = textarea.value.trim().length > 0;
     sendButton.disabled = !conversationAvailable || busy || blocking || !modelReady || !canWrite;
     continueButton.disabled = !conversationAvailable || busy || blocking || !modelReady || !conversationId;
+    stopButton.hidden = !busy;
+    stopButton.disabled = !busy || state.stopRequested;
     textarea.readOnly = blocking;
     if (blocking) announce('Approval required. The message box is paused.');
     else if (busy) announce('Assistant is responding…');
@@ -697,6 +702,7 @@ export function mount(route: Route, options: MountOptions = {}) {
 
   sendButton.addEventListener('click', sendPrompt);
   continueButton.addEventListener('click', () => continueGeneration());
+  stopButton.addEventListener('click', () => { void stopGeneration(); });
 
   function composerPayload(): GenerationRequest {
     const agent = selectedAgent();
@@ -820,6 +826,33 @@ export function mount(route: Route, options: MountOptions = {}) {
     }
   }
 
+  async function stopGeneration(): Promise<void> {
+    if (!conversationId || !state.generating || state.stopRequested) return;
+    state.stopRequested = true;
+    stopButton.disabled = true;
+    try {
+      await api.post(`/api/conversations/${conversationId}/cancel`, {});
+    } catch (error) {
+      state.stopRequested = false;
+      if (error instanceof ApiError && error.status === 409) {
+        announce('Generation already finished.');
+        updateComposerState();
+        return;
+      }
+      notify(messageOf(error) || 'Could not stop generation.', { level: 'error' });
+      updateComposerState();
+      return;
+    }
+    const controller = state.streamController;
+    if (controller === null) {
+      state.stopRequested = false;
+      announce('Generation stopped.');
+      return;
+    }
+    controller.abort();
+    announce('Stopping generation…');
+  }
+
   async function sendPrompt() {
     if (sendButton.disabled) {
       if (state.blockingId !== null) focusApproval();
@@ -875,6 +908,12 @@ export function mount(route: Route, options: MountOptions = {}) {
     }
     updateHeader();
     const result = await consumeStream(opened, controller);
+    if (state.stopRequested) {
+      state.stopRequested = false;
+      announce('Generation stopped.');
+      await loadConversation();
+      return;
+    }
     if (result?.error) reportStreamError(result.error);
     else if (result) announceCompletion();
   }
@@ -909,6 +948,12 @@ export function mount(route: Route, options: MountOptions = {}) {
       return;
     }
     const result = await consumeStream(opened, controller);
+    if (state.stopRequested) {
+      state.stopRequested = false;
+      announce('Generation stopped.');
+      await loadConversation();
+      return;
+    }
     if (result?.error) reportStreamError(result.error);
     else if (result) announceCompletion();
   }
@@ -940,6 +985,7 @@ export function mount(route: Route, options: MountOptions = {}) {
     conversationDetails = null;
     conversationAvailable = true;
     state.generating = false;
+    state.stopRequested = false;
     state.blockingId = null;
     state.generationError = false;
     state.lastAnnouncedBlocking = null;
