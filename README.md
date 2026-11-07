@@ -1,19 +1,15 @@
 myAI
 
-Like Open WebUI but better suited for me.
-
 ## Project description
 
 ### Goals
-- Privacy first - registered repositories and workspaces are the only data myAI touches
-- Private and secure place for local model deployment
-- Personal cloud - a centralized place for your data
+- Private and secure place to use AI
+- Personal cloud - a centralized place for data
 - A great search engine
 - Simple and powerful Agent creation
+- Scales with model capability
 
 ### Guidelines
-- Secure and private
-- Just works (tm)
 - Keep it simple
 - Just use postgres
 - Move fast and break things
@@ -27,7 +23,7 @@ Project structure:
 - `./scopes.py` - repository scope resolution shared by conversations and search
 - `./repositories.py` - repository registry and indexing input
 - `./agents.py` - agent configuration and repository access
-- `./search/` - indexing and vector search (`__init__.py`, `documents.py`)
+- `./search/` - indexing and vector search
 - `./database.py` - database connection and utility functions
 - `./system.py` - system-level utilities (workspaces, sandbox)
 - `./tools.py` - tool execution logic
@@ -35,8 +31,8 @@ Project structure:
 - `./inference/` - AI protocol handling (stateless), split into submodules
 - `./images.py` - image generation routes
 - `./migrations/` - folder with migration scripts
-- `./frontend/` - web front-end sources (`public/`, `public/ts/`) and JS output (`public/js/`)
-- `./dev.sh` - development entrypoint (frontend watch + `fastapi dev`)
+- `./frontend/` - web front-end sources
+- `./dev.sh` - development entrypoint
 - `./lint.sh` - lint and type-check
 - `./test.sh` - test runner
 - `./tests/` - unit, integration and e2e tests
@@ -59,14 +55,7 @@ Project structure:
 Server runs at http://127.0.0.1:8000
 
 ### Front-end
-`frontend/public/` is served directly by FastAPI; `public/ts/` → `tsc` → `public/js/` (git-ignored). No bundler.
-
-```
-./dev.sh                        # build + tsc watch + fastapi dev
-npm --prefix frontend run build # one-shot build
-npm --prefix frontend run check # type-check
-npm --prefix frontend run lint  # type-aware Oxlint
-```
+`frontend/public/` is served directly by FastAPI; `public/ts/` -> `tsc` -> `public/js/`. No bundler.
 
 
 ### Migrations
