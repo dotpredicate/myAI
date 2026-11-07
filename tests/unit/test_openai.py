@@ -1,9 +1,9 @@
 import datetime
 import unittest
 
-from domain import Message, ScopeSpec, SecurityPolicy
+from domain import Message, ScopeSpec, SecurityPolicy, ToolCall
 from inference.engine import ChatContext
-from inference.llama_cpp.openai import ENVIRONMENT_PROMPT, _build_system_prompt
+from inference.llama_cpp.openai import ENVIRONMENT_PROMPT, _build_system_prompt, _to_oai_messages
 
 
 class TestSystemPrompt(unittest.TestCase):
@@ -33,6 +33,21 @@ class TestSystemPrompt(unittest.TestCase):
         self.assertIn("bubblewrap (bwrap)", prompt)
         self.assertIn("/workspace", prompt)
         self.assertIn("no network access", prompt)
+
+    def test_tool_results_and_arguments_are_not_truncated(self):
+        # Truncating tool results here would corrupt the JSON envelope that the
+        # sandbox produced; producers cap their own output instead.
+        parameters = '{"command": "ls -R ."}'
+        result = '{"returncode": 0, "stdout": "' + "x" * 1000 + '", "stderr": ""}'
+        call = ToolCall(name="bash", parameters=parameters, result=result)
+        context = ChatContext(messages=[(1, call)], scopes=[], tools=[], instructions=None)
+
+        messages = _to_oai_messages(context)
+        tool_messages = [message for message in messages if message.get("role") == "tool"]
+        self.assertEqual(len(tool_messages), 1)
+        self.assertEqual(tool_messages[0]["content"], result)
+        assistant = next(message for message in messages if message.get("role") == "assistant")
+        self.assertEqual(assistant["tool_calls"][0]["function"]["arguments"], parameters)
 
     def test_omits_empty_optional_sections(self):
         context = ChatContext(messages=[], scopes=[], tools=[], instructions=None)

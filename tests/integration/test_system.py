@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from tests.helpers import BaseTestCase
 from system import (
+    MAX_OUTPUT_CHARS,
     is_safe_realpath,
     is_safe_vpath,
     run_sandboxed_command,
@@ -71,6 +72,21 @@ class TestSystem(BaseTestCase):
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "/workspace\n/tmp\ntmp-ok\n")
+
+    async def test_run_sandboxed_command_starts_in_workspace(self):
+        result = await run_sandboxed_command("pwd", scopes=[], conversation_id=1)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "/workspace")
+
+    async def test_run_sandboxed_command_truncates_large_output(self):
+        result = await run_sandboxed_command(
+            "python3 -c \"print('x' * 200000)\"",
+            scopes=[],
+            conversation_id=1,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertLessEqual(len(result.stdout), MAX_OUTPUT_CHARS + 200)
+        self.assertIn("truncated", result.stdout)
 
     async def test_run_sandboxed_command_mounts_workspace(self):
         result = await run_sandboxed_command(

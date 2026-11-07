@@ -12,6 +12,14 @@ from repositories import get_repo_by_name
 REPOSITORIES_VROOT = "/repositories"
 WORKSPACES_ROOT = Path(os.getenv('MYAI_WORKSPACES_DIR', os.path.expanduser('~/.myai/workspaces')))
 WORKSPACE_VROOT = "/workspace"
+MAX_OUTPUT_CHARS = 32 * 1024
+
+
+def _truncate_output(text: str, label: str) -> str:
+    if len(text) <= MAX_OUTPUT_CHARS:
+        return text
+    omitted = len(text) - MAX_OUTPUT_CHARS
+    return text[:MAX_OUTPUT_CHARS] + f"\n...[truncated {omitted} chars of {label}]"
 
 
 def _workspace_dir_for(conversation_id: int) -> Path:
@@ -129,7 +137,7 @@ async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]],
         "--setenv", "TMPDIR", "/tmp",
         "--unshare-all",
         "--bind", workspace_path, WORKSPACE_VROOT,
-        "--chdir", "/",
+        "--chdir", WORKSPACE_VROOT,
     ]
 
     if not scopes:
@@ -177,8 +185,8 @@ async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]],
 
         return ShellResult(
             process.returncode,
-            stdout.decode(errors="replace"),
-            stderr.decode(errors="replace"),
+            _truncate_output(stdout.decode(errors="replace"), "stdout"),
+            _truncate_output(stderr.decode(errors="replace"), "stderr"),
         )
     except Exception as e:
         return ShellResult(
