@@ -225,8 +225,7 @@ TOOL_REGISTRY: list[Tool] = [
             "name": "search",
             "description": (
                 "Search indexed repositories for relevant documents. Use it for "
-                "semantic or conceptual questions; for exact or exhaustive literal "
-                "matches use bash grep instead. Results are limited to the "
+                "semantic or conceptual questions. Results are limited to the "
                 "conversation's resolved repository scopes; an empty scope list "
                 "returns no results. Results are ordered by cosine distance, "
                 "lowest first."

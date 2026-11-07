@@ -242,7 +242,7 @@ export function mount(route: Route, options: MountOptions = {}) {
     window.setTimeout(() => {
       delete block.node.dataset.highlight;
     }, 1600);
-    const target = block.focusAction?.() || block.node.querySelector<HTMLElement>('summary');
+    const target = block.focusAction() || block.node.querySelector<HTMLElement>('summary');
     target?.focus();
   }
 
@@ -268,7 +268,7 @@ export function mount(route: Route, options: MountOptions = {}) {
 
   function currentConfigValues(): Record<string, ParamValue> {
     if (!state.currentProvider || !state.currentModel) return {};
-    return { ...(state.configs[configKey(state.currentProvider, state.currentModel)] ?? {}) };
+    return { ...state.configs[configKey(state.currentProvider, state.currentModel)] };
   }
 
   function setConfigValues(values: Record<string, ParamValue>): void {
@@ -364,7 +364,7 @@ export function mount(route: Route, options: MountOptions = {}) {
     return chosen;
   }
 
-  async function loadModelsFor(providerKey: string, options: { agent?: boolean; preferModel?: string } = {}): Promise<void> {
+  async function loadModelsFor(providerKey: string, opts: { agent?: boolean; preferModel?: string } = {}): Promise<void> {
     const token = ++state.modelToken;
     state.loadingModels = true;
     state.agentModelMissing = false;
@@ -387,8 +387,8 @@ export function mount(route: Route, options: MountOptions = {}) {
       const data = await api.get<ProviderModelList>(`/api/providers/${encodeURIComponent(providerKey)}/models`);
       if (destroyed || token !== state.modelToken) return;
       const models = Array.isArray(data.models) ? data.models : [];
-      const agent = options.agent ? selectedAgent() : null;
-      const desired = agent ? agent.model_id : (options.preferModel ?? state.modelsStored[providerKey] ?? '');
+      const agent = opts.agent ? selectedAgent() : null;
+      const desired = agent ? agent.model_id : (opts.preferModel ?? state.modelsStored[providerKey] ?? '');
       const chosen = applyModelsToSelect(models, desired);
       state.currentModel = chosen;
       if (agent) {
@@ -416,7 +416,7 @@ export function mount(route: Route, options: MountOptions = {}) {
     } catch (error) {
       if (destroyed || token !== state.modelToken) return;
       state.currentModel = '';
-      state.agentModelMissing = Boolean(options.agent);
+      state.agentModelMissing = Boolean(opts.agent);
       clear(modelSelect);
       modelSelect.appendChild(Option('', 'Models unavailable'));
       modelSelect.disabled = true;
@@ -622,9 +622,9 @@ export function mount(route: Route, options: MountOptions = {}) {
     selectAgent(agentSelect.value, { restoreManual: agentSelect.value === '' });
   });
 
-  async function selectAgent(key: string, options: { restoreManual?: boolean } = {}): Promise<void> {
+  async function selectAgent(key: string, opts: { restoreManual?: boolean } = {}): Promise<void> {
     const previousAgent = selectedAgent();
-    if (options.restoreManual && previousAgent) {
+    if (opts.restoreManual && previousAgent) {
       // Keep the manual provider/model that were active before the agent was chosen.
       state.manualProvider = state.manualProvider || state.currentProvider;
       state.manualModel = state.manualModel || state.currentModel;
@@ -646,7 +646,7 @@ export function mount(route: Route, options: MountOptions = {}) {
       updateComposerState();
       return;
     }
-    if (options.restoreManual) {
+    if (opts.restoreManual) {
       // The current provider/model are the manual ones; remember them now.
       state.manualProvider = state.currentProvider || state.manualProvider;
       state.manualModel = state.currentModel || state.manualModel;
@@ -920,7 +920,7 @@ export function mount(route: Route, options: MountOptions = {}) {
       if (decision === 'reject' && comment) payload.comment = comment;
       const result = await api.post<ToolCallDecisionResponse>(`/api/conversations/${conversationId}/tool_calls/${id}/decide`, payload);
       state.blockingId = null;
-      timeline.applyDecision(id, decision, comment, result?.result);
+      timeline.applyDecision(id, decision, comment, result.result);
       updateBlockingUI();
       notify(decision === 'approve' ? 'Action approved.' : 'Action rejected.', { level: 'success' });
       await continueGeneration();

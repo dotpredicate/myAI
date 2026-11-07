@@ -491,7 +491,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
   }
   document.addEventListener('visibilitychange', onVisibility);
 
-  if (activeTab?.refresh) {
+  if (activeTab.refresh) {
     pollTimer = window.setInterval(refreshActive, 5000);
   }
 

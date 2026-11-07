@@ -416,7 +416,7 @@ export function isAbort(error: unknown): boolean {
 }
 
 async function send(path: string, options: RequestOptions = {}): Promise<Response> {
-  const headers: Record<string, string> = { ...(options.headers || {}) };
+  const headers: Record<string, string> = { ...options.headers };
   const init: RequestInit = { method: options.method || 'GET', headers };
   if (options.signal) init.signal = options.signal;
   if (options.body !== undefined) {
@@ -436,6 +436,7 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
   const data = await parseBody(response);
   if (!response.ok) throw new ApiError(errorMessage(data, response.status), response.status, data);
   // Trust boundary: the server contract is described by the interfaces above.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- generic response type is defined by the server contract
   return data as T;
 }
 
@@ -462,7 +463,7 @@ async function* readNdjson<T>(response: Response): AsyncGenerator<T, void, unkno
   const decoder = new TextDecoder();
   let buffer = '';
   try {
-    while (true) {
+    for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
       buffer += decoder.decode(value, { stream: true });

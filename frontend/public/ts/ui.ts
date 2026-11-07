@@ -193,10 +193,10 @@ const MAX_TOASTS = 3;
 const TIMEOUT_MS = 5000;
 const NOTIFY_LEVELS = ['info', 'success', 'error'] as const;
 export type NotifyLevel = (typeof NOTIFY_LEVELS)[number];
-let container: HTMLElement | null = null;
+let toastContainer: HTMLElement | null = null;
 
 export function initNotifications(element: HTMLElement | null): void {
-  container = element;
+  toastContainer = element;
 }
 
 export interface NotifyOptions {
@@ -205,13 +205,13 @@ export interface NotifyOptions {
 }
 
 export function notify(message: string, options: NotifyOptions = {}): void {
-  if (!container) return;
+  if (!toastContainer) return;
   const level: NotifyLevel = options.level && NOTIFY_LEVELS.includes(options.level) ? options.level : 'info';
   const toast = document.createElement('div');
   toast.className = `toast toast--${level}`;
 
   const text = document.createElement('p');
-  text.textContent = String(message);
+  text.textContent = message;
   toast.appendChild(text);
 
   const close = document.createElement('button');
@@ -231,9 +231,9 @@ export function notify(message: string, options: NotifyOptions = {}): void {
     timer = window.setTimeout(remove, 2500);
   });
 
-  container.appendChild(toast);
-  while (container.children.length > MAX_TOASTS) {
-    container.firstElementChild?.remove();
+  toastContainer.appendChild(toast);
+  while (toastContainer.children.length > MAX_TOASTS) {
+    toastContainer.firstElementChild?.remove();
   }
 }
 
@@ -341,12 +341,15 @@ export function prettyJson(text: string | null | undefined): string {
   }
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 export function parseJsonObject(text: string | null | undefined): Record<string, unknown> | null {
   if (!text?.trim()) return null;
   try {
     const parsed: unknown = JSON.parse(text);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
-    return parsed as Record<string, unknown>;
+    return isPlainObject(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -495,7 +498,7 @@ function currentValue(values: ParamValues | null | undefined, param: ParamSpec):
 }
 
 function parseParamValue(param: ParamSpec, raw: string): ParamValue | undefined {
-  if (raw === '' || raw === null || raw === undefined) return undefined;
+  if (raw === '') return undefined;
   if (param.type === 'int') {
     const number = Number.parseInt(raw, 10);
     return Number.isNaN(number) ? undefined : number;
@@ -509,7 +512,7 @@ function parseParamValue(param: ParamSpec, raw: string): ParamValue | undefined 
     if (raw === 'false') return false;
     return undefined;
   }
-  return String(raw);
+  return raw;
 }
 
 export interface ParamFieldOptions {
@@ -552,7 +555,7 @@ export function renderParamFields(
       const input = Input({
         id,
         type,
-        value: initial === undefined || initial === null ? '' : String(initial),
+        value: String(initial),
         placeholder: defaultValueLabel(param),
       });
       if (param.min !== null && param.min !== undefined) input.min = String(param.min);
@@ -575,7 +578,7 @@ export function renderParamFields(
 export function pickDefined(values?: ParamValues | null): ParamValues {
   const result: ParamValues = {};
   for (const [key, value] of Object.entries(values || {})) {
-    if (value !== undefined && value !== null && value !== '') result[key] = value;
+    if (value !== '') result[key] = value;
   }
   return result;
 }
@@ -587,7 +590,7 @@ export function createCopyButton(getText: () => string, label = 'Copy'): HTMLBut
     event.stopPropagation();
     event.preventDefault();
     try {
-      await navigator.clipboard.writeText(String(getText() ?? ''));
+      await navigator.clipboard.writeText(getText());
       button.textContent = 'Copied!';
     } catch {
       button.textContent = 'Copy failed';

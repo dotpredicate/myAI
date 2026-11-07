@@ -7,7 +7,7 @@
     "build": "rm -rf public/js && tsc -p .",
     "dev": "tsc -p . --watch",
     "check": "tsc -p . --noEmit",
-    "lint": "oxlint --type-aware -W typescript/no-unnecessary-condition public/ts"
+    "lint": "oxlint --type-aware -W suspicious -W typescript/no-unnecessary-condition -A typescript/no-floating-promises public/ts"
   },
   "devDependencies": {
     "oxlint": "1.92.0",

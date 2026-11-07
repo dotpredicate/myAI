@@ -294,7 +294,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
       const item = ListItem(el('div', { class: 'list-item-main' },
           el('a', { href: `#/repositories/${encodeKey(repo.internal_name)}` },
             repo.display_name || repo.internal_name),
-          Row(Badge(repo.repo_type || 'plain'), Badge(policyLabel(repo.security_policy), { accent: true })),
+          Row(Badge(repo.repo_type), Badge(policyLabel(repo.security_policy), { accent: true })),
         ), deleteButton);
       list.appendChild(item);
     }
@@ -382,7 +382,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     detailContainer.appendChild(el('header', {},
       el('div', {},
         Heading(2, repo.display_name || repo.internal_name),
-        Row(Badge(repo.internal_name, { accent: true }), Badge(repo.repo_type || 'plain'), Badge(policyLabel(repo.security_policy))),
+        Row(Badge(repo.internal_name, { accent: true }), Badge(repo.repo_type), Badge(policyLabel(repo.security_policy))),
       ),
     ));
     detailContainer.appendChild(LineHint(el('code', {}, repo.path)));

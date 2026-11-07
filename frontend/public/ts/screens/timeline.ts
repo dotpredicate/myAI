@@ -66,7 +66,7 @@ export function createMarkdown(container: Element): MarkdownWriter {
   return {
     write(chunk: string) {
       if (ended || !chunk) return;
-      parser_write(instance, String(chunk));
+      parser_write(instance, chunk);
     },
     end() {
       if (ended) return;
@@ -94,8 +94,8 @@ export function renderOutput(container: Element, text: string | null | undefined
   if (text === null || text === undefined || text === '') return;
   const parsed = parseJsonObject(text);
   if (parsed && (parsed.type === 'replace_proposal' || parsed.type === 'diff_proposal') && typeof parsed.diff === 'string') {
-    if (parsed.target) {
-      container.appendChild(LineHint('Target: ', el('code', {}, String(parsed.target))));
+    if (typeof parsed.target === 'string' && parsed.target) {
+      container.appendChild(LineHint('Target: ', el('code', {}, parsed.target)));
     }
     renderDiff(container, parsed.diff);
     return;
@@ -383,7 +383,7 @@ export class Timeline {
 
   addStored(record: StoredMessageRecord): Block | null {
     const element: ConversationElement = record.element;
-    const seq = Number(record.sequence_id) || 0;
+    const seq = record.sequence_id || 0;
     this.lastSequence = Math.max(this.lastSequence, seq);
     let block: Block | null = null;
 
@@ -426,74 +426,77 @@ export class Timeline {
   }
 
   handleEvent(event: StreamEvent): void {
-    if (!event || typeof event.type !== 'string') return;
-    if (event.type === 'message') {
-      const role: Role = event.role === 'user' ? 'user' : 'assistant';
-      if (!this.active || this.active.kind !== 'message' || this.active.role !== role) {
+    if (typeof event.type !== 'string') return;
+    switch (event.type) {
+      case 'generation_error': {
         this.finalizeActive();
-        const block = this.register(createMessageBlock(role));
-        this.active = { kind: 'message', role, block };
+        this.callbacks.onGenerationError?.(event.message || 'Generation failed.');
+        return;
       }
-      this.active.block.append(event.content || '');
-      return;
-    }
-    if (event.type === 'thinking') {
-      if (!this.active || this.active.kind !== 'thinking') {
-        this.finalizeActive();
-        const block = this.register(createThinkingBlock());
-        this.active = { kind: 'thinking', block };
-      }
-      this.active.block.append(event.content || '');
-      return;
-    }
-    if (event.type === 'tool_call') {
-      this.finalizeActive();
-      const block = createToolBlock(event.name, event.parameters, event.result);
-      this.lastTool = block;
-      this.register(block);
-      this.active = { kind: 'tool', block };
-      return;
-    }
-    if (event.type === 'finalized') {
-      const id = Number(event.id);
-      const seq = Number(event.sequence_id) || 0;
-      this.lastSequence = Math.max(this.lastSequence, seq);
-      if (this.active) {
-        this.active.block.setId(id);
-        if (this.active.kind === 'tool') {
-          this.blocksById.set(id, this.active.block);
-          if (this.blockingId === id) this.markBlocking(id);
+      case 'message': {
+        const role: Role = event.role === 'user' ? 'user' : 'assistant';
+        if (!this.active || this.active.kind !== 'message' || this.active.role !== role) {
+          this.finalizeActive();
+          const block = this.register(createMessageBlock(role));
+          this.active = { kind: 'message', role, block };
         }
+        this.active.block.append(event.content || '');
+        return;
       }
-      this.finalizeActive();
-      return;
-    }
-    if (event.type === 'approval_request') {
-      const id = Number(event.original_message_id);
-      this.blockingId = id;
-      this.markBlocking(id);
-      this.callbacks.onBlockingChange?.(id);
-      return;
-    }
-    if (event.type === 'tool_call_decision') {
-      const id = Number(event.original_message_id);
-      const block = this.blocksById.get(id) || this.lastTool;
-      block?.setDecision(event.decision, event.comment);
-      if (this.blockingId === id) {
-        this.blockingId = null;
-        this.callbacks.onBlockingChange?.(null);
+      case 'thinking': {
+        if (!this.active || this.active.kind !== 'thinking') {
+          this.finalizeActive();
+          const block = this.register(createThinkingBlock());
+          this.active = { kind: 'thinking', block };
+        }
+        this.active.block.append(event.content || '');
+        return;
       }
-      return;
-    }
-    if (event.type === 'tool_call_result') {
-      const id = Number(event.original_message_id);
-      const block = this.blocksById.get(id) || this.lastTool;
-      block?.setResult(event.result);
-      return;
-    }
-    if (event.type === 'generation_error') {
-      this.finalizeActive();
-      this.callbacks.onGenerationError?.(event.message || 'Generation failed.');
+      case 'tool_call': {
+        this.finalizeActive();
+        const block = createToolBlock(event.name, event.parameters, event.result);
+        this.lastTool = block;
+        this.register(block);
+        this.active = { kind: 'tool', block };
+        return;
+      }
+      case 'finalized': {
+        const id = event.id;
+        const seq = event.sequence_id || 0;
+        this.lastSequence = Math.max(this.lastSequence, seq);
+        if (this.active) {
+          this.active.block.setId(id);
+          if (this.active.kind === 'tool') {
+            this.blocksById.set(id, this.active.block);
+            if (this.blockingId === id) this.markBlocking(id);
+          }
+        }
+        this.finalizeActive();
+        return;
+      }
+      case 'approval_request': {
+        const id = event.original_message_id;
+        this.blockingId = id;
+        this.markBlocking(id);
+        this.callbacks.onBlockingChange?.(id);
+        return;
+      }
+      case 'tool_call_decision': {
+        const id = event.original_message_id;
+        const block = this.blocksById.get(id) || this.lastTool;
+        block?.setDecision(event.decision, event.comment);
+        if (this.blockingId === id) {
+          this.blockingId = null;
+          this.callbacks.onBlockingChange?.(null);
+        }
+        return;
+      }
+      case 'tool_call_result': {
+        const id = event.original_message_id;
+        const block = this.blocksById.get(id) || this.lastTool;
+        block?.setResult(event.result);
+        return;
+      }
     }
   }
 

@@ -92,7 +92,7 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   ...children: ChildList[]
 ): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
-  const entries: [string, unknown][] = Object.entries(props || {});
+  const entries = Object.entries(props || {});
   for (const [key, value] of entries) {
     if (value === null || value === undefined || value === false) continue;
     if (key === 'class') {

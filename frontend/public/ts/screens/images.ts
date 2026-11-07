@@ -3,6 +3,18 @@ import { api } from '../api.js';
 import type { AddImageModelRequest, DeleteImageModelResponse, GenerateImageRequest, GenerateImageResponse, ImageFile, ImageFileList, ImageModel, ImageModelList, ImageRecipe, ImageRecipeList, InferenceParam, InferenceParamList } from '../api.js';
 import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldGroup, FieldLabel, Notice, Button, LinkButton, Input, TextArea, Select, Option, Form } from '../components.js';
 
+function defaultsFor(params: InferenceParam[]): Record<string, ParamValue> {
+  const values: Record<string, ParamValue> = {};
+  for (const param of params) {
+    if (param.default !== null) values[param.name] = param.default;
+  }
+  return values;
+}
+
+function fileMatches(file: ImageFile, categories: string[] | undefined): boolean {
+  return !categories || categories.length === 0 || categories.includes(file.category);
+}
+
 export function mount(_route: Route, _options: MountOptions = {}) {
   const root = Page({ narrow: true });
   root.appendChild(Heading(1, 'Images'));
@@ -88,7 +100,7 @@ export function mount(_route: Route, _options: MountOptions = {}) {
   let destroyed = false;
 
   function selectedModel(): ImageModel | null {
-    return state.models.find((model) => String(model.id) === String(state.selectedId)) || null;
+    return state.models.find((model) => model.id === state.selectedId) || null;
   }
 
   function persistParams(): void {
@@ -110,14 +122,14 @@ export function mount(_route: Route, _options: MountOptions = {}) {
     availability.appendChild(el('div', { class: 'field-error' },
       'This model is unavailable because required files are missing. Generation is disabled.'));
     const list = el('ul', { class: 'missing-list' });
-    for (const item of model.missing || []) list.appendChild(el('li', {}, item));
+    for (const item of model.missing) list.appendChild(el('li', {}, item));
     availability.appendChild(list);
   }
 
   function renderModelOptions(): void {
     clear(modelSelect);
     for (const model of state.models) {
-      modelSelect.appendChild(Option(String(model.id), `${model.name || model.id}${model.available ? '' : ' (unavailable)'}`));
+      modelSelect.appendChild(Option(model.id, `${model.name || model.id}${model.available ? '' : ' (unavailable)'}`));
     }
     if (state.models.length === 0) {
       modelSelect.appendChild(Option('', 'No image models configured'));
@@ -158,10 +170,10 @@ export function mount(_route: Route, _options: MountOptions = {}) {
       if (destroyed) return;
       state.models = Array.isArray(data.models) ? data.models : [];
       const stored = readString('images.model', '');
-      const preferred = options.selectId || stored || data.default || (state.models[0] && String(state.models[0].id)) || '';
-      state.selectedId = state.models.some((model) => String(model.id) === String(preferred))
-        ? String(preferred)
-        : (state.models[0] ? String(state.models[0].id) : '');
+      const preferred = options.selectId || stored || data.default || (state.models[0] && state.models[0].id) || '';
+      state.selectedId = state.models.some((model) => model.id === preferred)
+        ? preferred
+        : (state.models[0] ? state.models[0].id : '');
       if (state.selectedId) writeValue('images.model', state.selectedId);
       clear(modelStatus);
       fillModelSelect();
@@ -186,14 +198,6 @@ export function mount(_route: Route, _options: MountOptions = {}) {
     }
   }
 
-  function defaultsFor(params: InferenceParam[]): Record<string, ParamValue> {
-    const values: Record<string, ParamValue> = {};
-    for (const param of params) {
-      if (param.default !== undefined && param.default !== null) values[param.name] = param.default;
-    }
-    return values;
-  }
-
   function currentValuesFor(modelId: string): Record<string, ParamValue> {
     return asParamValues(state.paramsByModel[modelId]);
   }
@@ -204,11 +208,11 @@ export function mount(_route: Route, _options: MountOptions = {}) {
     if (!state.paramsReady) return;
     const model = selectedModel();
     if (!model) return;
-    const values = { ...defaultsFor(state.params), ...currentValuesFor(String(model.id)) };
+    const values = { ...defaultsFor(state.params), ...currentValuesFor(model.id) };
     const negative = state.params.find((param) => param.name === 'negative_prompt');
     const regular = state.params.filter((param) => param.name !== 'negative_prompt');
 
-    const modelId = String(model.id);
+    const modelId = model.id;
 
     function commit(name: string, value: ParamValue | undefined): void {
       const stored = { ...currentValuesFor(modelId) };
@@ -250,7 +254,7 @@ export function mount(_route: Route, _options: MountOptions = {}) {
     updateGenerateState();
     try {
       const data = await api.get<InferenceParamList>(`/api/sd-cpp/inference-params?model=${encodeURIComponent(modelId)}`);
-      if (destroyed || token !== state.paramsToken || String(state.selectedId) !== String(modelId)) return;
+      if (destroyed || token !== state.paramsToken || state.selectedId !== modelId) return;
       state.params = Array.isArray(data) ? data : [];
       state.paramsReady = true;
       clear(paramsStatus);
@@ -306,10 +310,10 @@ export function mount(_route: Route, _options: MountOptions = {}) {
     clear(generateStatus);
     setFormBusy(true);
     generateStatus.replaceChildren(spinnerLabel('Generating image…'));
-    const values = { ...defaultsFor(state.params), ...currentValuesFor(String(model.id)) };
+    const values = { ...defaultsFor(state.params), ...currentValuesFor(model.id) };
     try {
       const payload: GenerateImageRequest = {
-        model: String(model.id),
+        model: model.id,
         prompt,
         params: pickDefined(values),
       };
@@ -370,10 +374,6 @@ export function mount(_route: Route, _options: MountOptions = {}) {
     setStatus(addStatus, message, options);
   }
 
-  function fileMatches(file: ImageFile, categories: string[] | undefined): boolean {
-    return !categories || categories.length === 0 || categories.includes(file.category);
-  }
-
   function renderRecipeSlots(): void {
     clear(slotsGrid);
     clear(requiredAny);
@@ -381,26 +381,26 @@ export function mount(_route: Route, _options: MountOptions = {}) {
     const recipe = state.recipes.find((item) => item.id === recipeSelect.value);
     if (!recipe) return;
     recipeDescription.textContent = recipe.description || '';
-    for (const slot of recipe.slots || []) {
+    for (const slot of recipe.slots) {
       const matching = state.files.filter((file) => fileMatches(file, slot.categories));
       const select = Select({});
       select.appendChild(Option('', matching.length ? 'Select a file' : 'No matching files'));
       for (const file of matching) {
-        select.appendChild(Option(String(file.id), `${file.name}${file.category ? ` · ${file.category}` : ''}`));
+        select.appendChild(Option(file.id, `${file.name}${file.category ? ` · ${file.category}` : ''}`));
       }
       select.disabled = matching.length === 0;
       const label = `${slot.label || slot.id}${slot.required ? ' *' : ''}`;
-      const hint = slot.categories && slot.categories.length
+      const hint = slot.categories.length
         ? `Categories: ${slot.categories.join(', ')}`
         : 'Any file category';
       const field = labeledField(label, select, { hint });
       field.wrapper.dataset.slot = slot.id;
       slotsGrid.appendChild(field.wrapper);
     }
-    for (const group of recipe.required_any || []) {
+    for (const group of recipe.required_any) {
       if (!Array.isArray(group) || group.length === 0) continue;
       const labels = group.map((slotId) => {
-        const slot = (recipe.slots || []).find((item) => item.id === slotId);
+        const slot = recipe.slots.find((item) => item.id === slotId);
         return slot?.label || slotId;
       });
       requiredAny.appendChild(Notice({ level: 'warning' },
@@ -501,17 +501,17 @@ export function mount(_route: Route, _options: MountOptions = {}) {
     }
     const files: Record<string, string> = {};
     const missing: string[] = [];
-    for (const slot of recipe.slots || []) {
+    for (const slot of recipe.slots) {
       const field = slotsGrid.querySelector(`[data-slot="${CSS.escape(slot.id)}"]`);
       const select = field?.querySelector('select');
       if (select?.value) files[slot.id] = select.value;
       if (slot.required && !select?.value) missing.push(slot.label || slot.id);
     }
-    for (const group of recipe.required_any || []) {
+    for (const group of recipe.required_any) {
       if (!Array.isArray(group) || group.length === 0) continue;
       if (!group.some((slotId) => files[slotId])) {
         const labels = group.map((slotId) => {
-          const slot = (recipe.slots || []).find((item) => item.id === slotId);
+          const slot = recipe.slots.find((item) => item.id === slotId);
           return slot?.label || slotId;
         });
         missing.push(`one of: ${labels.join(', ')}`);
@@ -531,7 +531,7 @@ export function mount(_route: Route, _options: MountOptions = {}) {
       if (destroyed) return;
       notify('Image model added.', { level: 'success' });
       closeAddPanel();
-      await loadModels({ selectId: String(saved.id) });
+      await loadModels({ selectId: saved.id });
     } catch (error) {
       if (destroyed) return;
       setAddStatus(messageOf(error) || 'Could not add the image model.', { error: true });

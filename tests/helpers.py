@@ -141,7 +141,8 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
             await conn.set_autocommit(False)
             await cur.execute(
                 "TRUNCATE agents, agent_repository_access, conversations, "
-                "messages, repositories, documents, sd_cpp_image_models RESTART IDENTITY CASCADE;"
+                "messages, repositories, documents, sd_cpp_image_models "
+                "RESTART IDENTITY CASCADE;"
             )
             await conn.commit()
 

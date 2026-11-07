@@ -157,7 +157,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     let modelId = agent?.model_id || '';
     let models: ProviderModel[] = [];
     let params: InferenceParam[] = [];
-    let config: Record<string, ParamValue> = { ...(agent?.inference_config ?? {}) };
+    let config: Record<string, ParamValue> = { ...agent?.inference_config };
     let access: { repository_id: number; repository_internal_name: string; security_policy_override: SecurityPolicy | null }[] =
       (agent?.repository_access || []).map((entry) => ({
         repository_id: entry.repository_id,
