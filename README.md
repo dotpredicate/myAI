@@ -23,10 +23,12 @@ Project structure:
 - `./app.py` - FastAPI routes and application entrypoint
 - `./conversation.py` - conversation state management and orchestration
 - `./domain.py` - conversation model
-- `./index.py` - search indexing and vector search logic
+- `./scopes.py` - repository scope resolution shared by conversations and search
+- `./repositories.py` - repository registry and indexing input
+- `./agents.py` - agent configuration and repository access
+- `./search/` - indexing and vector search (`__init__.py`, `documents.py`)
 - `./database.py` - database connection and utility functions
-- `./documents.py` - document processing and management
-- `./system.py` - system-level utilities
+- `./system.py` - system-level utilities (workspaces, sandbox)
 - `./tools.py` - tool execution logic
 - `./log_config.py` - logging configuration
 - `./inference/` - AI protocol handling (stateless), split into submodules
@@ -34,11 +36,16 @@ Project structure:
 - `./migrations/` - folder with migration scripts
 - `./frontend/` - web front-end sources (`public/`, `public/ts/`) and JS output (`public/js/`)
 - `./dev.sh` - development entrypoint (frontend watch + `fastapi dev`)
+- `./lint.sh` - lint and type-check
+- `./test.sh` - test runner
+- `./tests/` - unit, integration and e2e tests
 - `./doc/` - design and documentation
   - `context.md`
   - `repositories.md`
   - `inference_providers.md`
   - `agents.md`
+  - `generation.md`
+  - `analysis/image_backends.md`
 
 ### Quickstart
 1. source .venv/bin/activate
@@ -57,9 +64,13 @@ Server runs at http://127.0.0.1:8000
 ./dev.sh                        # build + tsc watch + fastapi dev
 npm --prefix frontend run build # one-shot build
 npm --prefix frontend run check # type-check
+npm --prefix frontend run lint  # type-aware Oxlint
 ```
 
-`tsc` emits despite type errors; `check` is the gate.
+`tsc` emits despite type errors; `check` is the gate. `lint` runs Oxlint with the type-aware `typescript/no-unnecessary-condition` rule.
+
+### Search
+The index lives in `search/`. `semantic_search` takes an explicit list of resolved repository scopes; an empty list returns no results and never falls back to the whole index. `/api/search` resolves scopes through `scopes.resolve_scopes`: explicit scopes plus every repository the `agent_id` can access. Results carry `cosine_distance` (lower is closer) and are ordered closest first.
 
 ### Migrations
 At startup, the module scans the `migrations` folder for SQL files, sorts them in lexicographic order, executes those that have not yet been applied and records the execution in the `migrations` table
@@ -69,11 +80,11 @@ At startup, the module scans the `migrations` folder for SQL files, sorts them i
 - Use explicit TypeScript typing
 - Build UI from `frontend/public/ts/components.ts`; use `el()` only for one-off markup
 - The use of `style` attribute is forbidden
-- Lint and type-check with `./lint.sh`
+- Lint and type-check with `./lint.sh` (ruff, mypy, tsc, Oxlint)
 - Test with `./test.sh`
 
 ### Simplifications for now
-- the only available language model model provider is embedded llama.cpp server
+- the only available language model provider is the embedded llama.cpp server
 - image generation uses an embedded stable-diffusion.cpp server; models are user-registered presets in `sd_cpp_image_models` (recipe + file IDs from `MYAI_SD_MODEL_DIRS`)
 - web UI only, no mobile, minimal styling
 - no accessibility work: no ARIA attributes or roles, no screen-reader tuning, no keyboard-only flows beyond what the browser gives for free

@@ -4,13 +4,10 @@ import json
 import subprocess
 import difflib
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable, TypedDict
+from typing import Awaitable, Callable, TypedDict
 
 from system import REPOSITORIES_VROOT, get_repo_from_vpath, is_safe_realpath, is_safe_vpath, resolve_repo_vpath, resolve_workspace_vpath, run_sandboxed_command
 from domain import SecurityPolicy, ScopeSpec
-
-if TYPE_CHECKING:
-    from inference.engine import EmbeddingProvider
 
 class FunctionDefinition(TypedDict):
     name: str
@@ -45,20 +42,18 @@ async def run_semantic_search(
     conversation_id: int,
     privileged: bool = False,
     scopes: list[ScopeSpec] = [],
-    embedding_provider: "EmbeddingProvider | None" = None,
 ) -> ToolCallResult:
     from search import semantic_search
     params = json.loads(parameters)
-    prompt: str = params["prompt"]
+    query: str = params["query"]
     top_k: int = int(params.get("top_k", 5))
 
-    scope_names: list[str] = [s.internal_name for s in scopes] if scopes else []
+    scope_names: list[str] = [s.internal_name for s in scopes]
     try:
         results = await semantic_search(
-            prompt,
+            query,
             top_k,
             scopes=scope_names,
-            provider=embedding_provider,
         )
     except Exception as exc:
         return ToolCallResult(json.dumps({"error": f"search failed: {exc}"}))
@@ -229,15 +224,22 @@ TOOL_REGISTRY: list[Tool] = [
         "schema": {
             "name": "search",
             "description": (
-                "Search the indexed repositories for the most relevant documents "
-                "based on a natural-language prompt."
+                "Search indexed repositories for relevant documents. Use it for "
+                "semantic or conceptual questions; for exact or exhaustive literal "
+                "matches use bash grep instead. Results are limited to the "
+                "conversation's resolved repository scopes; an empty scope list "
+                "returns no results. Results are ordered by cosine distance, "
+                "lowest first."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "prompt": {
+                    "query": {
                         "type": "string",
-                        "description": "Natural-language query to search for",
+                        "description": (
+                            "Query or keywords to search for. Exact identifiers are "
+                            "matched semantically, not literally."
+                        ),
                     },
                     "top_k": {
                         "type": "integer",
@@ -246,7 +248,7 @@ TOOL_REGISTRY: list[Tool] = [
                         "description": "Number of documents to return",
                     },
                 },
-                "required": ["prompt"],
+                "required": ["query"],
             },
         },
         "executor": run_semantic_search

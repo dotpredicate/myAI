@@ -246,7 +246,7 @@ export interface SearchResult {
   id: number;
   title: string;
   snippet: string;
-  score: number;
+  cosine_distance: number;
 }
 
 export interface SearchResponse {

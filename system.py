@@ -138,6 +138,7 @@ async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]],
         "--unshare-all",
         "--bind", workspace_path, WORKSPACE_VROOT,
         "--chdir", WORKSPACE_VROOT,
+        "--dir", REPOSITORIES_VROOT,
     ]
 
     if not scopes:

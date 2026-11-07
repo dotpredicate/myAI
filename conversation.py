@@ -15,8 +15,6 @@ from domain import (
     ToolCallDecision,
     ConversationElement,
     stored_element_adapter,
-    ScopeSpec,
-    SecurityPolicy,
 )
 from inference import (
     StreamingMessage,
@@ -30,22 +28,18 @@ from inference import (
     ChatContext,
     registry
 )
-from repositories import get_repo_by_id, get_repo_by_name
 from tools import Tool, run_tool_call, TOOL_REGISTRY
 import system
 
 from log_config import get_logger
 from database import mk_conn
-from agents import get_agent_by_name, AgentConfig
+from agents import get_agent_by_name
+from scopes import UserScopeChoice, resolve_scopes, scopes_for_agent
 
 logger = get_logger(__name__)
 
 router = APIRouter()
 
-
-class UserScopeChoice(BaseModel):
-    internal_name: str
-    security_policy_override: Optional[SecurityPolicy] = None
 
 class GenerationRequest(BaseModel):
     agent_id: Optional[str] = None
@@ -371,32 +365,6 @@ async def get_blocking_message_id(conn: AsyncConnection, conv_id: int) -> Option
         row = await cur.fetchone()
         return row[0] if row and row[0] is not None else None
 
-async def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) -> ScopeSpec:
-    """
-    Priority: User override > Agent override > Repository policy.
-    """
-    # 1. User override
-    if choice.security_policy_override is not None:
-        return ScopeSpec(
-            internal_name=choice.internal_name,
-            security_policy=choice.security_policy_override,
-        )
-    # 2. Agent override
-    if agent is not None:
-        for ap in agent.repository_access:
-            if ap.repository_internal_name == choice.internal_name and ap.security_policy_override is not None:
-                return ScopeSpec(
-                    internal_name=choice.internal_name,
-                    security_policy=ap.security_policy_override,
-                )
-    # 3. Repository policy
-    repo = await get_repo_by_name(choice.internal_name)
-    if repo is None:
-        raise ValueError(f"Repository '{choice.internal_name}' not found")
-    return ScopeSpec(
-        internal_name=choice.internal_name,
-        security_policy=repo.security_policy,
-    )
 
 async def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fallback_model: Optional[str], req_scopes: list[UserScopeChoice], inference_config: dict[str, Any] = {}) -> tuple:
     """Resolve (provider_key, model_id, inference_config, scopes, agent_prompt) from agent or fallback.
@@ -405,31 +373,13 @@ async def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[st
         agent = await get_agent_by_name(agent_id)
         if agent is None:
             raise ValueError(f"Agent '{agent_id}' not found")
-        scopes = [await resolve_scope(s, agent=agent) for s in req_scopes]
-        extra_scopes = {s.internal_name for s in scopes}
-        for agent_policy in agent.repository_access:
-            repo_key = agent_policy.repository_internal_name
-            if repo_key not in extra_scopes:
-                # Add default policy of Agent (agent override > repo policy)
-                if agent_policy.security_policy_override is None:
-                    repo_config = await get_repo_by_id(agent_policy.repository_id)
-                    if repo_config is None:
-                        raise Exception(f"Repository {agent_policy.repository_id} not found")
-                    resolved_policy = repo_config.security_policy
-                else:
-                    resolved_policy = agent_policy.security_policy_override
-                scopes.append(ScopeSpec(
-                    internal_name=repo_key,
-                    security_policy=resolved_policy
-                ))
-            
+        scopes = await scopes_for_agent(agent, req_scopes)
         return agent.provider_key, agent.model_id, agent.inference_config, scopes, agent.instructions
     if not fallback_provider:
         raise ValueError('provider_key required')
     if not fallback_model:
         raise ValueError('model_id required')
-    # No agent: user override > repo policy
-    resolved_scopes = [await resolve_scope(s) for s in req_scopes]
+    resolved_scopes = await resolve_scopes(None, req_scopes)
     return fallback_provider, fallback_model, inference_config, resolved_scopes, None
 
 async def prepare_and_start_generation(

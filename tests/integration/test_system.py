@@ -37,6 +37,19 @@ class TestSystem(BaseTestCase):
         result = await run_sandboxed_command("echo 'hello from scoped'", scopes=scopes, conversation_id=1)
         self.assertEqual(result.returncode, 0)
 
+    async def test_run_sandboxed_command_has_empty_repositories_without_scopes(self):
+        result = await run_sandboxed_command("ls -A /repositories", scopes=[], conversation_id=1)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+
+    async def test_run_sandboxed_command_lists_scoped_repositories(self):
+        repo = await self._helper_create_repo("test_repo", self._repo_dir.name)
+        self.assertEqual(repo.status_code, 201)
+        scopes = [ScopeSpec(internal_name="test_repo", security_policy=SecurityPolicy.READ_ONLY)]
+        result = await run_sandboxed_command("ls /repositories", scopes=scopes, conversation_id=1)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("test_repo", result.stdout)
+
     async def test_run_sandboxed_command_readonly_scope(self):
         repo = await self._helper_create_repo("test_repo", self._repo_dir.name)
         self.assertEqual(repo.status_code, 201)

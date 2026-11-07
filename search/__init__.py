@@ -3,7 +3,7 @@ import hashlib
 from dataclasses import dataclass, field
 from itertools import islice
 from pathlib import Path
-from typing import NamedTuple, List, Optional
+from typing import NamedTuple, Optional
 
 import database
 from . import documents
@@ -42,7 +42,8 @@ class SearchHit(NamedTuple):
     document_id: int
     file_path: str
     chunk_index: int
-    score: float
+    # Cosine distance: lower is closer, and results are ordered closest first.
+    cosine_distance: float
     text: str
 
 
@@ -90,30 +91,38 @@ async def get_token_chunks(
 async def semantic_search(
     query: str,
     top_k: int,
-    scopes: Optional[List[str]] = None,
+    scopes: list[str],
     provider: Optional[EmbeddingProvider] = None,
 ) -> list[SearchHit]:
+    """Search indexed chunks inside resolved scopes.
+
+    An empty scope list returns no results. Hits carry a cosine distance;
+    lower is closer, and the closest chunk comes first.
+    """
+    if not scopes:
+        return []
+
     active_provider = _resolve_embedding_provider(provider)
     embed_results = await active_provider.embed(EMBEDDING_MODEL, query)
     query_vec = embed_results[0]
 
     base_query = """
-        SELECT document_id, file_path, chunk_index, chunk_text, embedding <=> %s::vector AS score 
+        SELECT document_id, file_path, chunk_index, chunk_text,
+               embedding <=> %s::vector AS cosine_distance
         FROM document_chunks
         JOIN documents ON documents.id = document_chunks.document_id
     """
 
     new_params: list[object] = [query_vec]
-    if scopes:
-        where_clauses = []
-        for scope in scopes:
-            prefix = f"{scope}/"
-            where_clauses.append("left(file_path, char_length(%s)) = %s")
-            new_params.extend([prefix, prefix])
+    where_clauses = []
+    for scope in scopes:
+        prefix = f"{scope}/"
+        where_clauses.append("left(file_path, char_length(%s)) = %s")
+        new_params.extend([prefix, prefix])
 
-        base_query += " WHERE " + " OR ".join(where_clauses)
+    base_query += " WHERE " + " OR ".join(where_clauses)
 
-    base_query += " ORDER BY score ASC LIMIT %s"
+    base_query += " ORDER BY cosine_distance ASC LIMIT %s"
     new_params.append(top_k)
 
     async with database.mk_conn() as conn, conn.cursor() as cur:
@@ -121,8 +130,8 @@ async def semantic_search(
         rows = await cur.fetchall()
         results = []
         for row in rows:
-            doc_id, file_path, chunk_index, content, score = row
-            results.append(SearchHit(doc_id, file_path, chunk_index, score, content))
+            doc_id, file_path, chunk_index, content, cosine_distance = row
+            results.append(SearchHit(doc_id, file_path, chunk_index, cosine_distance, content))
         return results
 
 

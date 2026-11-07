@@ -2,12 +2,14 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, Body, Query
+from fastapi import BackgroundTasks, FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from database import init_database
 from typing import Optional
 from conversation import router as conversations_router
+from scopes import UserScopeChoice, resolve_scopes
 from repositories import router as repositories_router
 from agents import router as agents_router
 from images import router as images_router
@@ -84,17 +86,34 @@ app.include_router(images_router)
 app.include_router(sd_cpp_router)
 
 
+class SearchRequest(BaseModel):
+    query: str = ''
+    top_k: int = 3
+    scopes: list[str] = Field(default_factory=list)
+    agent_id: str | None = None
+
+
 @app.post('/api/search')
-async def search(payload: dict = Body(...)):
-    query_text: str = payload.get('query', '')
-    top_k: int = int(payload.get('top_k', 3))
-    scopes: Optional[list[str]] = payload.get('scopes')
-    if not query_text:
+async def search(payload: SearchRequest):
+    if not payload.query:
         return JSONResponse(status_code=400, content={'error': 'query required'})
+
+    choices = [UserScopeChoice(internal_name=name) for name in payload.scopes]
+    try:
+        resolved_scopes = await resolve_scopes(payload.agent_id, choices)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={'error': str(exc)})
+    scope_names = [scope.internal_name for scope in resolved_scopes]
+
     results = []
-    for hit in await semantic_search(query_text, top_k, scopes=scopes):
+    for hit in await semantic_search(payload.query, payload.top_k, scopes=scope_names):
         snippet = hit.text[:200] + ('...' if len(hit.text) > 200 else '')
-        results.append({'id': hit.document_id, 'title': f"{hit.file_path} ({hit.chunk_index})", 'snippet': snippet, 'score': hit.score})
+        results.append({
+            'id': hit.document_id,
+            'title': f"{hit.file_path} ({hit.chunk_index})",
+            'snippet': snippet,
+            'cosine_distance': hit.cosine_distance,
+        })
     return JSONResponse(content={'results': results})
 
 

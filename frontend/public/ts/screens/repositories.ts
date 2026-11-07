@@ -395,7 +395,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     const searchSection = Stack(el('header', {}, Heading(3, 'Search')), searchForm, searchResults);
     searchResults.appendChild(emptyState(
       'Search this repository',
-      'Results show the file, fragment number, relevance and a short excerpt.',
+      'Results show the file, fragment number, distance and a short excerpt.',
     ));
 
     searchForm.addEventListener('submit', async (event) => {
@@ -430,7 +430,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
           searchResults.appendChild(el('div', { class: 'search-result' },
             el('div', { class: 'row row--between' },
               el('strong', {}, result.title),
-              InlineHint(`score ${Number(result.score ?? 0).toFixed(3)}`),
+              InlineHint(`distance ${result.cosine_distance.toFixed(3)}`),
             ),
             LineHint(result.snippet),
           ));
