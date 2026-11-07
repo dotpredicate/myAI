@@ -201,7 +201,16 @@ export function mount(route: Route, _options: MountOptions = {}) {
             notify(messageOf(error) || 'Could not stop the process.', { level: 'error' });
           }
         });
-        body.appendChild(TableRow(TableCell(server.model || '—'), TableCell(server.provider || '—'), TableCell(String(server.port ?? '—')), TableCell(server.pid === null || server.pid === undefined ? '—' : String(server.pid)), TableCell(Badge(server.status || 'unknown')), TableCell(String(server.active_requests ?? 0)), TableCell(formatIdle(server.idle_seconds)), TableCell(kill)));
+        body.appendChild(TableRow(
+          TableCell(server.model || '—'),
+          TableCell(server.provider || '—'),
+          TableCell(server.port),
+          TableCell(server.pid === null ? '—' : String(server.pid)),
+          TableCell(Badge(server.status || 'unknown')),
+          TableCell(String(server.active_requests)),
+          TableCell(formatIdle(server.idle_seconds)),
+          TableCell(kill),
+        ));
       }
       table.appendChild(body);
       tableContainer.appendChild(el('div', { class: 'table-wrap' }, table));
