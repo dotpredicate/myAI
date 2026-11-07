@@ -7,12 +7,15 @@ from typing import NamedTuple, Optional
 
 import database
 from . import documents
-from repositories import get_repositories, get_repo_documents, RepositoryConfig
+from domain import normalize_scope_name
+from repositories import get_repositories, scan_repo_documents, RepositoryConfig
 from inference import EmbeddingProvider, TokenPiece
 from inference.llama_cpp.server import LlamaCppEmbeddingServer
 from log_config import get_logger
 
 _sync_lock = asyncio.Lock()
+_sync_pending = False
+_sync_task: Optional[asyncio.Task[None]] = None
 
 EMBEDDING_MODEL = "unsloth/embeddinggemma-300m-GGUF"
 embedding_provider: EmbeddingProvider = LlamaCppEmbeddingServer(EMBEDDING_MODEL)
@@ -27,6 +30,10 @@ INDEXED_EXTENSIONS = {
     ".mill", ".java", ".c", ".cpp", ".html", ".hbs", ".js", ".ts",
     ".py", ".sh", ".sql",
 }
+
+
+def _is_indexable(relative_path: str) -> bool:
+    return Path(relative_path).suffix.lower() in INDEXED_EXTENSIONS
 
 
 @dataclass
@@ -102,31 +109,28 @@ async def semantic_search(
     if not scopes:
         return []
 
+    names = list(dict.fromkeys(
+        name for name in (normalize_scope_name(scope) for scope in scopes) if name
+    ))
+    if not names:
+        return []
+
     active_provider = _resolve_embedding_provider(provider)
     embed_results = await active_provider.embed(EMBEDDING_MODEL, query)
     query_vec = embed_results[0]
 
     base_query = """
-        SELECT document_id, file_path, chunk_index, chunk_text,
-               embedding <=> %s::vector AS cosine_distance
-        FROM document_chunks
-        JOIN documents ON documents.id = document_chunks.document_id
+        SELECT dc.document_id, d.file_path, dc.chunk_index, dc.chunk_text,
+               dc.embedding <=> %s::vector AS cosine_distance
+        FROM document_chunks dc
+        JOIN documents d ON d.id = dc.document_id
+        JOIN repositories r ON r.id = d.repository_id
+        WHERE r.internal_name = ANY(%s)
+        ORDER BY cosine_distance ASC LIMIT %s
     """
 
-    new_params: list[object] = [query_vec]
-    where_clauses = []
-    for scope in scopes:
-        prefix = f"{scope}/"
-        where_clauses.append("left(file_path, char_length(%s)) = %s")
-        new_params.extend([prefix, prefix])
-
-    base_query += " WHERE " + " OR ".join(where_clauses)
-
-    base_query += " ORDER BY cosine_distance ASC LIMIT %s"
-    new_params.append(top_k)
-
     async with database.mk_conn() as conn, conn.cursor() as cur:
-        await cur.execute(base_query, tuple(new_params))
+        await cur.execute(base_query, (query_vec, names, top_k))
         rows = await cur.fetchall()
         results = []
         for row in rows:
@@ -149,10 +153,6 @@ async def _index_file(
     provider: EmbeddingProvider,
 ) -> Optional[IndexedFile]:
     """Read, hash and tokenize a single file. Returns None if unchanged or unreadable."""
-    if Path(relative_path).suffix.lower() not in INDEXED_EXTENSIONS:
-        logger.debug("%s - skipping unhandled extension", relative_path)
-        return None
-
     try:
         file_bytes = full_path.read_bytes()
         file_text = file_bytes.decode()
@@ -218,7 +218,7 @@ async def _process_file_batch(
     # Step 4: batch upsert documents, split embeddings back per file, bulk-insert chunks
     async with database.mk_conn() as conn:
         await conn.set_autocommit(False)
-        doc_tuples = [(f.relative_path, f.file_hash, f.file_text) for f in indexed_files]
+        doc_tuples = [(repo.id, f.relative_path, f.file_hash, f.file_text) for f in indexed_files]
         doc_ids = await documents.batch_upsert_documents(conn, doc_tuples)
 
         embed_offset = 0
@@ -243,30 +243,82 @@ async def _process_file_batch(
 
 async def clear_index() -> None:
     """Clear indexed documents and their dependent chunks."""
+    global _sync_pending
     async with _sync_lock:
         async with database.mk_conn() as conn, conn.cursor() as cur:
             await cur.execute("TRUNCATE TABLE documents RESTART IDENTITY CASCADE")
             await conn.commit()
+        pending = _sync_pending
+        _sync_pending = False
+    if pending:
+        _schedule_sync()
+
+
+async def _prune_repo_documents(repo: RepositoryConfig, files: list[tuple[str, Path]]) -> None:
+    """Delete indexed documents that no longer exist among the indexable files."""
+    current_paths = [f"{repo.internal_name}/{relative_path}" for relative_path, _ in files]
+    async with database.mk_conn() as conn:
+        deleted = await documents.delete_documents_not_in(conn, repo.id, current_paths)
+        await conn.commit()
+    if deleted:
+        logger.info("%s - pruned %s stale documents", repo.internal_name, deleted)
+
+
+async def _sync_repositories(provider: EmbeddingProvider) -> None:
+    for repo in await get_repositories():
+        scan = await scan_repo_documents(repo)
+        if scan.status != 'ok':
+            logger.warning(
+                "Repository %s - cannot scan (%s): %s",
+                repo.internal_name,
+                scan.status,
+                scan.error,
+            )
+            continue
+
+        repo_docs = [(rel, full) for rel, full in scan.files if _is_indexable(rel)]
+        total_files = len(repo_docs)
+        logger.info("Processing repository %s (%s files)", repo.internal_name, total_files)
+
+        for batch_idx, file_batch in enumerate(_batched(repo_docs, FILE_BATCH_SIZE)):
+            logger.info("Repository %s - batch %s (%s files)", repo.internal_name, batch_idx, len(file_batch))
+            try:
+                await _process_file_batch(repo, file_batch, provider)
+            except Exception:
+                logger.exception("Repository %s - batch %s failed", repo.internal_name, batch_idx)
+
+        await _prune_repo_documents(repo, repo_docs)
+
+
+def _schedule_sync() -> None:
+    global _sync_task
+    _sync_task = asyncio.create_task(synchronize())
 
 
 async def synchronize(provider: Optional[EmbeddingProvider] = None) -> None:
-    """Incrementally sync repositories using parallel batch processing."""
+    """Incrementally sync repositories using parallel batch processing.
+
+    A request that arrives while another sync is running is remembered instead
+    of being dropped; the running sync repeats once it finishes.
+    """
+    global _sync_pending
     active_provider = _resolve_embedding_provider(provider)
     if _sync_lock.locked():
-        logger.info("Indexing is already running, skipping")
+        _sync_pending = True
+        logger.info("Indexing is already running; queued a follow-up sync")
         return
+
     async with _sync_lock:
-        logger.info("Indexing started")
-        for repo in await get_repositories():
-            repo_docs = await get_repo_documents(repo.internal_name)
-            total_files = len(repo_docs)
-            logger.info("Processing repository %s (%s files)", repo.internal_name, total_files)
-
-            for batch_idx, file_batch in enumerate(_batched(repo_docs, FILE_BATCH_SIZE)):
-                logger.info("Repository %s - batch %s (%s files)", repo.internal_name, batch_idx, len(file_batch))
-                try:
-                    await _process_file_batch(repo, file_batch, active_provider)
-                except Exception:
-                    logger.exception("Repository %s - batch %s failed", repo.internal_name, batch_idx)
-
+        while True:
+            _sync_pending = False
+            logger.info("Indexing started")
+            try:
+                await _sync_repositories(active_provider)
+            except Exception:
+                logger.exception("Indexing failed")
+                if not _sync_pending:
+                    raise
+            if not _sync_pending:
+                break
+            logger.info("Indexing queued; running again")
         logger.info("Indexing finished")

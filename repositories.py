@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, List, Tuple, Literal
 from fastapi import APIRouter, Body, Query
@@ -54,15 +55,17 @@ async def _auto_detect_repo_type(path: str) -> Literal['plain', 'git']:
     return 'plain'
 
 
-async def get_repo_documents(repo_name: str) -> List[Tuple[str, Path]]:
-    """Returns list of (relative_path, full_path) for every file in a repository.
-    Supports both git repos (using ls-files) and non-git repos (os.walk)."""
-    repo = await get_repo_by_name(repo_name)
-    if not repo:
-        return []
+@dataclass(frozen=True)
+class RepoScan:
+    status: Literal['ok', 'missing', 'error']
+    files: List[Tuple[str, Path]]
+    error: str = ''
+
+
+async def scan_repo_documents(repo: RepositoryConfig) -> RepoScan:
     repo_path = Path(repo.path)
     if not repo_path.is_dir():
-        return []
+        return RepoScan('missing', [])
 
     try:
         if repo.repo_type == 'git':
@@ -73,18 +76,30 @@ async def get_repo_documents(repo_name: str) -> List[Tuple[str, Path]]:
                 text=True,
             )
             if result.returncode != 0:
-                return []
+                return RepoScan('error', [], result.stderr.strip() or 'git ls-files failed')
             rel_names = [f for f in result.stdout.splitlines() if f]
         else:
+            errors: list[OSError] = []
             rel_names = []
-            for root, _, fnames in os.walk(str(repo_path)):
+            for root, _, fnames in os.walk(str(repo_path), onerror=errors.append):
                 for fname in fnames:
                     rel = Path(root) / fname
                     rel_names.append(str(rel.relative_to(repo_path)))
+            if errors:
+                return RepoScan('error', [], str(errors[0]))
 
-        return [(name, repo_path / name) for name in sorted(rel_names)]
-    except Exception:
+        files = [(name, repo_path / name) for name in sorted(rel_names)]
+        return RepoScan('ok', [(name, path) for name, path in files if path.is_file()])
+    except Exception as exc:
+        return RepoScan('error', [], str(exc))
+
+
+async def get_repo_documents(repo_name: str) -> List[Tuple[str, Path]]:
+    repo = await get_repo_by_name(repo_name)
+    if not repo:
         return []
+    scan = await scan_repo_documents(repo)
+    return scan.files if scan.status == 'ok' else []
 
 
 async def get_repository_files(repo_name: str) -> List[str]:

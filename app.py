@@ -162,7 +162,7 @@ async def stop_managed_process_endpoint(port: str):
 @app.post("/api/sync")
 async def sync(background_tasks: BackgroundTasks):
     background_tasks.add_task(synchronize)
-    return JSONResponse({"status": "sync started"})
+    return JSONResponse(status_code=202, content={"status": "accepted"})
 
 
 @app.get('/api/gpu-benchmark')

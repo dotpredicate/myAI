@@ -47,6 +47,14 @@ class TestSystem(unittest.TestCase):
         self.assertFalse(safe)
         self.assertIn("not in allowed scopes", err)
 
+    def test_is_safe_vpath_accepts_trailing_slash(self):
+        vpath = Path("/repositories/my_repo/")
+        expected_vroot = Path("/repositories")
+        scopes = [ScopeSpec(internal_name="my_repo", security_policy=SecurityPolicy.WRITE)]
+        safe, err = is_safe_vpath(vpath, expected_vroot, allowed_scopes=scopes)
+        self.assertTrue(safe)
+        self.assertEqual(err, "")
+
     def test_is_safe_vpath_with_scopes_empty(self):
         vpath = Path("/repositories/my_repo/foo.py")
         expected_vroot = Path("/repositories")

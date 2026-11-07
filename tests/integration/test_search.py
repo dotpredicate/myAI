@@ -1,10 +1,11 @@
 import json
+import subprocess
 import unittest
 from pathlib import Path
 
 import database
-from domain import ScopeSpec, SecurityPolicy
-from repositories import get_repo_documents
+from domain import RepositoryConfig, ScopeSpec, SecurityPolicy
+from repositories import get_repo_documents, scan_repo_documents
 from tests.helpers import BaseTestCase, DeterministicEmbeddingProvider
 import search
 from tools import TOOL_REGISTRY, run_semantic_search
@@ -28,6 +29,7 @@ class TestSearch(BaseTestCase):
 
     async def asyncTearDown(self):
         search.embedding_provider = self._original_embedding_provider
+        search._sync_pending = False
         await super().asyncTearDown()
 
     async def _make_two_repos(self):
@@ -162,13 +164,212 @@ class TestSearch(BaseTestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("missing_agent", response.json()["error"])
 
+    async def _document_count(self, prefix: str) -> int:
+        path_prefix = prefix + "/"
+        async with database.mk_conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM documents WHERE left(file_path, char_length(%s)) = %s",
+                (path_prefix, path_prefix),
+            )
+            return (await cur.fetchone())[0]
+
+    async def test_scan_repo_documents_marks_missing_path(self):
+        repo = RepositoryConfig(
+            id=1,
+            display_name="Missing",
+            internal_name="missing",
+            repo_type="plain",
+            path="/definitely/missing",
+            security_policy=SecurityPolicy.READ_ONLY,
+        )
+        scan = await scan_repo_documents(repo)
+        self.assertEqual(scan.status, "missing")
+        self.assertEqual(scan.files, [])
+
+    async def test_scan_repo_documents_marks_empty_repository_ok(self):
+        repo = RepositoryConfig(
+            id=1,
+            display_name="Empty",
+            internal_name="empty",
+            repo_type="plain",
+            path=self._repo_dir.name,
+            security_policy=SecurityPolicy.READ_ONLY,
+        )
+        scan = await scan_repo_documents(repo)
+        self.assertEqual(scan.status, "ok")
+        self.assertEqual(scan.files, [])
+
+    async def test_synchronize_ignores_non_indexable_files(self):
+        repo_dir = Path(self._repo_dir.name)
+        (repo_dir / "notes.txt").write_text("notes content", encoding="utf-8")
+        (repo_dir / "blob.bin").write_bytes(b"\x00\x01")
+        response = await self._helper_create_repo("extensions_repo", str(repo_dir))
+        self.assertEqual(response.status_code, 201)
+
+        await search.synchronize(provider=self.embedding_provider)
+        self.assertEqual(await self._document_count("extensions_repo"), 1)
+
+    async def test_synchronize_prunes_removed_files(self):
+        repo_dir = Path(self._repo_dir.name)
+        (repo_dir / "keep.txt").write_text("keep content", encoding="utf-8")
+        (repo_dir / "drop.txt").write_text("drop content", encoding="utf-8")
+        response = await self._helper_create_repo("prune_repo", str(repo_dir))
+        self.assertEqual(response.status_code, 201)
+
+        await search.synchronize(provider=self.embedding_provider)
+        self.assertEqual(await self._document_count("prune_repo"), 2)
+
+        (repo_dir / "drop.txt").unlink()
+        await search.synchronize(provider=self.embedding_provider)
+
+        async with database.mk_conn() as conn, conn.cursor() as cur:
+            await cur.execute("SELECT file_path FROM documents WHERE file_path LIKE 'prune_repo/%'")
+            self.assertEqual([row[0] for row in await cur.fetchall()], ["prune_repo/keep.txt"])
+
+    async def test_synchronize_does_not_prune_when_repository_path_is_missing(self):
+        repo_dir = Path(self._repo_dir.name)
+        (repo_dir / "keep.txt").write_text("keep content", encoding="utf-8")
+        response = await self._helper_create_repo("missing_repo", str(repo_dir))
+        self.assertEqual(response.status_code, 201)
+
+        await search.synchronize(provider=self.embedding_provider)
+        self.assertEqual(await self._document_count("missing_repo"), 1)
+
+        async with database.mk_conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE repositories SET path = %s WHERE internal_name = %s",
+                ("/definitely/missing", "missing_repo"),
+            )
+            await conn.commit()
+
+        await search.synchronize(provider=self.embedding_provider)
+        self.assertEqual(await self._document_count("missing_repo"), 1)
+
+    async def test_deleting_repository_cascades_documents_and_chunks(self):
+        repo_dir = Path(self._repo_dir.name)
+        (repo_dir / "notes.txt").write_text("cascade content", encoding="utf-8")
+        response = await self._helper_create_repo("cascade_repo", str(repo_dir))
+        self.assertEqual(response.status_code, 201)
+
+        await search.synchronize(provider=self.embedding_provider)
+        self.assertEqual(await self._document_count("cascade_repo"), 1)
+        async with database.mk_conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT id FROM documents WHERE file_path = 'cascade_repo/notes.txt'"
+            )
+            row = await cur.fetchone()
+            self.assertIsNotNone(row)
+            doc_id = row[0]
+            await cur.execute(
+                "SELECT count(*) FROM document_chunks WHERE document_id = %s", (doc_id,)
+            )
+            self.assertEqual((await cur.fetchone())[0], 1)
+
+        response = await self.client.delete("/api/repositories/cascade_repo")
+        self.assertEqual(response.status_code, 200)
+
+        self.assertEqual(await self._document_count("cascade_repo"), 0)
+        async with database.mk_conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM document_chunks WHERE document_id = %s", (doc_id,)
+            )
+            self.assertEqual((await cur.fetchone())[0], 0)
+
+        self.assertEqual(
+            await search.semantic_search(
+                "cascade", 10, scopes=["cascade_repo"], provider=self.embedding_provider
+            ),
+            [],
+        )
+
+    async def test_search_normalizes_scope_names(self):
+        await self._make_two_repos()
+
+        hits = await search.semantic_search(
+            "repository notes", 10, scopes=[" first_repo/ "], provider=self.embedding_provider
+        )
+        self.assertEqual([hit.file_path for hit in hits], ["first_repo/notes.txt"])
+
+        response = await self.client.post(
+            "/api/search",
+            json={"query": "repository notes", "top_k": 10, "scopes": [" first_repo/ "]},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [item["title"] for item in response.json()["results"]],
+            ["first_repo/notes.txt (0)"],
+        )
+
+    async def test_scan_repo_documents_marks_git_error(self):
+        repo = RepositoryConfig(
+            id=1,
+            display_name="Not a git repo",
+            internal_name="not_git",
+            repo_type="git",
+            path=self._repo_dir.name,
+            security_policy=SecurityPolicy.READ_ONLY,
+        )
+        scan = await scan_repo_documents(repo)
+        self.assertEqual(scan.status, "error")
+
+    async def test_synchronize_prunes_git_tracked_file_deleted_from_worktree(self):
+        repo_dir = Path(self._repo_dir.name)
+        subprocess.run(["git", "-C", str(repo_dir), "init"], check=True, capture_output=True)
+        (repo_dir / "gone.txt").write_text("gone content", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(repo_dir), "add", "gone.txt"],
+            check=True,
+            capture_output=True,
+        )
+        response = await self._helper_create_repo(
+            "git_delete_repo", str(repo_dir), repo_type="git"
+        )
+        self.assertEqual(response.status_code, 201)
+
+        await search.synchronize(provider=self.embedding_provider)
+        self.assertEqual(await self._document_count("git_delete_repo"), 1)
+
+        (repo_dir / "gone.txt").unlink()
+        await search.synchronize(provider=self.embedding_provider)
+        self.assertEqual(await self._document_count("git_delete_repo"), 0)
+
+    async def test_sync_accepts_requests_while_another_sync_is_running(self):
+        async with search._sync_lock:
+            response = await self.client.post("/api/sync")
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.json(), {"status": "accepted"})
+
+        response = await self.client.post("/api/sync")
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(response.json(), {"status": "accepted"})
+
+    async def test_synchronize_runs_again_when_a_sync_was_queued(self):
+        calls: list[int] = []
+        original = search._sync_repositories
+
+        async def fake_sync(provider: object) -> None:
+            calls.append(1)
+            if len(calls) == 1:
+                search._sync_pending = True
+
+        search._sync_repositories = fake_sync
+        try:
+            await search.synchronize(provider=self.embedding_provider)
+        finally:
+            search._sync_repositories = original
+
+        self.assertEqual(len(calls), 2)
+
     async def test_clear_index_removes_documents_and_chunks(self):
+        repo = await self._helper_create_repo("clear_repo", self._repo_dir.name)
+        self.assertEqual(repo.status_code, 201)
+        repo_id = repo.json()["id"]
         embedding = "[" + ",".join(["0"] * 768) + "]"
         async with database.mk_conn() as conn, conn.cursor() as cur:
             await cur.execute(
-                "INSERT INTO documents (file_path, file_hash, content) "
-                "VALUES (%s, %s, %s) RETURNING id",
-                ("repo/notes.txt", "0" * 64, "indexed text"),
+                "INSERT INTO documents (repository_id, file_path, file_hash, content) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (repo_id, "clear_repo/notes.txt", "0" * 64, "indexed text"),
             )
             row = await cur.fetchone()
             assert row is not None

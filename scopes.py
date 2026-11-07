@@ -3,7 +3,7 @@ from typing import Optional
 from pydantic import BaseModel
 
 from agents import get_agent_by_name
-from domain import AgentConfig, ScopeSpec, SecurityPolicy
+from domain import AgentConfig, ScopeSpec, SecurityPolicy, normalize_scope_name
 from repositories import get_repo_by_id, get_repo_by_name
 
 
@@ -14,26 +14,27 @@ class UserScopeChoice(BaseModel):
 
 async def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) -> ScopeSpec:
     """Resolve one requested scope: user override > agent override > repo policy."""
+    internal_name = normalize_scope_name(choice.internal_name)
     if choice.security_policy_override is not None:
         return ScopeSpec(
-            internal_name=choice.internal_name,
+            internal_name=internal_name,
             security_policy=choice.security_policy_override,
         )
     if agent is not None:
         for access in agent.repository_access:
             if (
-                access.repository_internal_name == choice.internal_name
+                access.repository_internal_name == internal_name
                 and access.security_policy_override is not None
             ):
                 return ScopeSpec(
-                    internal_name=choice.internal_name,
+                    internal_name=internal_name,
                     security_policy=access.security_policy_override,
                 )
-    repo = await get_repo_by_name(choice.internal_name)
+    repo = await get_repo_by_name(internal_name)
     if repo is None:
         raise ValueError(f"Repository '{choice.internal_name}' not found")
     return ScopeSpec(
-        internal_name=choice.internal_name,
+        internal_name=internal_name,
         security_policy=repo.security_policy,
     )
 

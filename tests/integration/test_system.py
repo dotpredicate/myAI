@@ -50,6 +50,15 @@ class TestSystem(BaseTestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("test_repo", result.stdout)
 
+    async def test_run_sandboxed_command_accepts_trailing_slash_repository_path(self):
+        (Path(self._repo_dir.name) / "note.txt").write_text("hello", encoding="utf-8")
+        repo = await self._helper_create_repo("test_repo", self._repo_dir.name)
+        self.assertEqual(repo.status_code, 201)
+        scopes = [ScopeSpec(internal_name="test_repo", security_policy=SecurityPolicy.READ_ONLY)]
+        result = await run_sandboxed_command("ls /repositories/test_repo/", scopes=scopes, conversation_id=1)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("note.txt", result.stdout)
+
     async def test_run_sandboxed_command_readonly_scope(self):
         repo = await self._helper_create_repo("test_repo", self._repo_dir.name)
         self.assertEqual(repo.status_code, 201)
@@ -153,6 +162,13 @@ class TestSystem(BaseTestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result.internal_name, "my_repo")
 
+    async def test_get_repo_from_vpath_accepts_trailing_slash(self):
+        repo = await self._helper_create_repo("my_repo", self._repo_dir.name)
+        self.assertEqual(repo.status_code, 201)
+        result = await get_repo_from_vpath(Path("/repositories/my_repo/"))
+        self.assertIsNotNone(result)
+        self.assertEqual(result.internal_name, "my_repo")
+
     async def test_get_repo_from_vpath_invalid(self):
         vpath = Path("/workspace/foo.py")
         result = await get_repo_from_vpath(vpath)
@@ -165,6 +181,12 @@ class TestSystem(BaseTestCase):
         resolved = await resolve_repo_vpath(vpath)
         self.assertIsNotNone(resolved)
         self.assertEqual(resolved, Path(self._repo_dir.name) / "src" / "main.py")
+
+    async def test_resolve_repo_vpath_accepts_trailing_slash(self):
+        repo = await self._helper_create_repo("my_repo", self._repo_dir.name)
+        self.assertEqual(repo.status_code, 201)
+        resolved = await resolve_repo_vpath(Path("/repositories/my_repo/"))
+        self.assertEqual(resolved, Path(self._repo_dir.name))
 
     async def test_resolve_repo_vpath_no_repo(self):
         vpath = Path("/repositories/nonexistent/foo.py")

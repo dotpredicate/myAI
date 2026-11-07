@@ -161,10 +161,10 @@ class LlamaCppServerProvider(InferenceProvider):
 class LlamaCppEmbeddingServer(EmbeddingProvider):
     """Manages a local llama.cpp server process for embeddings."""
 
-    def __init__(self, model: str, port: str = "2345"):
-        self.port = port
+    def __init__(self, model: str):
+        self.port = str(get_free_port())
         self.model = model
-        self.endpoint = f'http://localhost:{port}'
+        self.endpoint = f'http://localhost:{self.port}'
         self._client = openai.AsyncOpenAI(api_key='dummy', base_url=self.endpoint + '/v1')
 
     async def _ensure_started(self):

@@ -13,6 +13,11 @@ def scope_policy_is_escalation(override: Optional[SecurityPolicy], base_policy: 
     order: list[SecurityPolicy] = [SecurityPolicy.READ_ONLY, SecurityPolicy.PRIVILEGED_WRITE, SecurityPolicy.WRITE]
     return order.index(override) > order.index(base_policy)
 
+
+def normalize_scope_name(name: str) -> str:
+    """Strip accidental whitespace and surrounding slashes from a repository name."""
+    return name.strip().strip('/')
+
 class ScopeSpec(BaseModel):
     internal_name: str
     security_policy: SecurityPolicy
