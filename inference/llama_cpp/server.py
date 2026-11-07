@@ -55,27 +55,24 @@ class LlamaCppServerProvider(InferenceProvider):
 
     async def _get_or_start_server(self, model_id: str, n_ctx: Optional[int]) -> ModelServer:
         key = (n_ctx, model_id)
-        if key in self._model_servers:
-            server = self._model_servers[key]
-            managed = mp.get_managed_process(server.port)
-            if managed is not None and managed.process is not None and managed.process.poll() is None:
+        server = self._model_servers.get(key)
+        if server is not None:
+            try:
                 await mp.wait_server_ready(server.port)
                 return server
+            except RuntimeError:
+                async with self._creation_lock:
+                    if self._model_servers.get(key) is server:
+                        self._model_servers.pop(key, None)
 
         async with self._creation_lock:
-            if key in self._model_servers:
-                server = self._model_servers[key]
-                managed = mp.get_managed_process(server.port)
-                if managed is not None and managed.process is not None and managed.process.poll() is None:
-                    await mp.wait_server_ready(server.port)
-                    return server
-                self._model_servers.pop(key, None)
-
-            port = str(get_free_port())
-            endpoint = f'http://localhost:{port}'
-            client = openai.AsyncOpenAI(api_key='dummy', base_url=endpoint)
-            server = ModelServer(port=port, client=client)
-            self._model_servers[key] = server
+            server = self._model_servers.get(key)
+            if server is None:
+                port = str(get_free_port())
+                endpoint = f'http://localhost:{port}'
+                client = openai.AsyncOpenAI(api_key='dummy', base_url=endpoint)
+                server = ModelServer(port=port, client=client)
+                self._model_servers[key] = server
 
         args = [
             "--jinja",
@@ -83,14 +80,22 @@ class LlamaCppServerProvider(InferenceProvider):
         ]
         if n_ctx is not None:
             args += ["--ctx-size", str(n_ctx)]
-        cmd = ["llama-server", "--port", port] + args
+        cmd = ["llama-server", "--port", server.port] + args
 
         async def _check() -> bool:
             async with httpx.AsyncClient(timeout=1.0) as client:
-                resp = await client.get(f"http://localhost:{port}/v1/models")
+                resp = await client.get(f"http://localhost:{server.port}/v1/models")
                 return resp.status_code in (200, 401)
 
-        await mp.ensure_server_started(port, "llama.cpp", model_id, cmd, readiness_check=_check)
+        try:
+            await mp.ensure_server_started(
+                server.port, "llama.cpp", model_id, cmd, readiness_check=_check
+            )
+        except BaseException:
+            async with self._creation_lock:
+                if self._model_servers.get(key) is server:
+                    self._model_servers.pop(key, None)
+            raise
         return server
 
     async def run_chat_completion_stream(
@@ -138,7 +143,7 @@ class LlamaCppServerProvider(InferenceProvider):
                 type=InferenceParamType.INT,
                 default=None,
                 min=512,
-                max=128000,
+                max=262144,
                 step=512,
                 description="Context window size in tokens",
             ),

@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 
 IDLE_TIMEOUT_SECONDS = 5 * 60
 IDLE_CHECK_INTERVAL_SECONDS = 30
+READINESS_POLL_INTERVAL_SECONDS = 1.0
 
 
 def get_free_port() -> int:
@@ -33,9 +34,8 @@ class ManagedProcess:
     process: subprocess.Popen[Any] | None = None
     last_used: float = field(default_factory=time.monotonic)
     active_requests: int = 0
-    start_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    start_finished: asyncio.Event | None = None
-    start_error: BaseException | None = None
+    state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    start_task: asyncio.Task[None] | None = None
     stopping: bool = False
 
 
@@ -45,19 +45,16 @@ class ServerStatus(StrEnum):
     RUNNING = "running"
     STOPPING = "stopping"
     EXITED = "exited"
-    FAILED = "failed"
 
 
 def _public_status(managed: ManagedProcess) -> ServerStatus:
+    if managed.stopping:
+        return ServerStatus.STOPPING
     if managed.process is None:
         return ServerStatus.STOPPED
     if managed.process.poll() is not None:
         return ServerStatus.EXITED
-    if managed.stopping:
-        return ServerStatus.STOPPING
-    if managed.start_error is not None:
-        return ServerStatus.FAILED
-    if managed.start_finished is not None and not managed.start_finished.is_set():
+    if managed.start_task is not None and not managed.start_task.done():
         return ServerStatus.STARTING
     return ServerStatus.RUNNING
 
@@ -80,15 +77,30 @@ def get_managed_process(port: str) -> ManagedProcess | None:
     return _managed_processes.get(port)
 
 
+def _consume_task_exception(task: asyncio.Task[None]) -> None:
+    # Start attempts are shared; a waiter may disappear before observing the
+    # failure. Retrieve it here so asyncio does not warn about it.
+    if not task.cancelled():
+        task.exception()
+
+
+async def _await_start(task: asyncio.Task[None], port: str) -> None:
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        if task.cancelled():
+            raise RuntimeError(f"Server on port {port} start was cancelled") from None
+        raise
+
+
 async def wait_server_ready(port: str) -> None:
     managed = _managed_processes.get(port)
     if managed is None:
         raise RuntimeError(f"Server on port {port} is not registered")
 
-    if managed.start_finished is not None:
-        await managed.start_finished.wait()
-    if managed.start_error is not None:
-        raise RuntimeError(f"Server on port {port} is not available") from managed.start_error
+    task = managed.start_task
+    if task is not None:
+        await _await_start(task, port)
     if _public_status(managed) is not ServerStatus.RUNNING:
         raise RuntimeError(f"Server on port {port} is not ready")
 
@@ -99,7 +111,7 @@ async def track_server_activity(port: str) -> AsyncIterator[None]:
     if managed is None:
         raise RuntimeError(f"Server on port {port} is not registered")
 
-    async with managed.start_lock:
+    async with managed.state_lock:
         if _managed_processes.get(port) is not managed:
             raise RuntimeError(f"Server on port {port} is no longer registered")
         if _public_status(managed) is not ServerStatus.RUNNING:
@@ -110,7 +122,7 @@ async def track_server_activity(port: str) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        async with managed.start_lock:
+        async with managed.state_lock:
             if _managed_processes.get(port) is managed:
                 managed.active_requests -= 1
                 managed.last_used = time.monotonic()
@@ -140,23 +152,13 @@ async def _stop_managed_process(managed: ManagedProcess) -> None:
         logger.info("Process %s killed.", process.pid)
 
 
-async def _forget(managed: ManagedProcess) -> None:
-    managed.stopping = True
-    managed.start_error = RuntimeError(f"Server on port {managed.port} was stopped")
-    if managed.start_finished is not None:
-        managed.start_finished.set()
-    await _stop_managed_process(managed)
-    managed.process = None
-    del _managed_processes[managed.port]
-
-
 async def stop_server(port: str, *, only_if_idle: bool = False) -> bool:
     while True:
         managed = _managed_processes.get(port)
         if managed is None:
             return False
 
-        async with managed.start_lock:
+        async with managed.state_lock:
             # A stale waiter may hold a record that was already replaced.
             if _managed_processes.get(port) is not managed:
                 continue
@@ -165,18 +167,33 @@ async def stop_server(port: str, *, only_if_idle: bool = False) -> bool:
                 or time.monotonic() - managed.last_used < IDLE_TIMEOUT_SECONDS
             ):
                 return False
-            await _forget(managed)
-            return True
+            managed.stopping = True
+            task = managed.start_task
+
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+        await _stop_managed_process(managed)
+
+        async with managed.state_lock:
+            if _managed_processes.get(port) is managed:
+                _managed_processes.pop(port, None)
+        return True
 
 
 async def _reap_exited(managed: ManagedProcess) -> None:
-    async with managed.start_lock:
+    async with managed.state_lock:
         if _managed_processes.get(managed.port) is not managed:
             return
         process = managed.process
         if process is None or process.poll() is None:
             return
-        await _forget(managed)
+        if managed.start_task is not None and not managed.start_task.done():
+            # The start attempt observes the same exit and reports it.
+            return
+        _managed_processes.pop(managed.port, None)
 
 
 async def _idle_monitor(check_interval: float = IDLE_CHECK_INTERVAL_SECONDS) -> None:
@@ -200,26 +217,59 @@ async def _idle_monitor(check_interval: float = IDLE_CHECK_INTERVAL_SECONDS) -> 
 
 
 async def _wait_for_server(
-    port: str,
-    timeout: int,
+    managed: ManagedProcess,
     readiness_check: Callable[[], Awaitable[bool]],
 ) -> None:
-    logger.info("Waiting for server on port %s to be ready...", port)
+    while True:
+        process = managed.process
+        if process is None:
+            raise RuntimeError(f"Server on port {managed.port} is not registered")
 
-    async def _poll() -> None:
-        while True:
-            try:
-                if await readiness_check():
-                    return
-            except httpx.ConnectError:
-                pass
-            await asyncio.sleep(1)
+        exit_code = process.poll()
+        if exit_code is not None:
+            raise RuntimeError(
+                f"Server on port {managed.port} exited with code {exit_code} before becoming ready"
+            )
 
+        try:
+            if await readiness_check():
+                return
+        except httpx.TransportError:
+            pass
+
+        await asyncio.sleep(READINESS_POLL_INTERVAL_SECONDS)
+
+
+async def _start_attempt(
+    managed: ManagedProcess,
+    cmd: list[str],
+    readiness_check: Callable[[], Awaitable[bool]],
+) -> None:
+    process: subprocess.Popen[Any] | None = None
     try:
-        await asyncio.wait_for(_poll(), timeout=timeout)
-        logger.info("Server on port %s is ready.", port)
-    except asyncio.TimeoutError:
-        raise TimeoutError(f"Server on port {port} did not start within {timeout} seconds.")
+        logger.info("Starting server on port %s: %s", managed.port, " ".join(cmd))
+        process = subprocess.Popen(cmd)
+        managed.process = process
+
+        global _idle_monitor_task
+        if _idle_monitor_task is None or _idle_monitor_task.done():
+            _idle_monitor_task = asyncio.create_task(_idle_monitor())
+
+        logger.info("Waiting for server on port %s to be ready...", managed.port)
+        await _wait_for_server(managed, readiness_check)
+        logger.info(
+            "Server on port %s is ready after %.1fs.",
+            managed.port,
+            time.monotonic() - managed.last_used,
+        )
+    except asyncio.CancelledError:
+        await _stop_managed_process(managed)
+        managed.process = None
+        raise
+    except BaseException:
+        await _stop_managed_process(managed)
+        managed.process = None
+        raise
 
 
 async def ensure_server_started(
@@ -229,49 +279,64 @@ async def ensure_server_started(
     cmd: list[str],
     readiness_check: Callable[[], Awaitable[bool]],
 ) -> None:
-    """Start on demand. On failure the process is stopped and the record dropped."""
+    """Start on demand, sharing one attempt between all concurrent callers."""
     while True:
         managed = init_port(port, provider, model)
-        async with managed.start_lock:
+
+        async with managed.state_lock:
             if _managed_processes.get(port) is not managed:
                 # The record was stopped while this task waited for its lock.
                 continue
+            if managed.stopping:
+                raise RuntimeError(f"Server on port {port} is stopping")
 
-            if managed.process is not None and managed.process.poll() is None:
-                return
-
-            managed.start_error = None
-            managed.stopping = False
-            managed.start_finished = asyncio.Event()
             managed.provider = provider
             managed.model = model
-            managed.last_used = time.monotonic()
-            process: subprocess.Popen[Any] | None = None
+            task = managed.start_task
 
-            try:
-                logger.info("Starting server on port %s: %s", port, " ".join(cmd))
-                process = subprocess.Popen(cmd)
-                managed.process = process
-
-                global _idle_monitor_task
-                if _idle_monitor_task is None or _idle_monitor_task.done():
-                    _idle_monitor_task = asyncio.create_task(_idle_monitor())
-
-                await _wait_for_server(port, 60, readiness_check)
-            except BaseException as error:
-                managed.start_error = error
-                try:
-                    if process is not None:
-                        await _stop_managed_process(managed)
-                finally:
-                    managed.process = None
-                    managed.start_finished.set()
-                    if _managed_processes.get(port) is managed:
-                        _managed_processes.pop(port)
-                raise
-            else:
-                managed.start_finished.set()
+            if task is not None and not task.done():
+                # Join the start attempt that is already in flight.
+                pass
+            elif (
+                task is not None
+                and not task.cancelled()
+                and task.exception() is None
+                and managed.process is not None
+                and managed.process.poll() is None
+            ):
+                managed.last_used = time.monotonic()
                 return
+            else:
+                managed.stopping = False
+                managed.last_used = time.monotonic()
+                managed.start_task = asyncio.create_task(
+                    _start_attempt(managed, cmd, readiness_check)
+                )
+                managed.start_task.add_done_callback(_consume_task_exception)
+                task = managed.start_task
+
+        try:
+            await _await_start(task, port)
+        except asyncio.CancelledError:
+            raise
+        except BaseException:
+            async with managed.state_lock:
+                if (
+                    _managed_processes.get(port) is managed
+                    and managed.start_task is task
+                    and managed.process is None
+                ):
+                    _managed_processes.pop(port, None)
+            raise
+
+        async with managed.state_lock:
+            if _managed_processes.get(port) is not managed:
+                raise RuntimeError(f"Server on port {port} is no longer registered")
+            if managed.process is None or managed.process.poll() is not None:
+                # The process exited right after a successful readiness check.
+                continue
+            managed.last_used = time.monotonic()
+            return
 
 
 @dataclass(frozen=True)

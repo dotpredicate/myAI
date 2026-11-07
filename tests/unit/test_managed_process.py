@@ -4,7 +4,11 @@ import subprocess
 import sys
 import time
 import unittest
+from contextlib import suppress
 from typing import cast
+from unittest import mock
+
+import httpx
 
 import inference.managed_processes as mp
 
@@ -47,6 +51,12 @@ def register_process(
     managed.last_used = time.monotonic() if last_used is None else last_used
     managed.active_requests = active_requests
     return managed
+
+
+def free_port() -> str:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return str(sock.getsockname()[1])
 
 
 class TestManagedProcessLifecycle(unittest.IsolatedAsyncioTestCase):
@@ -163,11 +173,10 @@ class TestPortLifecycleRecord(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(record, same_record)
         self.assertIsNot(record, other_record)
-        self.assertIs(record.start_lock, same_record.start_lock)
 
     async def test_stop_wakes_readiness_waiter(self) -> None:
         record = mp.init_port("5000", "provider", "model")
-        record.start_finished = asyncio.Event()
+        record.start_task = asyncio.create_task(asyncio.sleep(60))
         waiter = asyncio.create_task(mp.wait_server_ready("5000"))
         await asyncio.sleep(0)
         self.assertFalse(waiter.done())
@@ -241,8 +250,112 @@ class TestPortLifecycleRecord(unittest.IsolatedAsyncioTestCase):
         managed = mp.get_managed_process(port)
         assert managed is not None
         self.assertIsNotNone(managed.process)
-        assert managed.start_finished is not None
-        self.assertTrue(managed.start_finished.is_set())
+        assert managed.start_task is not None
+        self.assertTrue(managed.start_task.done())
+
+    async def test_cancelled_waiter_does_not_stop_shared_start(self) -> None:
+        port = free_port()
+        process = FakeProcess()
+        ready = asyncio.Event()
+        spawns: list[object] = []
+
+        def spawn(*args: object, **kwargs: object) -> subprocess.Popen[str]:
+            spawns.append(args)
+            return as_process(process)
+
+        async def wait_until_ready() -> bool:
+            await ready.wait()
+            return True
+
+        with mock.patch.object(mp.subprocess, "Popen", side_effect=spawn):
+            first = asyncio.create_task(
+                mp.ensure_server_started(port, "test", "slow", ["fake"], wait_until_ready)
+            )
+            second = asyncio.create_task(
+                mp.ensure_server_started(port, "test", "slow", ["fake"], wait_until_ready)
+            )
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+            self.assertEqual(len(spawns), 1)
+            self.assertFalse(first.done())
+            self.assertFalse(second.done())
+
+            first.cancel()
+            with suppress(asyncio.CancelledError):
+                await first
+            self.assertIsNone(process.poll())
+
+            ready.set()
+            await second
+
+        self.assertIsNotNone(mp.get_managed_process(port))
+        self.assertTrue(await mp.stop_server(port))
+        self.assertIsNone(mp.get_managed_process(port))
+
+    async def test_failed_start_is_reported_to_all_waiters_once(self) -> None:
+        port = free_port()
+        process = FakeProcess()
+        process.returncode = 3
+        spawns: list[object] = []
+
+        def spawn(*args: object, **kwargs: object) -> subprocess.Popen[str]:
+            spawns.append(args)
+            return as_process(process)
+
+        async def never_ready() -> bool:
+            return False
+
+        with mock.patch.object(mp.subprocess, "Popen", side_effect=spawn):
+            tasks = [
+                asyncio.create_task(
+                    mp.ensure_server_started(port, "test", "broken", ["fake"], never_ready)
+                )
+                for _ in range(3)
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for result in results:
+            self.assertIsInstance(result, RuntimeError)
+        self.assertIn("exited with code 3", str(results[0]))
+        self.assertEqual(len(spawns), 1)
+        self.assertIsNone(mp.get_managed_process(port))
+
+    async def test_readiness_transport_errors_are_retried(self) -> None:
+        port = free_port()
+        process = FakeProcess()
+        calls = 0
+
+        def spawn(*args: object, **kwargs: object) -> subprocess.Popen[str]:
+            return as_process(process)
+
+        async def flaky_check() -> bool:
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                raise httpx.ConnectError("not ready yet")
+            return True
+
+        with (
+            mock.patch.object(mp.subprocess, "Popen", side_effect=spawn),
+            mock.patch.object(mp, "READINESS_POLL_INTERVAL_SECONDS", 0.01),
+        ):
+            await mp.ensure_server_started(port, "test", "flaky", ["fake"], flaky_check)
+
+        self.assertEqual(calls, 3)
+        self.assertTrue(await mp.stop_server(port))
+
+    async def test_ensure_does_not_start_while_stopping(self) -> None:
+        port = free_port()
+        record = mp.init_port(port, "test", "model")
+        record.stopping = True
+
+        async def never_ready() -> bool:
+            return False
+
+        with self.assertRaises(RuntimeError):
+            await mp.ensure_server_started(port, "test", "model", ["fake"], never_ready)
+        self.assertIs(mp.get_managed_process(port), record)
 
 
 if __name__ == "__main__":
