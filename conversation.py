@@ -483,25 +483,58 @@ async def prepare_and_start_generation(
     ))
     return conversation_id, user_record
 
-async def get_messages_for_continuation(conn: AsyncConnection, conv_id: int) -> list[tuple[int, ConversationElement]]:
+async def get_messages_for_continuation(conv_id: int) -> list[tuple[int, ConversationElement]]:
     ctx: list[tuple[int, ConversationElement]] = []
-    async with conn.cursor() as cur:
-        await cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY sequence_id ASC", (conv_id,))
-        async for row in cur:
-            message_id, role, element = row
-            element_dict = json.loads(element) if isinstance(element, str) else element
-            parsed = stored_element_adapter.validate_python(element_dict)
-            ctx.append((message_id, parsed))
+    async with mk_conn() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY sequence_id ASC", (conv_id,))
+            async for row in cur:
+                message_id, role, element = row
+                element_dict = json.loads(element) if isinstance(element, str) else element
+                parsed = stored_element_adapter.validate_python(element_dict)
+                ctx.append((message_id, parsed))
     return ctx
 
+
+async def _insert_message(conv_id: int, role: str, element: ConversationElement) -> StoredMessageRecord:
+    async with mk_conn() as conn:
+        return await insert_message(conn, conv_id, role, element)
+
+
+async def _insert_blocking_tool_call(
+    conv_id: int,
+    element: ToolCall,
+) -> tuple[StoredMessageRecord, StoredMessageRecord]:
+    """Persist the tool call, its approval request and the block atomically."""
+    async with mk_conn() as conn:
+        tool_record = await insert_message(
+            conn,
+            conv_id,
+            'assistant',
+            element,
+        )
+        approval_record = await insert_message(
+            conn,
+            conv_id,
+            'assistant',
+            ApprovalRequest(original_message_id=tool_record.id),
+        )
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE conversations SET blocking_message_id = %s WHERE id = %s",
+                (tool_record.id, conv_id),
+            )
+        return tool_record, approval_record
+
+
 async def prompt_conversation(
-        conn: AsyncConnection, conv_id: int, functions: list[Tool], 
+        conv_id: int, functions: list[Tool],
         agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, 
         extra_scopes: list[UserScopeChoice] = [], 
         inference_config: dict[str, Any] = {}
     ) -> AsyncGenerator[StreamEvent, None]:
     provider_key, model_id, inference_config, scopes, agent_prompt = await _resolve_agent(agent_id, provider_key, model_id, extra_scopes, inference_config)
-    messages = await get_messages_for_continuation(conn, conv_id)
+    messages = await get_messages_for_continuation(conv_id)
 
     provider = registry.get(provider_key)
 
@@ -515,8 +548,7 @@ async def prompt_conversation(
                 match aggregated_element:
                     case FinishedMessage() | FinishedThinking():
                         result = to_conv_elem(aggregated_element)
-                        record = await insert_message(conn, conv_id, 'assistant', result)
-                        await conn.commit()
+                        record = await _insert_message(conv_id, 'assistant', result)
                         messages.append((record.id, result))
                         yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
                     case FinishedToolCall(name=name, parameters=parameters):
@@ -529,29 +561,30 @@ async def prompt_conversation(
                             result=tool_result.result,
                             scopes=scopes
                         )
-                        record = await insert_message(conn, conv_id, 'assistant', result_element)
-                        yield ToolCallEvent(
-                            name=name,
-                            parameters=parameters,
-                            result=tool_result.result,
-                        )
-                        messages.append((record.id, result_element))
-                        yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
                         if tool_result.is_blocking:
+                            record, approval_record = await _insert_blocking_tool_call(conv_id, result_element)
+                            yield ToolCallEvent(
+                                name=name,
+                                parameters=parameters,
+                                result=tool_result.result,
+                            )
+                            messages.append((record.id, result_element))
+                            yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
                             approval_element = ApprovalRequest(original_message_id=record.id)
-                            approval_record = await insert_message(conn, conv_id, 'assistant', approval_element)
-                            async with conn.cursor() as cur:
-                                await cur.execute(
-                                    "UPDATE conversations SET blocking_message_id = %s WHERE id = %s",
-                                    (record.id, conv_id),
-                                )
                             messages.append((approval_record.id, approval_element))
                             yield ApprovalRequestEvent(original_message_id=record.id)
                             yield ElementFinalized(id=approval_record.id, sequence_id=approval_record.sequence_id)
                             run_next_loop = False
                         else:
+                            record = await _insert_message(conv_id, 'assistant', result_element)
+                            yield ToolCallEvent(
+                                name=name,
+                                parameters=parameters,
+                                result=tool_result.result,
+                            )
+                            messages.append((record.id, result_element))
+                            yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
                             run_next_loop = True
-                        await conn.commit()
             if delta is not None:
                 if isinstance(delta, StreamingMessage):
                     yield MessageChunk(content=delta.content)
@@ -576,18 +609,16 @@ async def _run_generation_task(
     inference_config: dict[str, Any] = {},
 ) -> None:
     try:
-        async with mk_conn() as conn:
-            async for event in prompt_conversation(
-                conn,
-                state.conversation_id,
-                functions,
-                agent_id=agent_id,
-                provider_key=provider_key,
-                model_id=model_id,
-                extra_scopes=extra_scopes,
-                inference_config=inference_config,
-            ):
-                await state.apply_event(event)
+        async for event in prompt_conversation(
+            state.conversation_id,
+            functions,
+            agent_id=agent_id,
+            provider_key=provider_key,
+            model_id=model_id,
+            extra_scopes=extra_scopes,
+            inference_config=inference_config,
+        ):
+            await state.apply_event(event)
         await state.finish()
     except asyncio.CancelledError:
         await state.cancel()
@@ -685,45 +716,85 @@ async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optio
             'messages': messages
         }
 
-async def decide_tool_call(conn: AsyncConnection, conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> Optional[str]:
+async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> Optional[str]:
     """Returns the execution result on approve, None on reject."""
-    async with conn.cursor() as cur:
-        await conn.set_autocommit(False)
-        await cur.execute('SELECT elements FROM messages WHERE id = %s AND conversation_id = %s', (msg_id, conv_id))
-        row = await cur.fetchone()
-        if not row:
-            raise ValueError('message not found')
+    async with mk_conn() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                'SELECT messages.elements, conversations.blocking_message_id '
+                'FROM messages JOIN conversations ON conversations.id = messages.conversation_id '
+                'WHERE messages.id = %s AND messages.conversation_id = %s',
+                (msg_id, conv_id),
+            )
+            row = await cur.fetchone()
+            if not row:
+                raise ValueError('message not found')
         
-        elem_dict = json.loads(row[0]) if isinstance(row[0], str) else row[0]
-        elem = stored_element_adapter.validate_python(elem_dict)
+            elem_dict, blocking_message_id = row
+            if blocking_message_id != msg_id:
+                # Approving twice (or approving a stale message after reload)
+                # must not execute the same privileged tool again.
+                raise ValueError('tool call is not the current blocking message')
 
-        decision_elem = ToolCallDecision(
-            decision=decision,
-            original_message_id=msg_id,
-            comment=comment or ""
-        )
-        
-        await insert_message(conn, conv_id, 'assistant', decision_elem)
-        await cur.execute('UPDATE conversations SET blocking_message_id = NULL WHERE id = %s', (conv_id,))
-
-        execution_result: Optional[str] = None
-        if decision == 'approve':
-            if not isinstance(elem, ToolCall):
+            elem = stored_element_adapter.validate_python(
+                json.loads(elem_dict) if isinstance(elem_dict, str) else elem_dict
+            )
+            if decision == 'approve' and not isinstance(elem, ToolCall):
                 raise ValueError('original message is not a tool call')
 
-            # FIXME: A new approach to this
-            result = await run_tool_call(elem.name, elem.parameters, privileged=True, scopes=elem.scopes, conversation_id=conv_id)
-            result_elem = ToolCallResult(
-                original_message_id=msg_id,
-                result=result.result,
+            # Atomic gate: exactly one caller clears the block. Everyone else
+            # sees no row and gets a ValueError instead of executing the tool.
+            await cur.execute(
+                'UPDATE conversations SET blocking_message_id = NULL '
+                'WHERE id = %s AND blocking_message_id = %s RETURNING id',
+                (conv_id, msg_id),
             )
-            await insert_message(conn, conv_id, 'system', result_elem)
-            execution_result = result.result
-        
-        await conn.commit()
-        return execution_result
+            if await cur.fetchone() is None:
+                raise ValueError('tool call is not the current blocking message')
 
-async def delete_conversation(conn: AsyncConnection, conv_id: int) -> bool:
+            decision_elem = ToolCallDecision(
+                decision=decision,
+                original_message_id=msg_id,
+                comment=comment or "",
+            )
+            await insert_message(conn, conv_id, 'assistant', decision_elem)
+
+    if decision == 'reject':
+        return None
+
+    assert isinstance(elem, ToolCall)
+    interrupted: BaseException | None = None
+    try:
+        result = await run_tool_call(
+            elem.name,
+            elem.parameters,
+            privileged=True,
+            scopes=elem.scopes,
+            conversation_id=conv_id,
+        )
+        result_text = result.result
+    except BaseException as exc:
+        result_text = json.dumps({"error": f"Tool execution failed: {exc}"})
+        if isinstance(exc, Exception):
+            logger.exception("Tool execution failed for conversation %s", conv_id)
+        else:
+            logger.warning("Tool execution interrupted for conversation %s: %s", conv_id, exc)
+            interrupted = exc
+
+    async with mk_conn() as conn:
+        await insert_message(
+            conn,
+            conv_id,
+            'system',
+            ToolCallResult(original_message_id=msg_id, result=result_text),
+        )
+        
+    if interrupted is not None:
+        raise interrupted
+    return result_text
+
+
+async def delete_conversation(conv_id: int) -> bool:
     state = await get_active_generation(conv_id)
     if state is not None and state.task is not None:
         state.task.cancel()
@@ -732,16 +803,13 @@ async def delete_conversation(conn: AsyncConnection, conv_id: int) -> bool:
         except asyncio.CancelledError:
             pass
         await state.cancel()
-    async with conn.cursor() as cur:
-        await conn.set_autocommit(False)
-        await cur.execute("SELECT id FROM conversations WHERE id = %s", (conv_id,))
-        if not await cur.fetchone():
-            return False
-        await cur.execute("DELETE FROM messages WHERE conversation_id = %s", (conv_id,))
-        await cur.execute("DELETE FROM conversations WHERE id = %s", (conv_id,))
-        await conn.commit()
-        system.remove_workspace(conv_id)
-        return True
+    async with mk_conn() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute("DELETE FROM conversations WHERE id = %s RETURNING id", (conv_id,))
+            if not await cur.fetchone():
+                return False
+    system.remove_workspace(conv_id)
+    return True
 
 @router.post('/api/conversations/prompt')
 async def prompt_model(payload: PromptRequest):
@@ -806,8 +874,7 @@ async def stream_conversation_endpoint(conv_id: int, after_sequence_id: Optional
 @router.delete('/api/conversations/{conv_id}')
 async def delete_conversation_endpoint(conv_id: int):
     try:
-        async with mk_conn() as conn:
-            success = await delete_conversation(conn, conv_id)
+        success = await delete_conversation(conv_id)
         if not success:
             return JSONResponse(status_code=404, content={'error': 'Conversation not found'})
         return JSONResponse(content={'status': 'deleted', 'id': conv_id})
@@ -823,8 +890,7 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
         return JSONResponse(status_code=400, content={'error': 'invalid decision'})
 
     try:
-        async with mk_conn() as conn:
-            result = await decide_tool_call(conn, conv_id, msg_id, decision, comment=comment)
+        result = await decide_tool_call(conv_id, msg_id, decision, comment=comment)
         return JSONResponse(content={'status': 'success', 'executed': result is not None, 'result': result})
     except ValueError as e:
         return JSONResponse(status_code=400, content={'error': str(e)})

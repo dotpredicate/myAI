@@ -20,7 +20,7 @@ async def get_pool():
         _cached_pool = AsyncConnectionPool(
             DATABASE_URL,
             min_size=2,
-            max_size=4,
+            max_size=10,
         )
         _cached_database_url = DATABASE_URL
         await _cached_pool.open()
