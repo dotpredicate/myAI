@@ -26,6 +26,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     onProvidersError(error: Error, retry: () => void): void;
     onRepositoriesLoaded(repositories: RepositoryConfig[]): void;
     onRepositoriesError(error: Error, retry: () => void): void;
+    onAgentsLoaded(agents: AgentConfig[]): void;
   }
 
   const data: AgentsData = {
@@ -86,6 +87,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
       if (destroyed) return;
       data.agents = Array.isArray(response.agents) ? response.agents : [];
       renderList();
+      editor?.onAgentsLoaded(data.agents);
       if (currentMode === 'edit') {
         const agent = data.agents.find((item) => item.internal_name === currentKey);
         if (!agent) {
@@ -115,6 +117,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
       if (destroyed) return;
       data.agents = Array.isArray(response.agents) ? response.agents : [];
       renderList();
+      editor?.onAgentsLoaded(data.agents);
     } catch (error) {
       if (destroyed) return;
       renderList('error', messageOf(error));
@@ -187,11 +190,33 @@ export function mount(route: Route, _options: MountOptions = {}) {
     });
     const descriptionInput = TextArea({ name: 'description', rows: 3, value: agent?.description || '' });
     const instructionsInput = TextArea({ name: 'instructions', rows: 5, value: agent?.instructions || '', placeholder: 'Instructions the model should follow…' });
-    const spawnableInput = Input({
-      name: 'spawnable_agents',
-      value: (agent?.spawnable_agents || []).join(', '),
-      autocomplete: 'off',
-      placeholder: 'agent-a, agent-b',
+    const spawnable = new Set<string>(agent?.spawnable_agents || []);
+    const spawnableSelect = Select({ multiple: true });
+    spawnableSelect.size = 5;
+    function renderSpawnable(agents: AgentConfig[]): void {
+      clear(spawnableSelect);
+      spawnableSelect.disabled = false;
+      const candidates = agents.filter((candidate) => candidate.internal_name !== originalKey);
+      if (candidates.length === 0) {
+        spawnableSelect.appendChild(Option('', 'Create another agent first'));
+        spawnableSelect.disabled = true;
+        return;
+      }
+      for (const candidate of candidates) {
+        const text = candidate.display_name && candidate.display_name !== candidate.internal_name
+          ? `${candidate.display_name} (${candidate.internal_name})`
+          : candidate.internal_name;
+        const option = Option(candidate.internal_name, text);
+        option.selected = spawnable.has(candidate.internal_name);
+        spawnableSelect.appendChild(option);
+      }
+    }
+    spawnableSelect.addEventListener('change', () => {
+      spawnable.clear();
+      for (const option of Array.from(spawnableSelect.selectedOptions)) {
+        spawnable.add(option.value);
+      }
+      markDirty();
     });
     const nameField = labeledField('Name', nameInput);
     const keyField = labeledField('Key', keyInput, {
@@ -199,8 +224,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
     });
     const descriptionField = labeledField('Description', descriptionInput);
     const instructionsField = labeledField('Instructions', instructionsInput);
-    const spawnableField = labeledField('Spawnable agents', spawnableInput, {
-      hint: 'Comma-separated agent keys this agent may start with spawn_agent.',
+    const spawnableField = labeledField('Sub-agents', spawnableSelect, {
+      hint: 'Agents this agent may start with spawn_agent. Ctrl/Cmd-click to select more than one.',
     });
 
     const providerSelect = Select({ name: 'provider_key' });
@@ -242,7 +267,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     editorContainer.appendChild(el('header', {}, heading));
     editorContainer.appendChild(form);
 
-    [nameInput, keyInput, descriptionInput, instructionsInput, spawnableInput].forEach((input) => {
+    [nameInput, keyInput, descriptionInput, instructionsInput].forEach((input) => {
       input.addEventListener('input', markDirty);
     });
     providerSelect.addEventListener('change', () => {
@@ -494,10 +519,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         display_name: displayName,
         description: descriptionInput.value.trim(),
         instructions: instructionsInput.value.trim() || null,
-        spawnable_agents: spawnableInput.value
-          .split(',')
-          .map((symbol) => symbol.trim())
-          .filter((symbol) => symbol.length > 0),
+        spawnable_agents: [...spawnable],
         provider_key: selectedProvider,
         model_id: selectedModel,
         inference_config: config,
@@ -579,6 +601,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     fillProviderSelect();
     populateRepositories();
     renderRepoAccess();
+    renderSpawnable(data.agents);
     renderSettings();
 
     if (providerKey) {
@@ -613,6 +636,9 @@ export function mount(route: Route, _options: MountOptions = {}) {
       },
       onRepositoriesError(error, retry) {
         setStatus(repoStatus, `Could not load repositories: ${messageOf(error)}`, { error: true, retry });
+      },
+      onAgentsLoaded(nextAgents) {
+        renderSpawnable(nextAgents);
       },
     };
   }
