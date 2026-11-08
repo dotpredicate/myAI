@@ -43,6 +43,10 @@ class FinishedToolCall:
 
 FinishedElement: TypeAlias = Union[FinishedMessage, FinishedThinking, FinishedToolCall]
 
+
+class EmptyCompletionError(ValueError):
+    """The provider stopped without producing content or a tool call."""
+
 EmbeddingInput: TypeAlias = Union[str, list[str], list[int], list[list[int]]]
 
 

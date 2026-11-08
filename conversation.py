@@ -1,4 +1,4 @@
-from typing import AsyncGenerator, Literal, Optional, Any, Union
+from typing import AsyncGenerator, Literal, Optional, Any, Union, cast
 import asyncio
 import json
 from pydantic import BaseModel
@@ -7,6 +7,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from domain import (
+    AgentConfig,
     Message,
     Thinking,
     ToolCall,
@@ -14,6 +15,7 @@ from domain import (
     ToolCallResult,
     ToolCallDecision,
     ConversationElement,
+    ScopeSpec,
     stored_element_adapter,
 )
 from inference import (
@@ -25,10 +27,11 @@ from inference import (
     FinishedThinking,
     FinishedToolCall,
     FinishedElement,
+    EmptyCompletionError,
     ChatContext,
     registry
 )
-from tools import Tool, run_tool_call, TOOL_REGISTRY
+from tools import FunctionDefinition, Tool, run_tool_call, TOOL_REGISTRY
 import system
 
 from log_config import get_logger
@@ -367,20 +370,35 @@ async def get_blocking_message_id(conn: AsyncConnection, conv_id: int) -> Option
 
 
 async def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fallback_model: Optional[str], req_scopes: list[UserScopeChoice], inference_config: dict[str, Any] = {}) -> tuple:
-    """Resolve (provider_key, model_id, inference_config, scopes, agent_prompt) from agent or fallback.
-    Returns None for provider_key if validation fails (caller handles error)."""
+    """Resolve provider, model, scopes, instructions and the agent config."""
     if agent_id:
         agent = await get_agent_by_name(agent_id)
         if agent is None:
             raise ValueError(f"Agent '{agent_id}' not found")
         scopes = await scopes_for_agent(agent, req_scopes)
-        return agent.provider_key, agent.model_id, agent.inference_config, scopes, agent.instructions
+        return agent.provider_key, agent.model_id, agent.inference_config, scopes, agent.instructions, agent
     if not fallback_provider:
         raise ValueError('provider_key required')
     if not fallback_model:
         raise ValueError('model_id required')
     resolved_scopes = await resolve_scopes(None, req_scopes)
-    return fallback_provider, fallback_model, inference_config, resolved_scopes, None
+    return fallback_provider, fallback_model, inference_config, resolved_scopes, None, None
+
+
+def tools_for_agent(functions: list[Tool], agent: Optional[AgentConfig]) -> list[Tool]:
+    """Expose spawn_agent only to agents with an allowlist, with that list in the description."""
+    filtered = [tool for tool in functions if tool["name"] != "spawn_agent"]
+    if agent is None or not agent.spawnable_agents:
+        return filtered
+    spawn = next((tool for tool in functions if tool["name"] == "spawn_agent"), None)
+    if spawn is None:
+        spawn = next(tool for tool in TOOL_REGISTRY if tool["name"] == "spawn_agent")
+    schema = cast(FunctionDefinition, dict(spawn["schema"]))
+    schema["description"] = (
+        f"{schema['description']} Allowed agents: {', '.join(agent.spawnable_agents)}."
+    )
+    filtered.append(Tool(name=spawn["name"], schema=schema, executor=spawn["executor"]))
+    return filtered
 
 async def prepare_and_start_generation(
     prompt: str,
@@ -481,9 +499,15 @@ async def prompt_conversation(
         conv_id: int, functions: list[Tool],
         agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, 
         extra_scopes: list[UserScopeChoice] = [], 
-        inference_config: dict[str, Any] = {}
+        inference_config: dict[str, Any] = {},
+        scope_override: Optional[list[ScopeSpec]] = None,
     ) -> AsyncGenerator[StreamEvent, None]:
-    provider_key, model_id, inference_config, scopes, agent_prompt = await _resolve_agent(agent_id, provider_key, model_id, extra_scopes, inference_config)
+    provider_key, model_id, inference_config, scopes, agent_prompt, agent = await _resolve_agent(
+        agent_id, provider_key, model_id, extra_scopes, inference_config
+    )
+    if scope_override is not None:
+        scopes = scope_override
+    functions = tools_for_agent(functions, agent)
     messages = await get_messages_for_continuation(conv_id)
 
     try:
@@ -506,8 +530,8 @@ async def prompt_conversation(
                         yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
                     case FinishedToolCall(name=name, parameters=parameters):
                         assert isinstance(aggregated_element, FinishedToolCall)
-                        # Pass the extracted scopes to the tool call
-                        tool_result = await run_tool_call(name, parameters, False, scopes, conv_id)
+                        # Pass the extracted scopes and the agent to the tool call
+                        tool_result = await run_tool_call(name, parameters, False, scopes, conv_id, agent)
                         result_element = ToolCall(
                             name=name,
                             parameters=parameters,
@@ -566,17 +590,30 @@ async def _run_generation_task(
     inference_config: dict[str, Any] = {},
 ) -> None:
     try:
-        async for event in prompt_conversation(
-            state.conversation_id,
-            functions,
-            agent_id=agent_id,
-            provider_key=provider_key,
-            model_id=model_id,
-            extra_scopes=extra_scopes,
-            inference_config=inference_config,
-        ):
-            await state.apply_event(event)
-        await state.finish()
+        # Some providers occasionally end a stream with finish_reason=stop and
+        # no content or tool call. Retry once only if the first attempt emitted
+        # nothing; tool execution emits an event, so it is never repeated.
+        for attempt in range(2):
+            emitted = False
+            try:
+                async for event in prompt_conversation(
+                    state.conversation_id,
+                    functions,
+                    agent_id=agent_id,
+                    provider_key=provider_key,
+                    model_id=model_id,
+                    extra_scopes=extra_scopes,
+                    inference_config=inference_config,
+                ):
+                    emitted = True
+                    await state.apply_event(event)
+                await state.finish()
+                return
+            except EmptyCompletionError:
+                if attempt == 0 and not emitted:
+                    logger.warning("Empty completion for conversation %s; retrying once", state.conversation_id)
+                    continue
+                raise
     except asyncio.CancelledError:
         await state.cancel()
         raise

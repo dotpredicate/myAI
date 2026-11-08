@@ -20,6 +20,43 @@ class TestAgents(BaseTestCase):
         self.assertEqual(data["internal_name"], "test_agent")
         self.assertEqual(data["display_name"], "Test Agent")
 
+    async def test_spawnable_agents_round_trip_and_validation(self):
+        child_payload = {
+            "display_name": "Spawn Child",
+            "internal_name": "spawn_child",
+            "description": "Child",
+            "instructions": "Do work",
+            "provider_key": "mock_e2e",
+            "model_id": "dummy_model",
+            "inference_config": {},
+            "repository_access": [],
+        }
+        child_res = await self.client.post("/api/agents", json=child_payload)
+        self.assertEqual(child_res.status_code, 201, child_res.text)
+
+        parent_payload = {
+            **child_payload,
+            "display_name": "Spawn Parent",
+            "internal_name": "spawn_parent",
+            "spawnable_agents": ["spawn_child"],
+        }
+        parent_res = await self.client.post("/api/agents", json=parent_payload)
+        self.assertEqual(parent_res.status_code, 201, parent_res.text)
+        self.assertEqual(parent_res.json()["spawnable_agents"], ["spawn_child"])
+
+        update_res = await self.client.put(
+            "/api/agents/spawn_parent",
+            json={"spawnable_agents": []},
+        )
+        self.assertEqual(update_res.status_code, 200, update_res.text)
+        self.assertEqual(update_res.json()["spawnable_agents"], [])
+
+        bad_res = await self.client.put(
+            "/api/agents/spawn_parent",
+            json={"spawnable_agents": ["missing_agent"]},
+        )
+        self.assertEqual(bad_res.status_code, 400, bad_res.text)
+
     async def test_inference_config_round_trips_explicit_values_and_empty_config(self):
         payload = {
             "display_name": "Config Agent",

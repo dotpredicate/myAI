@@ -7,7 +7,8 @@ from pathlib import Path
 from typing import Awaitable, Callable, TypedDict
 
 from system import REPOSITORIES_VROOT, get_repo_from_vpath, is_safe_realpath, is_safe_vpath, resolve_repo_vpath, resolve_workspace_vpath, run_sandboxed_command
-from domain import SecurityPolicy, ScopeSpec
+from domain import AgentConfig, Message, SecurityPolicy, ScopeSpec
+from database import mk_conn
 
 class FunctionDefinition(TypedDict):
     name: str
@@ -22,10 +23,22 @@ class ToolCallResult:
 class Tool(TypedDict):
     name: str
     schema: FunctionDefinition
-    executor: Callable[[str, str, int, bool, list[ScopeSpec]], Awaitable[ToolCallResult]]
+    executor: Callable[[str, str, int, bool, list[ScopeSpec], AgentConfig | None, int], Awaitable[ToolCallResult]]
 
 
-async def run_shell_command(name: str, parameters: str, conversation_id: int, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
+MAX_SPAWN_DEPTH = 3
+_SPAWN_DEPTH: dict[int, int] = {}
+
+
+async def run_shell_command(
+    name: str,
+    parameters: str,
+    conversation_id: int,
+    privileged: bool = False,
+    scopes: list[ScopeSpec] = [],
+    agent: AgentConfig | None = None,
+    spawn_depth: int = 0,
+) -> ToolCallResult:
     params = json.loads(parameters)
     command: str = params['command']
     if not isinstance(command, str):
@@ -42,6 +55,8 @@ async def run_semantic_search(
     conversation_id: int,
     privileged: bool = False,
     scopes: list[ScopeSpec] = [],
+    agent: AgentConfig | None = None,
+    spawn_depth: int = 0,
 ) -> ToolCallResult:
     from search import semantic_search
     params = json.loads(parameters)
@@ -59,7 +74,15 @@ async def run_semantic_search(
         return ToolCallResult(json.dumps({"error": f"search failed: {exc}"}))
     return ToolCallResult(result=json.dumps({"results": [result._asdict() for result in results]}))
 
-async def run_propose_replace(name: str, parameters: str, conversation_id: int, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
+async def run_propose_replace(
+    name: str,
+    parameters: str,
+    conversation_id: int,
+    privileged: bool = False,
+    scopes: list[ScopeSpec] = [],
+    agent: AgentConfig | None = None,
+    spawn_depth: int = 0,
+) -> ToolCallResult:
     try:
         params = json.loads(parameters)
         target_vpath_str = params.get("target")
@@ -132,7 +155,15 @@ async def run_propose_replace(name: str, parameters: str, conversation_id: int, 
     except Exception as e:
         return ToolCallResult(json.dumps({"error": f"Unexpected error: {str(e)}"}))
 
-async def run_propose_diff(name: str, parameters: str, conversation_id: int, privileged: bool = False, scopes: list[ScopeSpec] = []) -> ToolCallResult:
+async def run_propose_diff(
+    name: str,
+    parameters: str,
+    conversation_id: int,
+    privileged: bool = False,
+    scopes: list[ScopeSpec] = [],
+    agent: AgentConfig | None = None,
+    spawn_depth: int = 0,
+) -> ToolCallResult:
     try:
         params = json.loads(parameters)
         target_vpath_str = params.get("target")
@@ -203,6 +234,92 @@ async def run_propose_diff(name: str, parameters: str, conversation_id: int, pri
 
 
 
+async def run_spawn_agent(
+    name: str,
+    parameters: str,
+    conversation_id: int,
+    privileged: bool = False,
+    scopes: list[ScopeSpec] = [],
+    agent: AgentConfig | None = None,
+    spawn_depth: int = 0,
+) -> ToolCallResult:
+    try:
+        params = json.loads(parameters)
+        symbol = params.get("agent_symbol")
+        prompt = params.get("prompt")
+        if not isinstance(symbol, str) or not symbol.strip():
+            return ToolCallResult(json.dumps({"error": "agent_symbol is required"}))
+        if not isinstance(prompt, str) or not prompt.strip():
+            return ToolCallResult(json.dumps({"error": "prompt is required"}))
+        if agent is None:
+            return ToolCallResult(json.dumps({"error": "spawn_agent is only available to configured agents"}))
+        symbol = symbol.strip()
+        if symbol not in agent.spawnable_agents:
+            return ToolCallResult(json.dumps({"error": f"agent '{symbol}' is not in the allowed list"}))
+        if spawn_depth >= MAX_SPAWN_DEPTH:
+            return ToolCallResult(json.dumps({"error": f"spawn depth limit reached ({MAX_SPAWN_DEPTH})"}))
+
+        from agents import get_agent_by_name
+        target = await get_agent_by_name(symbol)
+        if target is None:
+            return ToolCallResult(json.dumps({"error": f"agent '{symbol}' not found"}))
+
+        from inference import EmptyCompletionError
+        from conversation import (
+            create_conversation,
+            get_blocking_message_id,
+            get_messages_for_continuation,
+            insert_message,
+            prompt_conversation,
+        )
+
+        async with mk_conn() as conn:
+            child_id = await create_conversation(conn)
+            await insert_message(conn, child_id, 'user', Message(author='user', content=prompt))
+            await conn.commit()
+
+        _SPAWN_DEPTH[child_id] = spawn_depth + 1
+        try:
+            for attempt in range(2):
+                emitted = False
+                try:
+                    async for _ in prompt_conversation(
+                        child_id,
+                        TOOL_REGISTRY,
+                        agent_id=symbol,
+                        scope_override=scopes,
+                    ):
+                        emitted = True
+                    break
+                except EmptyCompletionError:
+                    if attempt == 0 and not emitted:
+                        continue
+                    raise
+
+            messages = await get_messages_for_continuation(child_id)
+            final = ''
+            for _, element in messages:
+                if isinstance(element, Message) and element.author == 'assistant':
+                    final = element.content
+            async with mk_conn() as conn:
+                blocked = await get_blocking_message_id(conn, child_id)
+            result: dict[str, object] = {
+                "conversation_id": child_id,
+                "agent": symbol,
+                "response": final,
+            }
+            if blocked is not None:
+                result["blocked"] = True
+                result["blocking_message_id"] = blocked
+            return ToolCallResult(json.dumps(result))
+        finally:
+            _SPAWN_DEPTH.pop(child_id, None)
+    except json.JSONDecodeError as exc:
+        return ToolCallResult(json.dumps({"error": f"Invalid JSON: {exc}"}))
+    except Exception as exc:
+        return ToolCallResult(json.dumps({"error": f"spawn_agent failed: {exc}"}))
+
+
 TOOL_REGISTRY: list[Tool] = [
     {
         "name": "bash",
@@ -253,6 +370,32 @@ TOOL_REGISTRY: list[Tool] = [
         "executor": run_semantic_search
     },
     {
+        "name": "spawn_agent",
+        "schema": {
+            "name": "spawn_agent",
+            "description": (
+                "Start a new conversation with another agent and return its final "
+                "response. Use it for a self-contained subtask that should be "
+                "handled by a different agent."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "agent_symbol": {
+                        "type": "string",
+                        "description": "Internal name of the agent to spawn.",
+                    },
+                    "prompt": {
+                        "type": "string",
+                        "description": "Self-contained task for the spawned agent.",
+                    },
+                },
+                "required": ["agent_symbol", "prompt"],
+            },
+        },
+        "executor": run_spawn_agent,
+    },
+    {
         "name": "replace_file",
         "schema": {
             "name": "replace_file",
@@ -286,12 +429,28 @@ TOOL_REGISTRY: list[Tool] = [
     }
 ]
 
-async def run_tool_call(name: str, parameters: str, privileged: bool, scopes: list[ScopeSpec], conversation_id: int) -> ToolCallResult:
+async def run_tool_call(
+    name: str,
+    parameters: str,
+    privileged: bool,
+    scopes: list[ScopeSpec],
+    conversation_id: int,
+    agent: AgentConfig | None = None,
+) -> ToolCallResult:
+    spawn_depth = _SPAWN_DEPTH.get(conversation_id, 0)
     for entry in TOOL_REGISTRY:
         if entry["name"] == name:
             try:
-                return await entry["executor"](name, parameters, conversation_id, privileged, scopes)
+                return await entry["executor"](
+                    name,
+                    parameters,
+                    conversation_id,
+                    privileged,
+                    scopes,
+                    agent,
+                    spawn_depth,
+                )
             except Exception as exc:
                 return ToolCallResult(json.dumps({"error": f"Uncaught error: {exc}"}))
-    
+
     raise ValueError(f'Unsupported tool call {name}')

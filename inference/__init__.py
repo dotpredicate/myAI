@@ -11,6 +11,7 @@ from .engine import (
     FinishedToolCall as FinishedToolCall,
     StreamingElement as StreamingElement,
     FinishedElement as FinishedElement,
+    EmptyCompletionError as EmptyCompletionError,
     ChatContext as ChatContext,
     InferenceParam as InferenceParam,
     InferenceParamType as InferenceParamType,

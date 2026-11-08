@@ -74,6 +74,98 @@ class TestConversations(BaseTestCase):
         details = (await self.client.get(f"/api/conversations/{conversation_id}")).json()
         self.assertEqual([m["sequence_id"] for m in details["messages"]], [1, 2])
 
+    async def test_spawn_agent_starts_child_conversation(self):
+        child_payload = {
+            "display_name": "Child Agent",
+            "internal_name": "child_agent",
+            "description": "Child",
+            "instructions": "Answer the sub-task",
+            "provider_key": "mock_e2e",
+            "model_id": "model-1",
+            "inference_config": {},
+            "repository_access": [],
+        }
+        child_res = await self.client.post("/api/agents", json=child_payload)
+        self.assertEqual(child_res.status_code, 201, child_res.text)
+
+        parent_payload = {
+            **child_payload,
+            "display_name": "Parent Agent",
+            "internal_name": "parent_agent",
+            "spawnable_agents": ["child_agent"],
+        }
+        parent_res = await self.client.post("/api/agents", json=parent_payload)
+        self.assertEqual(parent_res.status_code, 201, parent_res.text)
+
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="spawn_agent",
+                parameters=json.dumps({"agent_symbol": "child_agent", "prompt": "say hi"}),
+            )),
+        )
+        self.mock_provider.schedule_stream(
+            Yield(streaming=StreamingMessage(content="child answer")),
+            Yield(finished=FinishedMessage(content="child answer")),
+        )
+        self.mock_provider.schedule_stream(
+            Yield(streaming=StreamingMessage(content="parent done")),
+            Yield(finished=FinishedMessage(content="parent done")),
+        )
+
+        res = await self.client.post("/api/conversations/prompt", json={
+            "prompt": "Delegate to the child",
+            "agent_id": "parent_agent",
+        })
+        self.assertEqual(res.status_code, 200)
+        events = await _read_ndjson_response(res)
+        tool_events = [event for event in events if event["type"] == "tool_call"]
+        self.assertEqual(len(tool_events), 1)
+        tool_result = json.loads(tool_events[0]["result"])
+        self.assertEqual(tool_result["agent"], "child_agent")
+        self.assertEqual(tool_result["response"], "child answer")
+        self.assertEqual(self.mock_provider.calls, 3)
+
+        child_id = tool_result["conversation_id"]
+        details = (await self.client.get(f"/api/conversations/{child_id}")).json()
+        self.assertEqual(
+            [message["element"]["content"] for message in details["messages"] if message["role"] == "assistant"],
+            ["child answer"],
+        )
+        self.assertTrue(any(
+            event["type"] == "message" and event.get("content") == "parent done"
+            for event in events
+        ))
+
+    async def test_spawn_agent_rejects_agent_outside_allowlist(self):
+        payload = {
+            "display_name": "Lonely Agent",
+            "internal_name": "lonely_agent",
+            "description": "No children",
+            "instructions": "Do not delegate",
+            "provider_key": "mock_e2e",
+            "model_id": "model-1",
+            "inference_config": {},
+            "repository_access": [],
+        }
+        create_res = await self.client.post("/api/agents", json=payload)
+        self.assertEqual(create_res.status_code, 201, create_res.text)
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="spawn_agent",
+                parameters=json.dumps({"agent_symbol": "child_agent", "prompt": "say hi"}),
+            )),
+            Yield(finished=FinishedMessage(content="could not delegate")),
+        )
+
+        res = await self.client.post("/api/conversations/prompt", json={
+            "prompt": "Delegate anyway",
+            "agent_id": "lonely_agent",
+        })
+        events = await _read_ndjson_response(res)
+        tool_events = [event for event in events if event["type"] == "tool_call"]
+        self.assertEqual(len(tool_events), 1)
+        self.assertIn("not in the allowed list", tool_events[0]["result"])
+
     async def test_conversation_stream_replays_buffer_then_live_tokens(self):
         wait = Wait()
         self.mock_provider.schedule_stream(

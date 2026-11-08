@@ -35,6 +35,7 @@ export interface AgentConfig {
   model_id: string;
   inference_config: Record<string, ParamValue>;
   repository_access: AgentRepositoryAccess[];
+  spawnable_agents: string[];
 }
 
 export interface RepoAccessEntry {
@@ -51,6 +52,7 @@ export interface CreateAgentRequest {
   model_id: string;
   inference_config?: Record<string, ParamValue>;
   repository_access?: RepoAccessEntry[];
+  spawnable_agents?: string[];
 }
 
 export interface UpdateAgentRequest {
@@ -61,6 +63,7 @@ export interface UpdateAgentRequest {
   model_id?: string;
   inference_config?: Record<string, ParamValue>;
   repository_access?: RepoAccessEntry[];
+  spawnable_agents?: string[];
 }
 
 export interface ScopeSpec {

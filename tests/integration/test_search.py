@@ -5,10 +5,24 @@ from pathlib import Path
 
 import database
 from domain import RepositoryConfig, ScopeSpec, SecurityPolicy
-from repositories import get_repo_documents, scan_repo_documents
+from inference import EmbeddingInput
+from repositories import delete_repository, get_repo_documents, scan_repo_documents
 from tests.helpers import BaseTestCase, DeterministicEmbeddingProvider
 import search
 from tools import TOOL_REGISTRY, run_semantic_search
+
+
+class _DeletingEmbeddingProvider(DeterministicEmbeddingProvider):
+    def __init__(self, repo_name: str) -> None:
+        super().__init__()
+        self.repo_name = repo_name
+        self.deleted = False
+
+    async def embed(self, model: str, input: EmbeddingInput) -> list[list[float]]:
+        if not self.deleted:
+            self.deleted = True
+            await delete_repository(self.repo_name)
+        return await super().embed(model, input)
 
 
 class TestSearchToolSchema(unittest.TestCase):
@@ -244,6 +258,21 @@ class TestSearch(BaseTestCase):
 
         await search.synchronize(provider=self.embedding_provider)
         self.assertEqual(await self._document_count("missing_repo"), 1)
+
+    async def test_deleting_repository_during_indexing_stops_the_repository(self):
+        repo_dir = Path(self._repo_dir.name)
+        (repo_dir / "notes.txt").write_text("race content", encoding="utf-8")
+        response = await self._helper_create_repo("race_repo", str(repo_dir))
+        self.assertEqual(response.status_code, 201)
+
+        provider = _DeletingEmbeddingProvider("race_repo")
+        await search.synchronize(provider=provider)
+
+        self.assertTrue(provider.deleted)
+        self.assertEqual(await self._document_count("race_repo"), 0)
+        response = await self.client.get("/api/repositories")
+        names = [repo["internal_name"] for repo in response.json()["repositories"]]
+        self.assertNotIn("race_repo", names)
 
     async def test_deleting_repository_cascades_documents_and_chunks(self):
         repo_dir = Path(self._repo_dir.name)

@@ -187,12 +187,21 @@ export function mount(route: Route, _options: MountOptions = {}) {
     });
     const descriptionInput = TextArea({ name: 'description', rows: 3, value: agent?.description || '' });
     const instructionsInput = TextArea({ name: 'instructions', rows: 5, value: agent?.instructions || '', placeholder: 'Instructions the model should follow…' });
+    const spawnableInput = Input({
+      name: 'spawnable_agents',
+      value: (agent?.spawnable_agents || []).join(', '),
+      autocomplete: 'off',
+      placeholder: 'agent-a, agent-b',
+    });
     const nameField = labeledField('Name', nameInput);
     const keyField = labeledField('Key', keyInput, {
       hint: isEdit ? 'The key cannot be changed after saving.' : 'Letters, numbers, hyphens and underscores only.',
     });
     const descriptionField = labeledField('Description', descriptionInput);
     const instructionsField = labeledField('Instructions', instructionsInput);
+    const spawnableField = labeledField('Spawnable agents', spawnableInput, {
+      hint: 'Comma-separated agent keys this agent may start with spawn_agent.',
+    });
 
     const providerSelect = Select({ name: 'provider_key' });
     const modelSelect = Select({ name: 'model_id' });
@@ -228,12 +237,12 @@ export function mount(route: Route, _options: MountOptions = {}) {
       ? Button('Delete', { variant: 'danger' })
       : null;
 
-    const form = Form({ novalidate: true }, nameField.wrapper, keyField.wrapper, descriptionField.wrapper, instructionsField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelField.wrapper), providerStatus, modelStatus, settingsDetails, repoSection, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
+    const form = Form({ novalidate: true }, nameField.wrapper, keyField.wrapper, descriptionField.wrapper, instructionsField.wrapper, spawnableField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelField.wrapper), providerStatus, modelStatus, settingsDetails, repoSection, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
 
     editorContainer.appendChild(el('header', {}, heading));
     editorContainer.appendChild(form);
 
-    [nameInput, keyInput, descriptionInput, instructionsInput].forEach((input) => {
+    [nameInput, keyInput, descriptionInput, instructionsInput, spawnableInput].forEach((input) => {
       input.addEventListener('input', markDirty);
     });
     providerSelect.addEventListener('change', () => {
@@ -485,6 +494,10 @@ export function mount(route: Route, _options: MountOptions = {}) {
         display_name: displayName,
         description: descriptionInput.value.trim(),
         instructions: instructionsInput.value.trim() || null,
+        spawnable_agents: spawnableInput.value
+          .split(',')
+          .map((symbol) => symbol.trim())
+          .filter((symbol) => symbol.length > 0),
         provider_key: selectedProvider,
         model_id: selectedModel,
         inference_config: config,

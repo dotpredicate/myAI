@@ -16,6 +16,7 @@ from inference.engine import (
     FinishedThinking,
     FinishedToolCall,
     FinishedElement,
+    EmptyCompletionError,
     ChatContext,
     InferenceProvider,
     InferenceParam,
@@ -167,7 +168,6 @@ class DeltaProcessor:
         self.tool_calls: dict[int, tuple[Optional[str], str]] = {}
         self.finish_reason: Optional[str] = None
         self.has_content = False
-        self.has_tool_call = False
 
     def _finalize_buffered(self) -> Optional[FinishedElement]:
         element = self.buffered_element
@@ -207,7 +207,6 @@ class DeltaProcessor:
         finalized: list[FinishedElement] = []
 
         if delta.tool_calls:
-            self.has_tool_call = True
             buffered = self._finalize_buffered()
             if buffered is not None:
                 finalized.append(buffered)
@@ -275,13 +274,20 @@ async def stream_events(
     truncated = processor.finish_reason in ('length', 'content_filter')
     if truncated:
         finalized = [element for element in finalized if not isinstance(element, FinishedToolCall)]
+    # Reject an empty stop before yielding a whitespace-only finalized message,
+    # which would otherwise be persisted as an empty assistant message. A pure
+    # empty stop has no finalized elements; the retry in conversation handles it.
+    has_tool_call = any(isinstance(element, FinishedToolCall) for element in finalized)
+    has_thinking = any(
+        isinstance(element, FinishedThinking) and element.content for element in finalized
+    )
+    if processor.finish_reason == 'stop' and not processor.has_content and not has_tool_call:
+        if not has_thinking:
+            raise EmptyCompletionError("Provider returned an empty completion")
     for element in finalized:
         yield None, element
     if truncated:
         raise ValueError(f"Provider stopped with finish_reason={processor.finish_reason}")
-    if processor.finish_reason == 'stop' and not processor.has_content and not processor.has_tool_call:
-        if not any(isinstance(element, FinishedThinking) for element in finalized):
-            raise ValueError("Provider returned an empty completion")
 
 
 class OpenAICompatibleProvider(InferenceProvider):
@@ -292,6 +298,7 @@ class OpenAICompatibleProvider(InferenceProvider):
     ) -> None:
         self.config = config
         self._client = client
+        self._models_without_reasoning: set[str] = set()
 
     @property
     def client(self) -> openai.AsyncOpenAI:
@@ -311,11 +318,15 @@ class OpenAICompatibleProvider(InferenceProvider):
         inference_config: dict[str, Any],
         context: ChatContext,
     ) -> AsyncIterator[tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
+        include_reasoning = (
+            self.config.include_reasoning_content
+            and model_id not in self._models_without_reasoning
+        )
         params: dict[str, Any] = {
             "model": model_id,
             "messages": _to_oai_messages(
                 context,
-                include_reasoning_content=self.config.include_reasoning_content,
+                include_reasoning_content=include_reasoning,
             ),
             "stream": True,
         }
@@ -328,7 +339,27 @@ class OpenAICompatibleProvider(InferenceProvider):
         if self.config.extra_body:
             params["extra_body"] = self.config.extra_body
 
-        raw_stream = await self.client.chat.completions.create(**params)
+        try:
+            raw_stream = await self.client.chat.completions.create(**params)
+        except openai.BadRequestError as exc:
+            # Some OpenAI-compatible providers forward reasoning_content as an
+            # assistant prefix and reject it (for example Mistral via
+            # OpenRouter: "Assistant message prefix is not enabled"). Retry
+            # once without the optional reasoning payload.
+            message = str(exc).lower()
+            rejected_reasoning = (
+                "assistant message prefix is not enabled" in message
+                or "reasoning_content" in message
+            )
+            if include_reasoning and rejected_reasoning:
+                # Remember the capability per model: retrying on every tool
+                # round would double the request volume for this model.
+                self._models_without_reasoning.add(model_id)
+                logger.info("Model %s rejected reasoning_content; retrying without it", model_id)
+                params["messages"] = _to_oai_messages(context, include_reasoning_content=False)
+                raw_stream = await self.client.chat.completions.create(**params)
+            else:
+                raise
         async for event in stream_events(raw_stream):
             yield event
 

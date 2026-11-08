@@ -47,6 +47,7 @@ class AgentConfig(BaseModel):
     model_id: str
     inference_config: dict[str, Any]
     repository_access: List[AgentRepositoryAccess]
+    spawnable_agents: List[str] = []
 
 
 class _InferenceProviderRules:

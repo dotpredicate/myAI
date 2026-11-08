@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import database
 from domain import SecurityPolicy, AgentConfig, AgentRepositoryAccess, scope_policy_is_escalation
 from repositories import get_repo_by_id
-from inference import registry
+from inference.registry import registry
 from log_config import get_logger
 
 logger = get_logger(__name__)
@@ -28,6 +28,7 @@ class CreateAgentRequest(BaseModel):
     model_id: str
     inference_config: dict[str, Any] = {}
     repository_access: list[RepoAccessEntry] = []
+    spawnable_agents: list[str] = []
 
 
 class UpdateAgentRequest(BaseModel):
@@ -38,6 +39,15 @@ class UpdateAgentRequest(BaseModel):
     model_id: str | None = None
     inference_config: dict[str, Any] | None = None
     repository_access: list[RepoAccessEntry] | None = None
+    spawnable_agents: list[str] | None = None
+
+
+async def _normalize_spawnable_agents(symbols: list[str]) -> list[str]:
+    cleaned = list(dict.fromkeys(symbol.strip() for symbol in symbols if symbol.strip()))
+    for symbol in cleaned:
+        if await get_agent_by_name(symbol) is None:
+            raise ValueError(f"Agent '{symbol}' not found")
+    return cleaned
 
 
 async def _fetch_repository_access(agent_id: int) -> list[AgentRepositoryAccess]:
@@ -67,7 +77,7 @@ async def _fetch_repository_access(agent_id: int) -> list[AgentRepositoryAccess]
 async def get_agents() -> list[AgentConfig]:
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT id, display_name, internal_name, description, instructions, provider_key, model_id, inference_config FROM agents"
+            "SELECT id, display_name, internal_name, description, instructions, provider_key, model_id, inference_config, spawnable_agents FROM agents"
         )
         rows = await cur.fetchall()
         agents = []
@@ -83,6 +93,7 @@ async def get_agents() -> list[AgentConfig]:
                 model_id=row[6],
                 inference_config=row[7] if row[7] else {},
                 repository_access=await _fetch_repository_access(agent_id),
+                spawnable_agents=row[8] if row[8] else [],
             ))
         return agents
 
@@ -90,7 +101,7 @@ async def get_agents() -> list[AgentConfig]:
 async def get_agent_by_name(name: str) -> AgentConfig | None:
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT id, display_name, internal_name, description, instructions, provider_key, model_id, inference_config FROM agents WHERE internal_name = %s",
+            "SELECT id, display_name, internal_name, description, instructions, provider_key, model_id, inference_config, spawnable_agents FROM agents WHERE internal_name = %s",
             (name,)
         )
         row = await cur.fetchone()
@@ -107,6 +118,7 @@ async def get_agent_by_name(name: str) -> AgentConfig | None:
             model_id=row[6],
             inference_config=row[7] if row[7] else {},
             repository_access=await _fetch_repository_access(agent_id),
+            spawnable_agents=row[8] if row[8] else [],
         )
 
 
@@ -128,6 +140,7 @@ async def create_agent(payload: CreateAgentRequest) -> AgentConfig:
     model_id = payload.model_id.strip()
     inference_config = payload.inference_config
     repository_access = payload.repository_access
+    spawnable_agents = await _normalize_spawnable_agents(payload.spawnable_agents)
 
     if not display_name or not internal_name or not provider_key or not model_id:
         raise ValueError('display_name, internal_name, provider_key and model_id are required')
@@ -144,8 +157,8 @@ async def create_agent(payload: CreateAgentRequest) -> AgentConfig:
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await conn.set_autocommit(False)
         await cur.execute(
-            "INSERT INTO agents (display_name, internal_name, description, instructions, provider_key, model_id, inference_config) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
-            (display_name, internal_name, description, instructions, provider_key, model_id, json.dumps(inference_config)),
+            "INSERT INTO agents (display_name, internal_name, description, instructions, provider_key, model_id, inference_config, spawnable_agents) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (display_name, internal_name, description, instructions, provider_key, model_id, json.dumps(inference_config), json.dumps(spawnable_agents)),
         )
         row = await cur.fetchone()
         assert row is not None
@@ -183,6 +196,9 @@ async def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
     model_id = payload.model_id if payload.model_id is not None else existing.model_id
     inference_config = payload.inference_config if payload.inference_config is not None else existing.inference_config
     repository_access = payload.repository_access if payload.repository_access is not None else existing.repository_access
+    spawnable_agents = await _normalize_spawnable_agents(
+        payload.spawnable_agents if payload.spawnable_agents is not None else existing.spawnable_agents
+    )
 
     # Validate provider_key exists in registry
     try:
@@ -193,8 +209,8 @@ async def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await conn.set_autocommit(False)
         await cur.execute(
-            "UPDATE agents SET display_name = %s, description = %s, instructions = %s, provider_key = %s, model_id = %s, inference_config = %s WHERE id = %s",
-            (display_name, description, instructions, provider_key, model_id, json.dumps(inference_config), existing.id),
+            "UPDATE agents SET display_name = %s, description = %s, instructions = %s, provider_key = %s, model_id = %s, inference_config = %s, spawnable_agents = %s WHERE id = %s",
+            (display_name, description, instructions, provider_key, model_id, json.dumps(inference_config), json.dumps(spawnable_agents), existing.id),
         )
 
         await cur.execute("DELETE FROM agent_repository_access WHERE agent_id = %s", (existing.id,))
