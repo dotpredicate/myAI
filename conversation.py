@@ -486,7 +486,10 @@ async def prompt_conversation(
     provider_key, model_id, inference_config, scopes, agent_prompt = await _resolve_agent(agent_id, provider_key, model_id, extra_scopes, inference_config)
     messages = await get_messages_for_continuation(conv_id)
 
-    provider = registry.get(provider_key)
+    try:
+        provider = registry.get(provider_key)
+    except KeyError as exc:
+        raise ValueError(f"Provider '{provider_key}' is not available") from exc
 
     run_next_loop = True
     while run_next_loop:
@@ -525,6 +528,10 @@ async def prompt_conversation(
                             yield ApprovalRequestEvent(original_message_id=record.id)
                             yield ElementFinalized(id=approval_record.id, sequence_id=approval_record.sequence_id)
                             run_next_loop = False
+                            aclose = getattr(chat_gen_inner, "aclose", None)
+                            if aclose is not None:
+                                await aclose()
+                            break
                         else:
                             record = await _insert_message(conv_id, 'assistant', result_element)
                             yield ToolCallEvent(

@@ -1,11 +1,12 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, formatBytes, formatGigabytes, formatIdle, formatNumber, formatPercent, compactError, messageOf, statusMessage as setStatus, type MountOptions, type Route } from '../ui.js';
 import { api } from '../api.js';
-import type { BenchmarkResult, CachedModelList, GpuBenchmark, GpuStats, ManagedProcessList, ManagedServer, ModelInfo, ModelQuantInfo, StopProcessResponse } from '../api.js';
-import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldError, Badge, Button, LinkButton, Input, Form, Table, TableHead, TableRow, TableHeaderCell, TableCell } from '../components.js';
+import type { BenchmarkResult, CachedModelList, GpuBenchmark, GpuStats, ManagedProcessList, ManagedServer, ModelInfo, ModelQuantInfo, ProviderCreateRequest, ProviderDetails, ProviderInfo, ProviderList, ProviderUpdateRequest, StopProcessResponse } from '../api.js';
+import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldError, Badge, Button, LinkButton, Input, Form, Select, Option, Table, TableHead, TableRow, TableHeaderCell, TableCell } from '../components.js';
 
 const TABS: { key: string; label: string }[] = [
   { key: 'system', label: 'System' },
   { key: 'managed', label: 'Managed processes' },
+  { key: 'providers', label: 'Providers' },
   { key: 'models', label: 'Models' },
 ];
 
@@ -25,6 +26,15 @@ function benchmarkError(container: HTMLElement, message: string, retry?: (() => 
   container.appendChild(compactError(message));
   if (!retry) return;
   container.appendChild(Button('Retry', { small: true, onClick: retry }));
+}
+
+function parseModels(value: string): string[] {
+  return value.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
+}
+
+function kindLabel(kind: string | undefined): string {
+  if (kind === 'openai_compatible') return 'OpenAI-compatible';
+  return 'built-in';
 }
 
 export function mount(route: Route, _options: MountOptions = {}) {
@@ -247,6 +257,269 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
     loadManaged();
     return { refresh: () => loadManaged() };
+  }
+
+  // Providers tab
+  function mountProviders() {
+    const listCard = Card();
+    const listStatus = Hint();
+    const listContainer = el('div', {});
+    listCard.appendChild(CardHeader('Providers'));
+    listCard.appendChild(LineHint('Local llama.cpp and OpenAI-compatible endpoints. API keys are write-only.'));
+    listCard.appendChild(listStatus);
+    listCard.appendChild(listContainer);
+
+    const formCard = Card();
+    const formTitle = Heading(2, 'Add provider');
+    const keyInput = Input({ type: 'text', required: true, placeholder: 'openrouter', autocomplete: 'off' });
+    const displayNameInput = Input({ type: 'text', required: true, placeholder: 'OpenRouter' });
+    const descriptionInput = Input({ type: 'text', placeholder: 'Optional' });
+    const baseUrlInput = Input({ type: 'url', placeholder: 'https://openrouter.ai/api/v1' });
+    const apiKeyInput = Input({ type: 'password', autocomplete: 'new-password', placeholder: 'Write-only' });
+    const clearKeyInput = Input({ type: 'checkbox' });
+    const modelsInput = Input({ type: 'text', placeholder: 'model-a, model-b' });
+    const timeoutInput = Input({ type: 'number', min: '1', step: '1', value: '120', required: true });
+    const reasoningSelect = Select({}, Option('false', 'No'), Option('true', 'Yes'));
+
+    const keyField = labeledField('Key', keyInput, { hint: 'Letters, numbers, dots, hyphens and underscores.' });
+    const displayNameField = labeledField('Display name', displayNameInput);
+    const descriptionField = labeledField('Description', descriptionInput);
+    const baseUrlField = labeledField('Base URL', baseUrlInput);
+    const apiKeyField = labeledField('API key', apiKeyInput, { hint: 'Leave blank to keep the current key.' });
+    const clearKeyField = labeledField('Clear API key', clearKeyInput);
+    const modelsField = labeledField('Models', modelsInput, { hint: 'Comma-separated fallback list.' });
+    const timeoutField = labeledField('Timeout (seconds)', timeoutInput);
+    const reasoningField = labeledField('Send reasoning content', reasoningSelect);
+
+    const submit = Button('Add provider', { variant: 'primary', submit: true });
+    const cancel = Button('Cancel', { hidden: true });
+    const formStatus = Hint();
+    const form = Form({},
+      Grid({ columns: 2 },
+        keyField.wrapper,
+        displayNameField.wrapper,
+        descriptionField.wrapper,
+        baseUrlField.wrapper,
+        apiKeyField.wrapper,
+        clearKeyField.wrapper,
+        modelsField.wrapper,
+        timeoutField.wrapper,
+        reasoningField.wrapper,
+      ),
+      Row(submit, cancel),
+      formStatus,
+    );
+    formCard.appendChild(formTitle);
+    formCard.appendChild(form);
+    content.appendChild(listCard);
+    content.appendChild(formCard);
+
+    let editingKey: string | null = null;
+
+    const fields = [
+      keyField,
+      displayNameField,
+      descriptionField,
+      baseUrlField,
+      apiKeyField,
+      clearKeyField,
+      modelsField,
+      timeoutField,
+      reasoningField,
+    ];
+
+    function resetForm(): void {
+      editingKey = null;
+      formTitle.textContent = 'Add provider';
+      submit.textContent = 'Add provider';
+      cancel.hidden = true;
+      keyInput.disabled = false;
+      keyInput.value = '';
+      displayNameInput.value = '';
+      descriptionInput.value = '';
+      baseUrlInput.value = '';
+      apiKeyInput.value = '';
+      clearKeyInput.checked = false;
+      modelsInput.value = '';
+      timeoutInput.value = '120';
+      reasoningSelect.value = 'false';
+      for (const input of [baseUrlInput, apiKeyInput, clearKeyInput, modelsInput, timeoutInput, reasoningSelect]) {
+        input.disabled = false;
+      }
+      for (const field of fields) field.setError('');
+      setStatus(formStatus, '');
+    }
+
+    function setEditing(provider: ProviderDetails): void {
+      editingKey = provider.key;
+      formTitle.textContent = `Edit ${provider.display_name}`;
+      submit.textContent = 'Save changes';
+      cancel.hidden = false;
+      keyInput.value = provider.key;
+      keyInput.disabled = true;
+      displayNameInput.value = provider.display_name;
+      descriptionInput.value = provider.description;
+      baseUrlInput.value = provider.base_url;
+      apiKeyInput.value = '';
+      clearKeyInput.checked = false;
+      modelsInput.value = provider.models.join(', ');
+      timeoutInput.value = String(provider.timeout_seconds);
+      reasoningSelect.value = provider.include_reasoning_content ? 'true' : 'false';
+      for (const field of fields) field.setError('');
+      setStatus(formStatus, '');
+      displayNameInput.focus();
+    }
+
+    function renderProviders(items: ProviderInfo[]): void {
+      clear(listContainer);
+      if (items.length === 0) {
+        listContainer.appendChild(emptyState('No providers', 'Add an OpenAI-compatible endpoint below.'));
+        return;
+      }
+      const table = Table(
+        TableHead(TableRow(
+          TableHeaderCell('Name'),
+          TableHeaderCell('Key'),
+          TableHeaderCell('Kind'),
+          TableHeaderCell('API key'),
+          TableHeaderCell('Actions'),
+        )),
+      );
+      const body = el('tbody');
+      for (const provider of items) {
+        const builtin = provider.kind === 'builtin';
+        const edit = Button('Edit', { small: true, disabled: builtin });
+        edit.addEventListener('click', () => { void beginEdit(provider.key); });
+        const remove = Button('Delete', { variant: 'danger', small: true, disabled: builtin });
+        remove.addEventListener('click', () => { void removeProvider(provider); });
+        body.appendChild(TableRow(
+          TableCell(provider.display_name || provider.key),
+          TableCell(el('code', {}, provider.key)),
+          TableCell(Badge(kindLabel(provider.kind))),
+          TableCell(provider.has_api_key ? 'set' : 'none'),
+          TableCell(Row(edit, remove)),
+        ));
+      }
+      table.appendChild(body);
+      listContainer.appendChild(el('div', { class: 'table-wrap' }, table));
+    }
+
+    async function loadProviders(): Promise<void> {
+      clear(listContainer);
+      listContainer.appendChild(loadingState('Loading providers…'));
+      try {
+        const data = await api.get<ProviderList>('/api/providers');
+        if (destroyed) return;
+        renderProviders(Array.isArray(data.providers) ? data.providers : []);
+        clear(listStatus);
+      } catch (error) {
+        if (destroyed) return;
+        clear(listContainer);
+        listContainer.appendChild(errorState(messageOf(error) || 'Could not load providers.', () => { void loadProviders(); }));
+      }
+    }
+
+    async function beginEdit(key: string): Promise<void> {
+      try {
+        const provider = await api.get<ProviderDetails>(`/api/providers/${encodeURIComponent(key)}`);
+        if (!destroyed) setEditing(provider);
+      } catch (error) {
+        if (!destroyed) notify(messageOf(error) || 'Could not load the provider.', { level: 'error' });
+      }
+    }
+
+    async function removeProvider(provider: ProviderInfo): Promise<void> {
+      const confirmed = await confirmAction({
+        title: 'Delete provider?',
+        message: `“${provider.display_name || provider.key}” will be removed. Agents using it will stop working.`,
+        confirmLabel: 'Delete provider',
+      });
+      if (!confirmed) return;
+      try {
+        await api.del<{ status: string; key: string }>(`/api/providers/${encodeURIComponent(provider.key)}`);
+        notify('Provider deleted.', { level: 'success' });
+        if (editingKey === provider.key) resetForm();
+        await loadProviders();
+      } catch (error) {
+        notify(messageOf(error) || 'Could not delete the provider.', { level: 'error' });
+      }
+    }
+
+    cancel.addEventListener('click', resetForm);
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (submit.disabled) return;
+      for (const field of fields) field.setError('');
+      setStatus(formStatus, '');
+
+      const key = keyInput.value.trim();
+      const displayName = displayNameInput.value.trim();
+      const description = descriptionInput.value.trim();
+      const baseUrl = baseUrlInput.value.trim();
+      const apiKey = apiKeyInput.value.trim();
+      const models = parseModels(modelsInput.value);
+      const timeout = Number.parseInt(timeoutInput.value, 10);
+      const includeReasoning = reasoningSelect.value === 'true';
+
+      if (!displayName) {
+        displayNameField.setError('Display name is required.');
+        return;
+      }
+      if (!editingKey && !/^[a-zA-Z0-9._-]+$/.test(key)) {
+        keyField.setError('Use letters, numbers, dots, hyphens and underscores.');
+        return;
+      }
+      if (!baseUrlInput.disabled && !/^https?:\/\/.+/.test(baseUrl)) {
+        baseUrlField.setError('Enter an http:// or https:// URL.');
+        return;
+      }
+      if (!Number.isFinite(timeout) || timeout <= 0) {
+        timeoutField.setError('Enter a positive number of seconds.');
+        return;
+      }
+
+      submit.disabled = true;
+      try {
+        if (editingKey) {
+          const payload: ProviderUpdateRequest = { display_name: displayName, description };
+          if (!baseUrlInput.disabled) {
+            payload.base_url = baseUrl;
+            payload.models = models;
+            payload.timeout_seconds = timeout;
+            payload.include_reasoning_content = includeReasoning;
+            if (apiKey) payload.api_key = apiKey;
+            else if (clearKeyInput.checked) payload.api_key = null;
+          }
+          await api.patch<ProviderDetails>(`/api/providers/${encodeURIComponent(editingKey)}`, payload);
+          notify('Provider updated.', { level: 'success' });
+        } else {
+          const payload: ProviderCreateRequest = {
+            key,
+            display_name: displayName,
+            description,
+            base_url: baseUrl,
+            api_key: apiKey || null,
+            models,
+            timeout_seconds: timeout,
+            headers: {},
+            extra_body: {},
+            include_reasoning_content: includeReasoning,
+          };
+          await api.post<ProviderDetails>('/api/providers', payload);
+          notify('Provider added.', { level: 'success' });
+        }
+        resetForm();
+        await loadProviders();
+      } catch (error) {
+        if (!destroyed) setStatus(formStatus, messageOf(error) || 'Could not save the provider.', { error: true });
+      } finally {
+        if (!destroyed) submit.disabled = false;
+      }
+    });
+
+    loadProviders();
+    return { refresh: loadProviders };
   }
 
   // Models tab
@@ -479,6 +752,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
   let activeTab: { refresh?: (() => void) | null } | null = null;
   if (tab === 'system') activeTab = mountSystem();
   else if (tab === 'managed') activeTab = mountManaged();
+  else if (tab === 'providers') activeTab = mountProviders();
   else activeTab = mountModels();
 
   function refreshActive(): void {

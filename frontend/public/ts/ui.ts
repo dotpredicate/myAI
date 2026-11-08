@@ -422,7 +422,7 @@ export function parseRoute(hash = window.location.hash): Route {
   if (screen === 'images') return { name: 'images' };
   if (screen === 'inference') {
     const tab = segments[1];
-    if (tab === 'system' || tab === 'managed' || tab === 'models') return { name: 'inference', tab };
+    if (tab === 'system' || tab === 'managed' || tab === 'providers' || tab === 'models') return { name: 'inference', tab };
     return { name: 'inference', tab: 'system' };
   }
   if (screen === 'agents') {

@@ -1,6 +1,6 @@
 from enum import StrEnum
 from typing import Any, Literal, Optional, Union, List
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, ConfigDict, TypeAdapter, field_validator
 
 class SecurityPolicy(StrEnum):
     READ_ONLY = 'read-only'
@@ -47,6 +47,121 @@ class AgentConfig(BaseModel):
     model_id: str
     inference_config: dict[str, Any]
     repository_access: List[AgentRepositoryAccess]
+
+
+class InferenceProviderInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    display_name: str
+    description: str = ''
+    base_url: str
+    api_key: Optional[str] = None
+    models: List[str] = []
+    timeout_seconds: int = 120
+    headers: dict[str, str] = {}
+    extra_body: dict[str, object] = {}
+    include_reasoning_content: bool = False
+
+
+class InferenceProviderConfig(InferenceProviderInput):
+    key: str
+
+    @property
+    def has_api_key(self) -> bool:
+        return bool(self.api_key)
+
+
+class InferenceProviderUpdate(BaseModel):
+    """Partial provider update.
+
+    Omitted fields stay unchanged. Required fields reject an explicit null;
+    clearable fields accept null to clear them.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    models: Optional[List[str]] = None
+    timeout_seconds: Optional[int] = None
+    headers: Optional[dict[str, str]] = None
+    extra_body: Optional[dict[str, object]] = None
+    include_reasoning_content: Optional[bool] = None
+
+    @field_validator('display_name')
+    @classmethod
+    def _display_name(cls, value: Optional[str]) -> str:
+        if value is None:
+            raise ValueError('display_name cannot be null')
+        value = value.strip()
+        if not value:
+            raise ValueError('display_name is required')
+        return value
+
+    @field_validator('description')
+    @classmethod
+    def _description(cls, value: Optional[str]) -> str:
+        return (value or '').strip()
+
+    @field_validator('base_url')
+    @classmethod
+    def _base_url(cls, value: Optional[str]) -> str:
+        if value is None:
+            raise ValueError('base_url cannot be null')
+        value = value.strip().rstrip('/')
+        if not value.startswith(('http://', 'https://')):
+            raise ValueError('base_url must start with http:// or https://')
+        return value
+
+    @field_validator('timeout_seconds')
+    @classmethod
+    def _timeout_seconds(cls, value: Optional[int]) -> int:
+        if value is None or value <= 0:
+            raise ValueError('timeout_seconds must be positive')
+        return value
+
+    @field_validator('include_reasoning_content')
+    @classmethod
+    def _include_reasoning_content(cls, value: Optional[bool]) -> bool:
+        if value is None:
+            raise ValueError('include_reasoning_content cannot be null')
+        return value
+
+    @field_validator('models')
+    @classmethod
+    def _models(cls, value: Optional[List[str]]) -> List[str]:
+        return value or []
+
+    @field_validator('headers')
+    @classmethod
+    def _headers(cls, value: Optional[dict[str, str]]) -> dict[str, str]:
+        result = value or {}
+        for key, item in result.items():
+            if any(char in key or char in item for char in ('\r', '\n')):
+                raise ValueError('headers must not contain newlines')
+        return result
+
+    @field_validator('extra_body')
+    @classmethod
+    def _extra_body(cls, value: Optional[dict[str, object]]) -> dict[str, object]:
+        return value or {}
+
+    @field_validator('api_key')
+    @classmethod
+    def _api_key(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError('api_key cannot be empty; send null to clear it')
+        if '\r' in value or '\n' in value:
+            raise ValueError('api_key must not contain newlines')
+        return value
+
+
+LLAMA_CPP_PROVIDER_KEY = 'llama.cpp'
 
 class Message(BaseModel):
     type: Literal['message'] = 'message'

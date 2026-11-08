@@ -70,11 +70,11 @@ At startup, the module scans the `migrations` folder for SQL files, sorts them i
 - Test with `./test.sh`
 
 ### Simplifications for now
-- the only available language model provider is the embedded llama.cpp server
+- language model providers: the embedded llama.cpp server and user-configured OpenAI-compatible endpoints
 - image generation uses an embedded stable-diffusion.cpp server; models are user-registered presets in `sd_cpp_image_models` (recipe + file IDs from `MYAI_SD_MODEL_DIRS`)
 - web UI only, no mobile, minimal styling
 - no accessibility work: no ARIA attributes or roles, no screen-reader tuning, no keyboard-only flows beyond what the browser gives for free
 - single user, no log-in
-- no cloud integrations
+- no built-in cloud sync; external model providers are opt-in
 - monolithic back-end, single instance
 - no caching like Redis, prefer in-memory structures

@@ -132,19 +132,21 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         from app import app
         import database
+        from inference.providers import reload_providers
         from inference.registry import registry, image_registry
         import system
 
-        registry._providers.clear()
         image_registry._providers.clear()
         async with database.mk_conn() as conn, conn.cursor() as cur:
             await conn.set_autocommit(False)
             await cur.execute(
                 "TRUNCATE agents, agent_repository_access, conversations, "
-                "messages, repositories, documents, sd_cpp_image_models "
-                "RESTART IDENTITY CASCADE;"
+                "messages, repositories, documents, sd_cpp_image_models, "
+                "inference_providers RESTART IDENTITY CASCADE;"
             )
             await conn.commit()
+
+        await reload_providers()
 
         self._workspace_dir = tempfile.TemporaryDirectory()
         self._repo_dir = tempfile.TemporaryDirectory()

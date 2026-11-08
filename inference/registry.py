@@ -40,6 +40,10 @@ class ProviderRegistry[ProviderT]:
             provider=provider,
         )
 
+    def unregister(self, key: str) -> None:
+        """Remove a provider registration if it exists."""
+        self._providers.pop(key, None)
+
     def get(self, key: str) -> ProviderT:
         """Return the provider instance for the given key. Raises KeyError if not found."""
         if key not in self._providers:

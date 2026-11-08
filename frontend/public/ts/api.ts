@@ -147,10 +147,47 @@ export interface ProviderInfo {
   key: string;
   display_name: string;
   description: string;
+  kind?: string;
+  has_api_key?: boolean;
 }
 
 export interface ProviderList {
   providers: ProviderInfo[];
+}
+
+export interface ProviderDetails {
+  key: string;
+  display_name: string;
+  description: string;
+  base_url: string;
+  has_api_key: boolean;
+  models: string[];
+  timeout_seconds: number;
+  extra_body: Record<string, unknown>;
+  include_reasoning_content: boolean;
+}
+
+export interface ProviderCreateRequest {
+  key: string;
+  display_name: string;
+  description: string;
+  base_url: string;
+  api_key: string | null;
+  models: string[];
+  timeout_seconds: number;
+  headers: Record<string, string>;
+  extra_body: Record<string, unknown>;
+  include_reasoning_content: boolean;
+}
+
+export interface ProviderUpdateRequest {
+  display_name?: string;
+  description?: string | null;
+  base_url?: string;
+  api_key?: string | null;
+  models?: string[] | null;
+  timeout_seconds?: number;
+  include_reasoning_content?: boolean;
 }
 
 export interface ProviderModel {
@@ -446,6 +483,8 @@ export const api = {
     request<T>(path, { ...options, method: 'POST', body }),
   put: <T>(path: string, body?: unknown, options: RequestOptions = {}) =>
     request<T>(path, { ...options, method: 'PUT', body }),
+  patch: <T>(path: string, body?: unknown, options: RequestOptions = {}) =>
+    request<T>(path, { ...options, method: 'PATCH', body }),
   del: <T>(path: string, options: RequestOptions = {}) => request<T>(path, { ...options, method: 'DELETE' }),
 };
 

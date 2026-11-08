@@ -110,11 +110,20 @@ async def get_agent_by_name(name: str) -> AgentConfig | None:
         )
 
 
+async def provider_in_use(provider_key: str) -> bool:
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT 1 FROM agents WHERE provider_key = %s LIMIT 1",
+            (provider_key,),
+        )
+        return await cur.fetchone() is not None
+
+
 async def create_agent(payload: CreateAgentRequest) -> AgentConfig:
     display_name = payload.display_name.strip()
     internal_name = payload.internal_name.strip()
     description = payload.description.strip()
-    instructions = payload.instructions.strip() if payload.instructions else None
+    instructions = payload.instructions.strip() if payload.instructions else ''
     provider_key = payload.provider_key.strip()
     model_id = payload.model_id.strip()
     inference_config = payload.inference_config
@@ -173,7 +182,7 @@ async def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
     provider_key = payload.provider_key if payload.provider_key is not None else existing.provider_key
     model_id = payload.model_id if payload.model_id is not None else existing.model_id
     inference_config = payload.inference_config if payload.inference_config is not None else existing.inference_config
-    repository_access = payload.repository_access if payload.repository_access is not None else []
+    repository_access = payload.repository_access if payload.repository_access is not None else existing.repository_access
 
     # Validate provider_key exists in registry
     try:

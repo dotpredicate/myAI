@@ -3,7 +3,7 @@ import unittest
 
 from domain import Message, ScopeSpec, SecurityPolicy, ToolCall
 from inference.engine import ChatContext
-from inference.llama_cpp.openai import ENVIRONMENT_PROMPT, _build_system_prompt, _to_oai_messages
+from inference.openai_chat import ENVIRONMENT_PROMPT, _build_system_prompt, _to_oai_messages
 
 
 class TestSystemPrompt(unittest.TestCase):

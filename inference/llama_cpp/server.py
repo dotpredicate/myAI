@@ -8,7 +8,7 @@ import inference.managed_processes as mp
 from inference.engine import ChatContext, EmbeddingInput, EmbeddingProvider, InferenceProvider, Model, StreamingElement, FinishedElement, InferenceParam, InferenceParamType, TokenPiece
 from inference.managed_processes import get_free_port
 from .gguf import list_cached_models
-from .openai import DeltaProcessor, _to_oai_messages, _to_oai_tools
+from inference.openai_chat import stream_events, _to_oai_messages, _to_oai_tools
 from log_config import get_logger
 
 logger = get_logger(__name__)
@@ -122,12 +122,8 @@ class LlamaCppServerProvider(InferenceProvider):
                     }
                 }
             )
-            processor = DeltaProcessor()
-            async for chunk in raw_stream:
-                yield processor.process(chunk)
-            finalized = processor.flush()
-            if finalized is not None:
-                yield None, finalized
+            async for event in stream_events(raw_stream):
+                yield event
 
     async def list_models(self) -> list[Model]:
         aliases = list_cached_models()

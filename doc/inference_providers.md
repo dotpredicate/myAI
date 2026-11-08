@@ -7,7 +7,11 @@ Providers are backends that run AI models. Chat providers implement the `Inferen
 - `llama.cpp` — embedded local llama.cpp server (chat, `registry`)
 - `stable-diffusion.cpp` — embedded local sd-server / stable-diffusion.cpp (image generation, `image_registry`)
 
-Provider instances live in in-memory registries (`ProviderRegistry`, one per provider kind). Persistent custom providers are planned for the future.
+Provider instances live in in-memory registries (`ProviderRegistry`, one per provider kind). The built-in `llama.cpp` chat provider is registered in code only. External OpenAI-compatible providers are stored in the `inference_providers` Postgres table and reloaded into the registry after CRUD; in `GET /api/providers` they are reported with `kind = 'openai_compatible'`, while providers that exist only in the registry are reported as `kind = 'builtin'`.
+
+## OpenAI-compatible providers
+
+Manage them with `GET/POST /api/providers` and `PATCH/DELETE /api/providers/{key}`. PATCH is partial: omitted fields stay unchanged; `null` clears clearable fields. `api_key` and `headers` are write-only. Models come from `/v1/models` with the configured list as fallback. Parallel tool calls are disabled for now.
 
 ## Image models
 
