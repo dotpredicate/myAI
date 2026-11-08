@@ -104,10 +104,17 @@ class TestProviders(BaseTestCase):
 
         response = await self.client.post("/api/providers", json={
             "key": "remote",
+            "display_name": "",
+            "base_url": "https://example.com/v1",
+        })
+        self.assertEqual(response.status_code, 422)
+
+        response = await self.client.post("/api/providers", json={
+            "key": "remote",
             "display_name": "Remote",
             "base_url": "ftp://example.com",
         })
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 422)
 
         response = await self.client.post("/api/providers", json={
             "key": "llama.cpp",
@@ -129,7 +136,15 @@ class TestProviders(BaseTestCase):
             "base_url": "https://example.com/v1",
             "headers": {"X-Test": "a\nb"},
         })
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.status_code, 422)
+
+        response = await self.client.post("/api/providers", json={
+            "key": "empty_key",
+            "display_name": "Empty key",
+            "base_url": "https://example.com/v1",
+            "api_key": "",
+        })
+        self.assertEqual(response.status_code, 422)
 
     async def test_cannot_delete_provider_used_by_agent(self):
         response = await self.client.post("/api/providers", json={

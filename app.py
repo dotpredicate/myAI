@@ -102,36 +102,8 @@ async def create_provider(payload: CreateProviderRequest):
         return JSONResponse(status_code=400, content={'error': 'key must contain only letters, numbers, dots, hyphens and underscores'})
     if key == LLAMA_CPP_PROVIDER_KEY or any(r.key == key for r in registry.list_registrations()):
         return JSONResponse(status_code=409, content={'error': f"provider '{key}' already exists"})
-    display_name = payload.display_name.strip()
-    if not display_name:
-        return JSONResponse(status_code=400, content={'error': 'display_name is required'})
-    base_url = payload.base_url.strip().rstrip('/')
-    if not base_url.startswith(('http://', 'https://')):
-        return JSONResponse(status_code=400, content={'error': 'base_url must start with http:// or https://'})
-    if payload.timeout_seconds <= 0:
-        return JSONResponse(status_code=400, content={'error': 'timeout_seconds must be positive'})
-    if await get_provider_config(key) is not None:
-        return JSONResponse(status_code=409, content={'error': f"provider '{key}' already exists"})
 
-    api_key = payload.api_key.strip() if payload.api_key else None
-    if api_key and ('\r' in api_key or '\n' in api_key):
-        return JSONResponse(status_code=400, content={'error': 'api_key must not contain newlines'})
-    for header_key, header_value in payload.headers.items():
-        if any(char in header_key or char in header_value for char in ('\r', '\n')):
-            return JSONResponse(status_code=400, content={'error': 'headers must not contain newlines'})
-
-    config = InferenceProviderConfig(
-        key=key,
-        display_name=display_name,
-        description=payload.description.strip(),
-        base_url=base_url,
-        api_key=api_key,
-        models=payload.models,
-        timeout_seconds=payload.timeout_seconds,
-        headers=payload.headers,
-        extra_body=payload.extra_body,
-        include_reasoning_content=payload.include_reasoning_content,
-    )
+    config = InferenceProviderConfig(key=key, **payload.model_dump(exclude={'key'}))
     try:
         await create_provider_config(config)
     except psycopg.errors.UniqueViolation:

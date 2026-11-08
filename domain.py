@@ -49,46 +49,12 @@ class AgentConfig(BaseModel):
     repository_access: List[AgentRepositoryAccess]
 
 
-class InferenceProviderInput(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+class _InferenceProviderRules:
+    """Validation shared by provider create and update payloads.
 
-    display_name: str
-    description: str = ''
-    base_url: str
-    api_key: Optional[str] = None
-    models: List[str] = []
-    timeout_seconds: int = 120
-    headers: dict[str, str] = {}
-    extra_body: dict[str, object] = {}
-    include_reasoning_content: bool = False
-
-
-class InferenceProviderConfig(InferenceProviderInput):
-    key: str
-
-    @property
-    def has_api_key(self) -> bool:
-        return bool(self.api_key)
-
-
-class InferenceProviderUpdate(BaseModel):
-    """Partial provider update.
-
-    Omitted fields stay unchanged. Required fields reject an explicit null;
-    clearable fields accept null to clear them.
+    Validators run on explicitly provided fields only. On update, ``None``
+    clears clearable fields and is rejected for required ones.
     """
-
-    model_config = ConfigDict(extra='forbid')
-
-    display_name: Optional[str] = None
-    description: Optional[str] = None
-    base_url: Optional[str] = None
-    api_key: Optional[str] = None
-    models: Optional[List[str]] = None
-    timeout_seconds: Optional[int] = None
-    headers: Optional[dict[str, str]] = None
-    extra_body: Optional[dict[str, object]] = None
-    include_reasoning_content: Optional[bool] = None
 
     @field_validator('display_name')
     @classmethod
@@ -159,6 +125,48 @@ class InferenceProviderUpdate(BaseModel):
         if '\r' in value or '\n' in value:
             raise ValueError('api_key must not contain newlines')
         return value
+
+
+class InferenceProviderInput(_InferenceProviderRules, BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    display_name: str
+    description: str = ''
+    base_url: str
+    api_key: Optional[str] = None
+    models: List[str] = []
+    timeout_seconds: int = 120
+    headers: dict[str, str] = {}
+    extra_body: dict[str, object] = {}
+    include_reasoning_content: bool = False
+
+
+class InferenceProviderConfig(InferenceProviderInput):
+    key: str
+
+    @property
+    def has_api_key(self) -> bool:
+        return bool(self.api_key)
+
+
+class InferenceProviderUpdate(_InferenceProviderRules, BaseModel):
+    """Partial provider update.
+
+    Omitted fields stay unchanged. Required fields reject an explicit null;
+    clearable fields accept null to clear them.
+    """
+
+    model_config = ConfigDict(extra='forbid')
+
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    models: Optional[List[str]] = None
+    timeout_seconds: Optional[int] = None
+    headers: Optional[dict[str, str]] = None
+    extra_body: Optional[dict[str, object]] = None
+    include_reasoning_content: Optional[bool] = None
 
 
 LLAMA_CPP_PROVIDER_KEY = 'llama.cpp'

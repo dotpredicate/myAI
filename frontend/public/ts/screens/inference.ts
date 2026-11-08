@@ -343,9 +343,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
       modelsInput.value = '';
       timeoutInput.value = '120';
       reasoningSelect.value = 'false';
-      for (const input of [baseUrlInput, apiKeyInput, clearKeyInput, modelsInput, timeoutInput, reasoningSelect]) {
-        input.disabled = false;
-      }
       for (const field of fields) field.setError('');
       setStatus(formStatus, '');
     }
@@ -470,7 +467,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         keyField.setError('Use letters, numbers, dots, hyphens and underscores.');
         return;
       }
-      if (!baseUrlInput.disabled && !/^https?:\/\/.+/.test(baseUrl)) {
+      if (!/^https?:\/\/.+/.test(baseUrl)) {
         baseUrlField.setError('Enter an http:// or https:// URL.');
         return;
       }
@@ -482,15 +479,16 @@ export function mount(route: Route, _options: MountOptions = {}) {
       submit.disabled = true;
       try {
         if (editingKey) {
-          const payload: ProviderUpdateRequest = { display_name: displayName, description };
-          if (!baseUrlInput.disabled) {
-            payload.base_url = baseUrl;
-            payload.models = models;
-            payload.timeout_seconds = timeout;
-            payload.include_reasoning_content = includeReasoning;
-            if (apiKey) payload.api_key = apiKey;
-            else if (clearKeyInput.checked) payload.api_key = null;
-          }
+          const payload: ProviderUpdateRequest = {
+            display_name: displayName,
+            description,
+            base_url: baseUrl,
+            models,
+            timeout_seconds: timeout,
+            include_reasoning_content: includeReasoning,
+          };
+          if (apiKey) payload.api_key = apiKey;
+          else if (clearKeyInput.checked) payload.api_key = null;
           await api.patch<ProviderDetails>(`/api/providers/${encodeURIComponent(editingKey)}`, payload);
           notify('Provider updated.', { level: 'success' });
         } else {

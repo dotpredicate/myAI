@@ -1,17 +1,12 @@
 # Inference Providers
 
-Providers are backends that run AI models. Chat providers implement the `InferenceProvider` interface, image providers implement `ImageProvider`.
+Chat providers implement `InferenceProvider`; image providers implement `ImageProvider`. Instances live in in-memory registries.
 
-## Currently available
-
-- `llama.cpp` — embedded local llama.cpp server (chat, `registry`)
-- `stable-diffusion.cpp` — embedded local sd-server / stable-diffusion.cpp (image generation, `image_registry`)
-
-Provider instances live in in-memory registries (`ProviderRegistry`, one per provider kind). The built-in `llama.cpp` chat provider is registered in code only. External OpenAI-compatible providers are stored in the `inference_providers` Postgres table and reloaded into the registry after CRUD; in `GET /api/providers` they are reported with `kind = 'openai_compatible'`, while providers that exist only in the registry are reported as `kind = 'builtin'`.
+`llama.cpp` is registered in code only. External OpenAI-compatible providers live in the `inference_providers` table and reload after CRUD. `GET /api/providers` reports them as `openai_compatible` or `builtin`.
 
 ## OpenAI-compatible providers
 
-Manage them with `GET/POST /api/providers` and `PATCH/DELETE /api/providers/{key}`. PATCH is partial: omitted fields stay unchanged; `null` clears clearable fields. `api_key` and `headers` are write-only. Models come from `/v1/models` with the configured list as fallback. Parallel tool calls are disabled for now.
+`GET/POST /api/providers`, `PATCH/DELETE /api/providers/{key}`. PATCH is partial: omitted fields stay, `null` clears. Empty `api_key` is rejected. `api_key` and `headers` are write-only. Models fall back to the configured list. No parallel tool calls.
 
 ## Image models
 
