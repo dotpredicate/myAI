@@ -4,11 +4,14 @@
   "private": true,
   "description": "myAI front-end: shared core, web client, terminal client",
   "type": "module",
+  "imports": {
+    "#core/api": "./web/ts/core/api.ts"
+  },
   "scripts": {
     "build": "rm -rf web/js && tsc -p web",
     "dev": "tsc -p web --watch",
-    "check": "tsc -p web --noEmit",
-    "lint": "oxlint --type-aware -W suspicious -W typescript/no-unnecessary-condition -A typescript/no-floating-promises web/ts"
+    "check": "tsc -p web --noEmit && tsc -p tui --noEmit",
+    "lint": "oxlint --type-aware -W suspicious -W typescript/no-unnecessary-condition -A typescript/no-floating-promises web/ts tui/src"
   },
   "devDependencies": {
     "@types/node": "26.0.0",

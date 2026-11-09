@@ -34,8 +34,10 @@ Project structure:
 - `./images.py` - image generation routes
 - `./migrations/` - folder with migration scripts
 - `./frontend/` - front-end sources and scripts (one npm project)
-  - `./frontend/web/` - browser client, served by FastAPI; the HTTP transport and wire types shared with the terminal client live in `web/ts/core/api.ts`
+  - `./frontend/web/` - browser client, served by FastAPI; the HTTP transport and wire types shared with the TUI live in `web/ts/core/api.ts` (TUI imports it as `#core/api`)
+  - `./frontend/tui/` - terminal client (Node, runs from source)
 - `./build.sh` - build the front-end
+- `./install.sh` - install the terminal client as `myai`
 - `./dev.sh` - development entrypoint (live reload)
 - `./lint.sh` - lint and type-check
 - `./test.sh` - test runner
@@ -60,7 +62,17 @@ Project structure:
 Server runs at http://127.0.0.1:8000
 
 ### Front-end
-`frontend/web/` is served directly by FastAPI; `frontend/web/ts/` -> `tsc` -> `frontend/web/js/`. No bundler, one `tsc` project.
+`frontend/web/` is served directly by FastAPI; `frontend/web/ts/` -> `tsc` -> `frontend/web/js/`. No bundler, one `tsc` project; the TUI is not compiled at all (Node runs its `.ts` sources).
+
+### TUI
+`frontend/tui/` is a Node client for a running instance; TypeScript runs from source
+(no build step, no runtime dependencies):
+
+```sh
+node frontend/tui/src/main.ts                 # MYAI_URL defaults to http://127.0.0.1:8000
+node frontend/tui/src/main.ts --dump [conv]   # render one frame without a TTY
+```
+
 
 ### Migrations
 At startup, the module scans `migrations` for SQL files, sorts them in lexicographic order, executes those that have not yet been applied and records the execution in the `migrations` table.
