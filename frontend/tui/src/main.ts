@@ -55,6 +55,7 @@ interface State {
   buffer: string;
   busy: boolean;
   blockingId: number | null;
+  lastSequence: number;
   status: string;
   error: string;
 }
@@ -78,6 +79,7 @@ const state: State = {
   buffer: '',
   busy: false,
   blockingId: null,
+  lastSequence: 0,
   status: '',
   error: '',
 };
@@ -85,6 +87,10 @@ const state: State = {
 const screen = new Screen(process.stdout);
 let input: InputHandle | null = null;
 let streamToken = 0;
+let modelsRequest = 0;
+// A re-attached stream replays the in-flight message as one event; it must start
+// a new transcript item instead of extending the previous reply.
+let nextMessageStartsNew = false;
 const dumpMode = process.argv.includes('--dump');
 
 if (process.argv.includes('--help') || process.argv.includes('-h')) {
@@ -326,6 +332,7 @@ async function loadProviders(): Promise<void> {
 }
 
 async function loadModels(): Promise<void> {
+  const request = ++modelsRequest;
   const provider = state.providers[state.providerIndex];
   state.models = [];
   state.modelIndex = 0;
@@ -334,15 +341,18 @@ async function loadModels(): Promise<void> {
   render();
   try {
     const data = await api.get<{ models: ProviderModel[] }>(url(`/api/providers/${provider}/models`));
+    if (request !== modelsRequest) return;
     state.models = data.models;
     const preferred = process.env.MYAI_MODEL ?? '';
     const index = data.models.findIndex((model) => model.id === preferred);
     state.modelIndex = index >= 0 ? index : 0;
   } catch (error) {
-    state.error = describe(error);
+    if (request === modelsRequest) state.error = describe(error);
   } finally {
-    state.modelsLoading = false;
-    render();
+    if (request === modelsRequest) {
+      state.modelsLoading = false;
+      render();
+    }
   }
 }
 
@@ -364,11 +374,17 @@ function generationRequest(): Record<string, unknown> {
 /* ------------------------------------------------------------- transcript */
 
 function applyEvent(event: StreamEvent): void {
+  if (event.type === 'message' && event.role === 'assistant' && nextMessageStartsNew) {
+    state.items.push({ kind: 'assistant', text: '' });
+    nextMessageStartsNew = false;
+  }
+  if (event.type === 'finalized') nextMessageStartsNew = false;
   if (event.type === 'approval_request') {
     state.blockingId = event.original_message_id;
     state.status = 'approval required';
     return;
   }
+  if (event.type === 'finalized') state.lastSequence = Math.max(state.lastSequence, event.sequence_id);
   applyStreamEvent(state.items, event);
 }
 
@@ -402,9 +418,42 @@ async function consumeStream(
   }
 }
 
+function applyDetails(details: ConversationDetails): void {
+  state.conversationId = details.id;
+  state.title = details.title;
+  state.items = transcriptFromMessages(details.messages);
+  state.blockingId = details.blocking_message_id;
+  state.lastSequence = details.messages.reduce((max, message) => Math.max(max, message.sequence_id), 0);
+}
+
+/** Attach to a conversation: the server replays stored events, then live ones. */
+async function follow(conversationId: number, token: number): Promise<void> {
+  const stream = await openNdjson<StreamEvent>(
+    url(`/api/conversations/${conversationId}/stream?after_sequence_id=${state.lastSequence}`),
+  );
+  nextMessageStartsNew = true;
+  await consumeStream(stream, token);
+  nextMessageStartsNew = false;
+}
+
+/** Reload the transcript, then re-attach; the reload avoids duplicating a partial reply. */
+async function resume(conversationId: number, token: number): Promise<void> {
+  if (token !== streamToken) return;
+  state.status = 'reconnecting…';
+  render();
+  const details = await api.get<ConversationDetails>(url(`/api/conversations/${conversationId}`));
+  if (token !== streamToken) return;
+  applyDetails(details);
+  render();
+  await follow(conversationId, token);
+  if (token !== streamToken) return;
+  state.status = approvalPending() ? 'approval required' : 'done';
+}
+
 async function sendPrompt(prompt: string): Promise<void> {
   if (!prompt.trim() || state.busy) return;
   const token = ++streamToken;
+  nextMessageStartsNew = false;
   const optimistic: TranscriptItem = { kind: 'user', text: prompt };
   state.busy = true;
   state.error = '';
@@ -431,7 +480,8 @@ async function sendPrompt(prompt: string): Promise<void> {
     state.status = approvalPending() ? 'approval required' : 'done';
   } catch (error) {
     if (token !== streamToken) return;
-    if (error instanceof ApiError && (error.status === 400 || error.status === 403 || error.status === 409)) {
+    const rejected = error instanceof ApiError && error.status >= 400 && error.status < 500;
+    if (rejected) {
       // The server rejected the prompt before storing it: undo the optimistic entry.
       if (state.items[state.items.length - 1] === optimistic) state.items.pop();
       state.buffer = prompt;
@@ -439,9 +489,18 @@ async function sendPrompt(prompt: string): Promise<void> {
     if (error instanceof ApiError && error.status === 403) {
       state.blockingId = error.blockingMessageId;
       state.status = 'approval required';
-    } else {
+    } else if (rejected || state.conversationId === null) {
       state.error = describe(error);
       state.status = 'error';
+    } else {
+      // The generation may still be running on the server: reload and re-attach.
+      state.error = describe(error);
+      try {
+        await resume(state.conversationId, token);
+      } catch (resumeError) {
+        state.error = describe(resumeError);
+        state.status = 'error';
+      }
     }
   } finally {
     if (token === streamToken) {
@@ -488,7 +547,13 @@ async function decideAndContinue(decision: 'approve' | 'reject'): Promise<void> 
   } catch (error) {
     if (token !== streamToken) return;
     state.error = describe(error);
-    await openConversation(conversationId);
+    try {
+      await resume(conversationId, token);
+    } catch (resumeError) {
+      state.error = describe(resumeError);
+      state.status = 'error';
+      await openConversation(conversationId);
+    }
     return;
   } finally {
     if (token === streamToken) {
@@ -507,18 +572,26 @@ async function openConversation(id: number): Promise<void> {
   try {
     const details = await api.get<ConversationDetails>(url(`/api/conversations/${id}`));
     if (token !== streamToken) return;
-    state.conversationId = details.id;
-    state.title = details.title;
-    state.items = transcriptFromMessages(details.messages);
-    state.blockingId = details.blocking_message_id;
+    applyDetails(details);
     state.scroll = 0;
     state.view = 'chat';
-    state.status = details.blocking_message_id === null ? '' : 'approval required';
+    if (details.blocking_message_id === null) {
+      state.status = 'streaming…';
+      render();
+      await follow(id, token);
+      if (token !== streamToken) return;
+      state.status = approvalPending() ? 'approval required' : '';
+    } else {
+      state.status = 'approval required';
+    }
   } catch (error) {
+    if (token !== streamToken) return;
     state.error = describe(error);
   } finally {
-    state.busy = false;
-    render();
+    if (token === streamToken) {
+      state.busy = false;
+      render();
+    }
   }
 }
 
