@@ -28,5 +28,6 @@ A spawn starts a new conversation with the target agent's provider, model and
 instructions. The child inherits the parent's resolved repository scopes, so it
 cannot gain access the parent does not have. The tool returns
 `{conversation_id, agent, response}`; if the child stops on an approval, the
-result also contains `blocked` and `blocking_message_id`. Nesting is limited to
-three levels.
+result also contains `blocked` and `blocking_message_id`. A conversation at
+depth 3 cannot spawn further, so the chain is the root plus up to three nested
+spawns.

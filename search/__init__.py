@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import NamedTuple, Optional
 
 import database
-from psycopg.errors import ForeignKeyViolation
 from . import documents
 from domain import normalize_scope_name
 from repositories import get_repo_by_id, get_repositories, scan_repo_documents, RepositoryConfig
@@ -284,26 +283,13 @@ async def _sync_repositories(provider: EmbeddingProvider) -> None:
         total_files = len(repo_docs)
         logger.info("Processing repository %s (%s files)", repo.internal_name, total_files)
 
-        deleted = False
         for batch_idx, file_batch in enumerate(_batched(repo_docs, FILE_BATCH_SIZE)):
-            if await get_repo_by_id(repo.id) is None:
-                logger.info("Repository %s deleted during indexing; stopping", repo.internal_name)
-                deleted = True
-                break
             logger.info("Repository %s - batch %s (%s files)", repo.internal_name, batch_idx, len(file_batch))
             try:
                 await _process_file_batch(repo, file_batch, provider)
-            except ForeignKeyViolation as exc:
-                if exc.diag.constraint_name != 'documents_repository_id_fkey':
-                    raise
-                logger.warning("Repository %s deleted during indexing; stopping", repo.internal_name)
-                deleted = True
-                break
             except Exception:
                 logger.exception("Repository %s - batch %s failed", repo.internal_name, batch_idx)
 
-        if deleted:
-            continue
         await _prune_repo_documents(repo, repo_docs)
 
 

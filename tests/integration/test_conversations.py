@@ -6,7 +6,7 @@ from typing import Any
 
 import system
 from tests.helpers import BaseTestCase, Wait, Yield
-from inference.engine import FinishedMessage, FinishedToolCall, StreamingMessage
+from inference.engine import FinishedMessage, FinishedThinking, FinishedToolCall, StreamingMessage
 
 
 async def _read_ndjson_response(response) -> list[dict[str, Any]]:
@@ -165,6 +165,183 @@ class TestConversations(BaseTestCase):
         tool_events = [event for event in events if event["type"] == "tool_call"]
         self.assertEqual(len(tool_events), 1)
         self.assertIn("not in the allowed list", tool_events[0]["result"])
+
+    async def test_spawn_agent_child_inherits_parent_scopes(self):
+        repo_res = await self._helper_create_repo(
+            "spawn_scope_repo", self._repo_dir.name, security="read-only",
+        )
+        self.assertEqual(repo_res.status_code, 201, repo_res.text)
+        access = [{"repository_id": repo_res.json()["id"]}]
+        child_payload = {
+            "display_name": "Scoped Child",
+            "internal_name": "scoped_child",
+            "description": "Child",
+            "instructions": "Run a command",
+            "provider_key": "mock_e2e",
+            "model_id": "model-1",
+            "inference_config": {},
+            "repository_access": access,
+        }
+        child_res = await self.client.post("/api/agents", json=child_payload)
+        self.assertEqual(child_res.status_code, 201, child_res.text)
+
+        parent_res = await self.client.post("/api/agents", json={
+            **child_payload,
+            "display_name": "Scoped Parent",
+            "internal_name": "scoped_parent",
+            "spawnable_agents": ["scoped_child"],
+        })
+        self.assertEqual(parent_res.status_code, 201, parent_res.text)
+
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="spawn_agent",
+                parameters=json.dumps({"agent_symbol": "scoped_child", "prompt": "run true"}),
+            )),
+        )
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(name="bash", parameters=json.dumps({"command": "true"}))),
+            Yield(finished=FinishedMessage(content="child done")),
+        )
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedMessage(content="parent done")),
+        )
+
+        res = await self.client.post("/api/conversations/prompt", json={
+            "prompt": "Delegate",
+            "agent_id": "scoped_parent",
+        })
+        events = await _read_ndjson_response(res)
+        spawn_result = json.loads(
+            next(event for event in events if event["type"] == "tool_call")["result"]
+        )
+
+        child_details = (await self.client.get(
+            f"/api/conversations/{spawn_result['conversation_id']}"
+        )).json()
+        bash_call = next(
+            message["element"]
+            for message in child_details["messages"]
+            if message["element"]["type"] == "tool_call" and message["element"]["name"] == "bash"
+        )
+        self.assertEqual(
+            [scope["internal_name"] for scope in bash_call["scopes"]],
+            ["spawn_scope_repo"],
+        )
+
+    async def test_spawn_agent_reports_blocked_child(self):
+        repo_res = await self._helper_create_repo(
+            "spawn_block_repo", self._repo_dir.name, security="write",
+        )
+        self.assertEqual(repo_res.status_code, 201, repo_res.text)
+        access = [{"repository_id": repo_res.json()["id"]}]
+        child_payload = {
+            "display_name": "Blocked Child",
+            "internal_name": "blocked_child",
+            "description": "Child",
+            "instructions": "Write a file",
+            "provider_key": "mock_e2e",
+            "model_id": "model-1",
+            "inference_config": {},
+            "repository_access": access,
+        }
+        child_res = await self.client.post("/api/agents", json=child_payload)
+        self.assertEqual(child_res.status_code, 201, child_res.text)
+
+        parent_res = await self.client.post("/api/agents", json={
+            **child_payload,
+            "display_name": "Blocked Parent",
+            "internal_name": "blocked_parent",
+            "spawnable_agents": ["blocked_child"],
+        })
+        self.assertEqual(parent_res.status_code, 201, parent_res.text)
+
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="spawn_agent",
+                parameters=json.dumps({"agent_symbol": "blocked_child", "prompt": "write it"}),
+            )),
+        )
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="bash",
+                parameters=json.dumps({"command": "printf new > /workspace/source.txt"}),
+            )),
+        )
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="replace_file",
+                parameters=json.dumps({
+                    "target": "/repositories/spawn_block_repo/target.txt",
+                    "source": "/workspace/source.txt",
+                }),
+            )),
+        )
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedMessage(content="parent done")),
+        )
+
+        res = await self.client.post("/api/conversations/prompt", json={
+            "prompt": "Delegate",
+            "agent_id": "blocked_parent",
+        })
+        events = await _read_ndjson_response(res)
+        spawn_result = json.loads(
+            next(event for event in events if event["type"] == "tool_call")["result"]
+        )
+        self.assertTrue(spawn_result["blocked"])
+        child_details = (await self.client.get(
+            f"/api/conversations/{spawn_result['conversation_id']}"
+        )).json()
+        self.assertEqual(
+            child_details["blocking_message_id"],
+            spawn_result["blocking_message_id"],
+        )
+
+    async def test_spawn_agent_rejects_thinking_only_child(self):
+        child_payload = {
+            "display_name": "Thinking Child",
+            "internal_name": "thinking_child",
+            "description": "Child",
+            "instructions": "Think",
+            "provider_key": "mock_e2e",
+            "model_id": "model-1",
+            "inference_config": {},
+            "repository_access": [],
+        }
+        child_res = await self.client.post("/api/agents", json=child_payload)
+        self.assertEqual(child_res.status_code, 201, child_res.text)
+
+        parent_res = await self.client.post("/api/agents", json={
+            **child_payload,
+            "display_name": "Thinking Parent",
+            "internal_name": "thinking_parent",
+            "spawnable_agents": ["thinking_child"],
+        })
+        self.assertEqual(parent_res.status_code, 201, parent_res.text)
+
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedToolCall(
+                name="spawn_agent",
+                parameters=json.dumps({"agent_symbol": "thinking_child", "prompt": "think"}),
+            )),
+        )
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedThinking(content="only thinking")),
+        )
+        self.mock_provider.schedule_stream(
+            Yield(finished=FinishedMessage(content="parent done")),
+        )
+
+        res = await self.client.post("/api/conversations/prompt", json={
+            "prompt": "Delegate",
+            "agent_id": "thinking_parent",
+        })
+        events = await _read_ndjson_response(res)
+        spawn_result = json.loads(
+            next(event for event in events if event["type"] == "tool_call")["result"]
+        )
+        self.assertIn("produced no message", spawn_result["error"])
 
     async def test_conversation_stream_replays_buffer_then_live_tokens(self):
         wait = Wait()

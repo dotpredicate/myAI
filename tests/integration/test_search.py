@@ -9,7 +9,7 @@ from inference import EmbeddingInput
 from repositories import delete_repository, get_repo_documents, scan_repo_documents
 from tests.helpers import BaseTestCase, DeterministicEmbeddingProvider
 import search
-from tools import TOOL_REGISTRY, run_semantic_search
+from tools import TOOL_REGISTRY, ToolContext, run_semantic_search
 
 
 class _DeletingEmbeddingProvider(DeterministicEmbeddingProvider):
@@ -99,8 +99,10 @@ class TestSearch(BaseTestCase):
         result = await run_semantic_search(
             "search",
             json.dumps({"query": "repository notes", "top_k": 10}),
-            conversation_id=1,
-            scopes=[ScopeSpec(internal_name="first_repo", security_policy=SecurityPolicy.READ_ONLY)],
+            ToolContext(
+                conversation_id=1,
+                scopes=[ScopeSpec(internal_name="first_repo", security_policy=SecurityPolicy.READ_ONLY)],
+            ),
         )
         payload = json.loads(result.result)
 
@@ -124,8 +126,7 @@ class TestSearch(BaseTestCase):
         result = await run_semantic_search(
             "search",
             json.dumps({"query": "repository notes", "top_k": 10}),
-            conversation_id=1,
-            scopes=[],
+            ToolContext(conversation_id=1, scopes=[]),
         )
         self.assertEqual(json.loads(result.result)["results"], [])
 

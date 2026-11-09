@@ -42,14 +42,6 @@ class UpdateAgentRequest(BaseModel):
     spawnable_agents: list[str] | None = None
 
 
-async def _normalize_spawnable_agents(symbols: list[str]) -> list[str]:
-    cleaned = list(dict.fromkeys(symbol.strip() for symbol in symbols if symbol.strip()))
-    for symbol in cleaned:
-        if await get_agent_by_name(symbol) is None:
-            raise ValueError(f"Agent '{symbol}' not found")
-    return cleaned
-
-
 async def _fetch_repository_access(agent_id: int) -> list[AgentRepositoryAccess]:
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await cur.execute(
@@ -140,7 +132,7 @@ async def create_agent(payload: CreateAgentRequest) -> AgentConfig:
     model_id = payload.model_id.strip()
     inference_config = payload.inference_config
     repository_access = payload.repository_access
-    spawnable_agents = await _normalize_spawnable_agents(payload.spawnable_agents)
+    spawnable_agents = list(dict.fromkeys(payload.spawnable_agents))
 
     if not display_name or not internal_name or not provider_key or not model_id:
         raise ValueError('display_name, internal_name, provider_key and model_id are required')
@@ -196,9 +188,10 @@ async def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
     model_id = payload.model_id if payload.model_id is not None else existing.model_id
     inference_config = payload.inference_config if payload.inference_config is not None else existing.inference_config
     repository_access = payload.repository_access if payload.repository_access is not None else existing.repository_access
-    spawnable_agents = await _normalize_spawnable_agents(
+    requested_spawnable = (
         payload.spawnable_agents if payload.spawnable_agents is not None else existing.spawnable_agents
     )
+    spawnable_agents = list(dict.fromkeys(requested_spawnable))
 
     # Validate provider_key exists in registry
     try:

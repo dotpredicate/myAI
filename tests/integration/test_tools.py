@@ -2,8 +2,15 @@ import json
 import unittest
 from pathlib import Path
 from tests.helpers import BaseTestCase
-from domain import ScopeSpec, SecurityPolicy
-from tools import run_shell_command, run_propose_replace, run_propose_diff
+from domain import AgentConfig, ScopeSpec, SecurityPolicy
+from tools import (
+    MAX_SPAWN_DEPTH,
+    ToolContext,
+    run_propose_diff,
+    run_propose_replace,
+    run_shell_command,
+    run_spawn_agent,
+)
 
 
 class TestTools(BaseTestCase):
@@ -15,30 +22,60 @@ class TestTools(BaseTestCase):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def ctx(self, scopes=None, privileged=False) -> ToolContext:
+        return ToolContext(
+            conversation_id=self.conversation_id,
+            privileged=privileged,
+            scopes=scopes or [],
+        )
+
+    async def test_spawn_agent_rejects_beyond_depth_limit(self):
+        agent = AgentConfig(
+            id=1,
+            display_name="Parent",
+            internal_name="parent",
+            description="",
+            provider_key="mock_e2e",
+            model_id="model-1",
+            inference_config={},
+            repository_access=[],
+            spawnable_agents=["child_agent"],
+        )
+        result = await run_spawn_agent(
+            "spawn_agent",
+            json.dumps({"agent_symbol": "child_agent", "prompt": "do work"}),
+            ToolContext(
+                conversation_id=1,
+                agent=agent,
+                spawn_depth=MAX_SPAWN_DEPTH,
+            ),
+        )
+        self.assertIn("depth limit", json.loads(result.result)["error"])
+
     async def test_run_shell_command_basic(self):
-        result = await run_shell_command("bash", '{"command": "echo hello"}', conversation_id=self.conversation_id, scopes=[])
+        result = await run_shell_command("bash", '{"command": "echo hello"}', context=self.ctx(scopes=[]))
         parsed = json.loads(result.result)
         self.assertEqual(parsed["returncode"], 0)
         self.assertEqual(parsed["stdout"].strip(), "hello")
 
     async def test_run_shell_command_stderr(self):
-        result = await run_shell_command("bash", '{"command": "echo stderr >&2"}', conversation_id=self.conversation_id, scopes=[])
+        result = await run_shell_command("bash", '{"command": "echo stderr >&2"}', context=self.ctx(scopes=[]))
         parsed = json.loads(result.result)
         self.assertEqual(parsed["returncode"], 0)
         self.assertEqual(parsed["stderr"].strip(), "stderr")
 
     async def test_run_shell_command_nonzero_exit(self):
-        result = await run_shell_command("bash", '{"command": "exit 42"}', conversation_id=self.conversation_id, scopes=[])
+        result = await run_shell_command("bash", '{"command": "exit 42"}', context=self.ctx(scopes=[]))
         parsed = json.loads(result.result)
         self.assertEqual(parsed["returncode"], 42)
 
     async def test_run_shell_command_missing_command(self):
         with self.assertRaises((ValueError, KeyError)):
-            await run_shell_command("bash", '{"not_command": "hello"}', conversation_id=self.conversation_id, scopes=[])
+            await run_shell_command("bash", '{"not_command": "hello"}', context=self.ctx(scopes=[]))
 
     async def test_run_shell_command_invalid_json(self):
         with self.assertRaises(ValueError):
-            await run_shell_command("bash", "not json", conversation_id=self.conversation_id, scopes=[])
+            await run_shell_command("bash", "not json", context=self.ctx(scopes=[]))
 
     async def test_run_propose_replace_success(self):
         # Create a repository so the vpath resolver works
@@ -68,8 +105,7 @@ class TestTools(BaseTestCase):
         result = await run_propose_replace(
             "replace_file",
             json.dumps({"target": target_vpath, "source": source_vpath}),
-            conversation_id=self.conversation_id,
-            scopes=[scope],
+            context=self.ctx(scopes=[scope]),
         )
         parsed = json.loads(result.result)
         self.assertEqual(parsed["type"], "replace_proposal")
@@ -95,8 +131,7 @@ class TestTools(BaseTestCase):
                 "target": f"/repositories/{repo_name}/target.txt",
                 "source": "/workspace/nonexistent.txt",
             }),
-            conversation_id=self.conversation_id,
-            scopes=[scope],
+            context=self.ctx(scopes=[scope]),
         )
         parsed = json.loads(result.result)
         self.assertIn("Source file not found", parsed["error"])
@@ -106,8 +141,7 @@ class TestTools(BaseTestCase):
         result = await run_propose_replace(
             "replace_file",
             '{"target": "/repositories/nonexistent_repo/file.txt", "source": "/workspace/source.txt"}',
-            conversation_id=self.conversation_id,
-            scopes=[scope],
+            context=self.ctx(scopes=[scope]),
         )
         parsed = json.loads(result.result)
         self.assertEqual(parsed["error"], "Could not resolve target repository path")
@@ -129,8 +163,7 @@ class TestTools(BaseTestCase):
                 "target": f"/repositories/{repo_name}/target.txt",
                 "source": "/workspace/source.txt",
             }),
-            conversation_id=self.conversation_id,
-            scopes=[scope],
+            context=self.ctx(scopes=[scope]),
         )
         parsed = json.loads(result.result)
         self.assertIn("Source file not found", parsed["error"])
@@ -150,8 +183,7 @@ class TestTools(BaseTestCase):
                 "target": f"/repositories/{repo_name}/target.txt",
                 "source": "/workspace/source.txt",
             }),
-            conversation_id=self.conversation_id,
-            scopes=[],
+            context=self.ctx(scopes=[]),
         )
         parsed = json.loads(result.result)
         self.assertIn("Access denied", parsed["error"])
@@ -163,8 +195,7 @@ class TestTools(BaseTestCase):
                 "target": "/repositories/foobar/target.txt",
                 "source": "/workspace/source.txt",
             }),
-            conversation_id=self.conversation_id,
-            scopes=[ScopeSpec(internal_name="foo", security_policy=SecurityPolicy.WRITE)],
+            context=self.ctx(scopes=[ScopeSpec(internal_name="foo", security_policy=SecurityPolicy.WRITE)]),
         )
         parsed = json.loads(result.result)
         self.assertIn("Access denied", parsed["error"])
@@ -189,8 +220,7 @@ class TestTools(BaseTestCase):
                 "target": f"/repositories/{repo_name}/target.txt",
                 "source": "/workspace/leak.txt",
             }),
-            conversation_id=self.conversation_id,
-            scopes=[scope],
+            context=self.ctx(scopes=[scope]),
         )
         parsed = json.loads(result.result)
         self.assertIn("escapes the workspace", parsed["error"])
@@ -230,8 +260,7 @@ class TestTools(BaseTestCase):
         result = await run_propose_diff(
             "apply_patch",
             json.dumps({"target": target_vpath, "diff_path": diff_vpath}),
-            conversation_id=self.conversation_id,
-            scopes=[scope],
+            context=self.ctx(scopes=[scope]),
         )
         parsed = json.loads(result.result)
         self.assertEqual(parsed["type"], "diff_proposal")
@@ -261,8 +290,7 @@ class TestTools(BaseTestCase):
                 "target": f"/repositories/{repo_name}/nonexistent.txt",
                 "diff_path": f"/workspace/{diff_rel}",
             }),
-            conversation_id=self.conversation_id,
-            scopes=[scope],
+            context=self.ctx(scopes=[scope]),
         )
         parsed = json.loads(result.result)
         self.assertIn("Target file not found", parsed["error"])
@@ -272,8 +300,7 @@ class TestTools(BaseTestCase):
         result = await run_propose_diff(
             "apply_patch",
             '{"target": "/repositories/test/file.txt", "diff_path": "/workspace/patch.diff"}',
-            conversation_id=self.conversation_id,
-            scopes=[scope],
+            context=self.ctx(scopes=[scope]),
         )
         parsed = json.loads(result.result)
         self.assertEqual(parsed["error"], "Could not resolve target repository path")

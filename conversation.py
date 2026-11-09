@@ -31,7 +31,7 @@ from inference import (
     ChatContext,
     registry
 )
-from tools import FunctionDefinition, Tool, run_tool_call, TOOL_REGISTRY
+from tools import FunctionDefinition, Tool, ToolContext, run_tool_call, TOOL_REGISTRY
 import system
 
 from log_config import get_logger
@@ -369,30 +369,35 @@ async def get_blocking_message_id(conn: AsyncConnection, conv_id: int) -> Option
         return row[0] if row and row[0] is not None else None
 
 
-async def _resolve_agent(agent_id: Optional[str], fallback_provider: Optional[str], fallback_model: Optional[str], req_scopes: list[UserScopeChoice], inference_config: dict[str, Any] = {}) -> tuple:
+async def _resolve_agent(
+    agent_id: Optional[str],
+    fallback_provider: Optional[str],
+    fallback_model: Optional[str],
+    req_scopes: list[UserScopeChoice],
+    inference_config: dict[str, Any] = {},
+    resolved_scopes: Optional[list[ScopeSpec]] = None,
+) -> tuple:
     """Resolve provider, model, scopes, instructions and the agent config."""
     if agent_id:
         agent = await get_agent_by_name(agent_id)
         if agent is None:
             raise ValueError(f"Agent '{agent_id}' not found")
-        scopes = await scopes_for_agent(agent, req_scopes)
+        scopes = resolved_scopes if resolved_scopes is not None else await scopes_for_agent(agent, req_scopes)
         return agent.provider_key, agent.model_id, agent.inference_config, scopes, agent.instructions, agent
     if not fallback_provider:
         raise ValueError('provider_key required')
     if not fallback_model:
         raise ValueError('model_id required')
-    resolved_scopes = await resolve_scopes(None, req_scopes)
-    return fallback_provider, fallback_model, inference_config, resolved_scopes, None, None
+    scopes = resolved_scopes if resolved_scopes is not None else await resolve_scopes(None, req_scopes)
+    return fallback_provider, fallback_model, inference_config, scopes, None, None
 
 
-def tools_for_agent(functions: list[Tool], agent: Optional[AgentConfig]) -> list[Tool]:
+def tools_for_agent(agent: Optional[AgentConfig]) -> list[Tool]:
     """Expose spawn_agent only to agents with an allowlist, with that list in the description."""
-    filtered = [tool for tool in functions if tool["name"] != "spawn_agent"]
+    filtered = [tool for tool in TOOL_REGISTRY if tool["name"] != "spawn_agent"]
     if agent is None or not agent.spawnable_agents:
         return filtered
-    spawn = next((tool for tool in functions if tool["name"] == "spawn_agent"), None)
-    if spawn is None:
-        spawn = next(tool for tool in TOOL_REGISTRY if tool["name"] == "spawn_agent")
+    spawn = next(tool for tool in TOOL_REGISTRY if tool["name"] == "spawn_agent")
     schema = cast(FunctionDefinition, dict(spawn["schema"]))
     schema["description"] = (
         f"{schema['description']} Allowed agents: {', '.join(agent.spawnable_agents)}."
@@ -403,7 +408,6 @@ def tools_for_agent(functions: list[Tool], agent: Optional[AgentConfig]) -> list
 async def prepare_and_start_generation(
     prompt: str,
     conversation_id: Optional[int],
-    functions: list[Tool],
     agent_id: Optional[str] = None,
     provider_key: Optional[str] = None,
     model_id: Optional[str] = None,
@@ -442,7 +446,6 @@ async def prepare_and_start_generation(
 
     state.task = asyncio.create_task(_run_generation_task(
         state,
-        functions,
         agent_id=agent_id,
         provider_key=provider_key,
         model_id=model_id,
@@ -496,19 +499,24 @@ async def _insert_blocking_tool_call(
 
 
 async def prompt_conversation(
-        conv_id: int, functions: list[Tool],
-        agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None, 
-        extra_scopes: list[UserScopeChoice] = [], 
+        conv_id: int,
+        agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None,
+        extra_scopes: list[UserScopeChoice] = [],
         inference_config: dict[str, Any] = {},
-        scope_override: Optional[list[ScopeSpec]] = None,
+        resolved_scopes: Optional[list[ScopeSpec]] = None,
+        spawn_depth: int = 0,
     ) -> AsyncGenerator[StreamEvent, None]:
     provider_key, model_id, inference_config, scopes, agent_prompt, agent = await _resolve_agent(
-        agent_id, provider_key, model_id, extra_scopes, inference_config
+        agent_id, provider_key, model_id, extra_scopes, inference_config, resolved_scopes
     )
-    if scope_override is not None:
-        scopes = scope_override
-    functions = tools_for_agent(functions, agent)
+    functions = tools_for_agent(agent)
     messages = await get_messages_for_continuation(conv_id)
+    tool_context = ToolContext(
+        conversation_id=conv_id,
+        scopes=scopes,
+        agent=agent,
+        spawn_depth=spawn_depth,
+    )
 
     try:
         provider = registry.get(provider_key)
@@ -516,61 +524,78 @@ async def prompt_conversation(
         raise ValueError(f"Provider '{provider_key}' is not available") from exc
 
     run_next_loop = True
+    attempt = 0
     while run_next_loop:
         chat_context = ChatContext(messages=messages, scopes=scopes, tools=functions, instructions=agent_prompt)
         chat_gen_inner = provider.run_chat_completion_stream(model_id, inference_config, chat_context)
         run_next_loop = False
-        async for delta, aggregated_element in chat_gen_inner:
-            if aggregated_element is not None:
-                match aggregated_element:
-                    case FinishedMessage() | FinishedThinking():
-                        result = to_conv_elem(aggregated_element)
-                        record = await _insert_message(conv_id, 'assistant', result)
-                        messages.append((record.id, result))
-                        yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
-                    case FinishedToolCall(name=name, parameters=parameters):
-                        assert isinstance(aggregated_element, FinishedToolCall)
-                        # Pass the extracted scopes and the agent to the tool call
-                        tool_result = await run_tool_call(name, parameters, False, scopes, conv_id, agent)
-                        result_element = ToolCall(
-                            name=name,
-                            parameters=parameters,
-                            result=tool_result.result,
-                            scopes=scopes
-                        )
-                        if tool_result.is_blocking:
-                            record, approval_record = await _insert_blocking_tool_call(conv_id, result_element)
-                            yield ToolCallEvent(
+        emitted = False
+        try:
+            async for delta, aggregated_element in chat_gen_inner:
+                if aggregated_element is not None:
+                    match aggregated_element:
+                        case FinishedMessage() | FinishedThinking():
+                            result = to_conv_elem(aggregated_element)
+                            record = await _insert_message(conv_id, 'assistant', result)
+                            messages.append((record.id, result))
+                            emitted = True
+                            yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
+                        case FinishedToolCall(name=name, parameters=parameters):
+                            assert isinstance(aggregated_element, FinishedToolCall)
+                            tool_result = await run_tool_call(name, parameters, tool_context)
+                            result_element = ToolCall(
                                 name=name,
                                 parameters=parameters,
                                 result=tool_result.result,
+                                scopes=scopes
                             )
-                            messages.append((record.id, result_element))
-                            yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
-                            approval_element = ApprovalRequest(original_message_id=record.id)
-                            messages.append((approval_record.id, approval_element))
-                            yield ApprovalRequestEvent(original_message_id=record.id)
-                            yield ElementFinalized(id=approval_record.id, sequence_id=approval_record.sequence_id)
-                            run_next_loop = False
-                            aclose = getattr(chat_gen_inner, "aclose", None)
-                            if aclose is not None:
-                                await aclose()
-                            break
-                        else:
-                            record = await _insert_message(conv_id, 'assistant', result_element)
-                            yield ToolCallEvent(
-                                name=name,
-                                parameters=parameters,
-                                result=tool_result.result,
-                            )
-                            messages.append((record.id, result_element))
-                            yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
-                            run_next_loop = True
-            if delta is not None:
-                if isinstance(delta, StreamingMessage):
-                    yield MessageChunk(content=delta.content)
-                elif isinstance(delta, StreamingThinking):
-                    yield ThinkingChunk(content=delta.content)
+                            if tool_result.is_blocking:
+                                record, approval_record = await _insert_blocking_tool_call(conv_id, result_element)
+                                emitted = True
+                                yield ToolCallEvent(
+                                    name=name,
+                                    parameters=parameters,
+                                    result=tool_result.result,
+                                )
+                                messages.append((record.id, result_element))
+                                yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
+                                approval_element = ApprovalRequest(original_message_id=record.id)
+                                messages.append((approval_record.id, approval_element))
+                                yield ApprovalRequestEvent(original_message_id=record.id)
+                                yield ElementFinalized(id=approval_record.id, sequence_id=approval_record.sequence_id)
+                                run_next_loop = False
+                                aclose = getattr(chat_gen_inner, "aclose", None)
+                                if aclose is not None:
+                                    await aclose()
+                                break
+                            else:
+                                record = await _insert_message(conv_id, 'assistant', result_element)
+                                emitted = True
+                                yield ToolCallEvent(
+                                    name=name,
+                                    parameters=parameters,
+                                    result=tool_result.result,
+                                )
+                                messages.append((record.id, result_element))
+                                yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
+                                run_next_loop = True
+                if delta is not None:
+                    if isinstance(delta, StreamingMessage):
+                        emitted = True
+                        yield MessageChunk(content=delta.content)
+                    elif isinstance(delta, StreamingThinking):
+                        emitted = True
+                        yield ThinkingChunk(content=delta.content)
+        except EmptyCompletionError:
+            # Some providers end a stream with finish_reason=stop and no content
+            # or tool call. Retry once, but never repeat a stream that emitted
+            # anything: tool execution already happened.
+            if attempt == 0 and not emitted:
+                attempt += 1
+                logger.warning("Empty completion for conversation %s; retrying once", conv_id)
+                run_next_loop = True
+                continue
+            raise
     logger.info("Stream finished")
 
 async def get_active_generation(conv_id: int) -> Optional[ActiveGeneration]:
@@ -582,7 +607,6 @@ async def get_active_generation(conv_id: int) -> Optional[ActiveGeneration]:
 
 async def _run_generation_task(
     state: ActiveGeneration,
-    functions: list[Tool],
     agent_id: Optional[str] = None,
     provider_key: Optional[str] = None,
     model_id: Optional[str] = None,
@@ -590,30 +614,16 @@ async def _run_generation_task(
     inference_config: dict[str, Any] = {},
 ) -> None:
     try:
-        # Some providers occasionally end a stream with finish_reason=stop and
-        # no content or tool call. Retry once only if the first attempt emitted
-        # nothing; tool execution emits an event, so it is never repeated.
-        for attempt in range(2):
-            emitted = False
-            try:
-                async for event in prompt_conversation(
-                    state.conversation_id,
-                    functions,
-                    agent_id=agent_id,
-                    provider_key=provider_key,
-                    model_id=model_id,
-                    extra_scopes=extra_scopes,
-                    inference_config=inference_config,
-                ):
-                    emitted = True
-                    await state.apply_event(event)
-                await state.finish()
-                return
-            except EmptyCompletionError:
-                if attempt == 0 and not emitted:
-                    logger.warning("Empty completion for conversation %s; retrying once", state.conversation_id)
-                    continue
-                raise
+        async for event in prompt_conversation(
+            state.conversation_id,
+            agent_id=agent_id,
+            provider_key=provider_key,
+            model_id=model_id,
+            extra_scopes=extra_scopes,
+            inference_config=inference_config,
+        ):
+            await state.apply_event(event)
+        await state.finish()
     except asyncio.CancelledError:
         await state.cancel()
         raise
@@ -627,7 +637,6 @@ async def _run_generation_task(
 
 async def start_generation(
     conv_id: int,
-    functions: list[Tool],
     agent_id: Optional[str] = None,
     provider_key: Optional[str] = None,
     model_id: Optional[str] = None,
@@ -644,7 +653,6 @@ async def start_generation(
         active_generations[conv_id] = state
         state.task = asyncio.create_task(_run_generation_task(
             state,
-            functions,
             agent_id=agent_id,
             provider_key=provider_key,
             model_id=model_id,
@@ -762,9 +770,11 @@ async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve
         result = await run_tool_call(
             elem.name,
             elem.parameters,
-            privileged=True,
-            scopes=elem.scopes,
-            conversation_id=conv_id,
+            ToolContext(
+                conversation_id=conv_id,
+                privileged=True,
+                scopes=elem.scopes,
+            ),
         )
         result_text = result.result
     except BaseException as exc:
@@ -824,7 +834,6 @@ async def prompt_model(payload: PromptRequest):
         conversation_id, user_record = await prepare_and_start_generation(
             payload.prompt,
             payload.conversation_id,
-            TOOL_REGISTRY,
             agent_id=payload.agent_id,
             provider_key=payload.provider_key,
             model_id=payload.model_id,
@@ -931,7 +940,6 @@ async def continue_conversation_endpoint(conversation_id: int, payload: Continue
     try:
         await start_generation(
             conversation_id,
-            TOOL_REGISTRY,
             agent_id=payload.agent_id,
             provider_key=payload.provider_key,
             model_id=payload.model_id,

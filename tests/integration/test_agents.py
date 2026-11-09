@@ -51,11 +51,13 @@ class TestAgents(BaseTestCase):
         self.assertEqual(update_res.status_code, 200, update_res.text)
         self.assertEqual(update_res.json()["spawnable_agents"], [])
 
-        bad_res = await self.client.put(
+        # Unknown symbols are accepted at write time and rejected when spawned.
+        late_res = await self.client.put(
             "/api/agents/spawn_parent",
             json={"spawnable_agents": ["missing_agent"]},
         )
-        self.assertEqual(bad_res.status_code, 400, bad_res.text)
+        self.assertEqual(late_res.status_code, 200, late_res.text)
+        self.assertEqual(late_res.json()["spawnable_agents"], ["missing_agent"])
 
     async def test_inference_config_round_trips_explicit_values_and_empty_config(self):
         payload = {
