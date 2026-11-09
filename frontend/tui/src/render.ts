@@ -5,6 +5,7 @@
 // Screen writes only the rows that changed since the previous frame.
 
 import { type Style, type VNode, plain, sanitizeText, styleOf } from './h.ts';
+import { textWidth, truncateToWidth } from './text.ts';
 
 export interface Segment {
   text: string;
@@ -22,11 +23,6 @@ const COLORS = new Map<string, number>([
   ['cyan', 36],
   ['gray', 90],
 ]);
-
-export function textWidth(value: string): number {
-  // Code points, not graphemes: good enough for a terminal layout shortcut.
-  return Array.from(value).length;
-}
 
 function sgr(style: Style): string {
   const codes: string[] = ['0'];
@@ -49,21 +45,21 @@ export function truncateLine(line: Line, max: number): Line {
   for (const seg of line) {
     if (used >= max) break;
     const room = max - used;
-    const chars = Array.from(seg.text);
-    if (chars.length <= room) {
+    const width = textWidth(seg.text);
+    if (width <= room) {
       out.push(seg);
-      used += chars.length;
-    } else {
-      out.push({ text: chars.slice(0, room).join(''), style: seg.style });
-      break;
+      used += width;
+      continue;
     }
+    const cut = truncateToWidth(seg.text, room);
+    if (cut !== '') out.push({ text: cut, style: seg.style });
+    break;
   }
   return out;
 }
 
 function truncateText(value: string, max: number): string {
-  const chars = Array.from(sanitizeText(value));
-  return chars.length <= max ? value : chars.slice(0, max).join('');
+  return truncateToWidth(sanitizeText(value), max);
 }
 
 /* ------------------------------------------------------------------ inline */
@@ -131,10 +127,12 @@ function wrapSegments(segments: Segment[], max: number): Line[] {
             break;
           }
           if (used === 0) {
-            const chars = Array.from(rest);
-            pushWord(line, seg.style, chars.slice(0, widthLimit).join(''));
+            const head = truncateToWidth(rest, widthLimit);
+            // A single cluster wider than the line still has to make progress.
+            const first = head === '' ? (rest[Symbol.iterator]().next().value ?? '') : head;
+            pushWord(line, seg.style, first);
             flush();
-            rest = chars.slice(widthLimit).join('');
+            rest = rest.slice(first.length);
             if (rest === '') break;
             continue;
           }
