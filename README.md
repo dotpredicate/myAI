@@ -32,8 +32,8 @@ Project structure:
 - `./images.py` - image generation routes
 - `./migrations/` - folder with migration scripts
 - `./frontend/` - web front-end sources
-- `./build.sh` - build the front-end (`tsc`)
-- `./dev.sh` - development entrypoint
+- `./build.sh` - build the front-end
+- `./dev.sh` - development entrypoint (live reload)
 - `./lint.sh` - lint and type-check
 - `./test.sh` - test runner
 - `./tests/` - unit, integration and e2e tests
