@@ -230,13 +230,15 @@ async def run_spawn_agent(name: str, parameters: str, context: ToolContext) -> T
         from conversation import (
             create_conversation,
             get_blocking_message_id,
+            get_conversation_project,
             get_messages_for_continuation,
             insert_message,
             prompt_conversation,
         )
 
         async with mk_conn() as conn:
-            child_id = await create_conversation(conn)
+            project_id, _ = await get_conversation_project(conn, context.conversation_id)
+            child_id = await create_conversation(conn, project_id)
             await insert_message(conn, child_id, 'user', Message(author='user', content=prompt))
             await conn.commit()
 

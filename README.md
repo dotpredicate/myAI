@@ -23,6 +23,7 @@ Project structure:
 - `./scopes.py` - repository scope resolution shared by conversations and search
 - `./repositories.py` - repository registry and indexing input
 - `./agents.py` - agent configuration and repository access
+- `./projects.py` - project configuration and conversation presets
 - `./search/` - indexing and vector search
 - `./database.py` - database connection and utility functions
 - `./system.py` - system-level utilities (workspaces, sandbox)
@@ -42,6 +43,7 @@ Project structure:
   - `repositories.md`
   - `inference_providers.md`
   - `agents.md`
+  - `projects.md`
   - `generation.md`
   - `analysis/image_backends.md`
 

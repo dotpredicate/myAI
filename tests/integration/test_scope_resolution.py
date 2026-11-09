@@ -91,6 +91,24 @@ class TestScopeResolution(BaseTestCase):
 
         self.assertEqual(resolved.security_policy, SecurityPolicy.READ_ONLY)
 
+    async def test_user_override_cannot_escalate_repository_policy(self):
+        await self._helper_create_repo("test_repo", self._repo_dir.name, security="read-only")
+
+        with self.assertRaises(ValueError):
+            await resolve_scope(UserScopeChoice(
+                internal_name="test_repo",
+                security_policy_override=SecurityPolicy.WRITE,
+            ))
+
+    async def test_agent_override_cannot_escalate_repository_policy(self):
+        await self._helper_create_repo("test_repo", self._repo_dir.name, security="read-only")
+
+        with self.assertRaises(ValueError):
+            await resolve_scope(
+                UserScopeChoice(internal_name="test_repo"),
+                agent=_agent(SecurityPolicy.WRITE),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

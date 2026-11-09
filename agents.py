@@ -6,17 +6,15 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import database
-from domain import SecurityPolicy, AgentConfig, AgentRepositoryAccess, scope_policy_is_escalation
-from repositories import get_repo_by_id
+from domain import RepositoryAccessEntry, AgentConfig, AgentRepositoryAccess
+from repositories import validate_repository_access
 from inference.registry import registry
 from log_config import get_logger
 
 logger = get_logger(__name__)
 router = APIRouter()
 
-class RepoAccessEntry(BaseModel):
-    repository_id: int
-    security_policy_override: SecurityPolicy | None = None
+RepoAccessEntry = RepositoryAccessEntry
 
 
 class CreateAgentRequest(BaseModel):
@@ -117,8 +115,13 @@ async def get_agent_by_name(name: str) -> AgentConfig | None:
 async def provider_in_use(provider_key: str) -> bool:
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await cur.execute(
-            "SELECT 1 FROM agents WHERE provider_key = %s LIMIT 1",
-            (provider_key,),
+            """
+            SELECT 1 FROM agents WHERE provider_key = %s
+            UNION ALL
+            SELECT 1 FROM projects WHERE provider_key = %s
+            LIMIT 1
+            """,
+            (provider_key, provider_key),
         )
         return await cur.fetchone() is not None
 
@@ -146,6 +149,8 @@ async def create_agent(payload: CreateAgentRequest) -> AgentConfig:
     except KeyError:
         raise ValueError(f"Provider '{provider_key}' is not registered")
 
+    await validate_repository_access(repository_access)
+
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await conn.set_autocommit(False)
         await cur.execute(
@@ -156,14 +161,8 @@ async def create_agent(payload: CreateAgentRequest) -> AgentConfig:
         assert row is not None
         agent_id = row[0]
 
-        # Validate and insert repository access entries
         for access in repository_access:
             if access.repository_id:
-                # Validate no policy escalation
-                repo = await get_repo_by_id(access.repository_id)
-                if repo and access.security_policy_override:
-                    if scope_policy_is_escalation(access.security_policy_override, repo.security_policy):
-                        raise ValueError(f"Security policy override '{access.security_policy_override}' is not allowed for repository '{repo.internal_name}' (base policy: {repo.security_policy.value})")
                 await cur.execute(
                     "INSERT INTO agent_repository_access (agent_id, repository_id, security_policy_override) VALUES (%s, %s, %s)",
                     (agent_id, access.repository_id, access.security_policy_override),
@@ -187,7 +186,13 @@ async def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
     provider_key = payload.provider_key if payload.provider_key is not None else existing.provider_key
     model_id = payload.model_id if payload.model_id is not None else existing.model_id
     inference_config = payload.inference_config if payload.inference_config is not None else existing.inference_config
-    repository_access = payload.repository_access if payload.repository_access is not None else existing.repository_access
+    repository_access = payload.repository_access if payload.repository_access is not None else [
+        RepositoryAccessEntry(
+            repository_id=entry.repository_id,
+            security_policy_override=entry.security_policy_override,
+        )
+        for entry in existing.repository_access
+    ]
     requested_spawnable = (
         payload.spawnable_agents if payload.spawnable_agents is not None else existing.spawnable_agents
     )
@@ -199,6 +204,8 @@ async def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
     except KeyError:
         raise ValueError(f"Provider '{provider_key}' is not registered")
 
+    await validate_repository_access(repository_access)
+
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await conn.set_autocommit(False)
         await cur.execute(
@@ -209,11 +216,6 @@ async def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
         await cur.execute("DELETE FROM agent_repository_access WHERE agent_id = %s", (existing.id,))
         for access in repository_access:
             if access.repository_id:
-                # Validate no policy escalation
-                repo = await get_repo_by_id(access.repository_id)
-                if repo and access.security_policy_override:
-                    if scope_policy_is_escalation(access.security_policy_override, repo.security_policy):
-                        raise ValueError(f"Security policy override '{access.security_policy_override}' is not allowed for repository '{repo.internal_name}' (base policy: {repo.security_policy.value})")
                 await cur.execute(
                     "INSERT INTO agent_repository_access (agent_id, repository_id, security_policy_override) VALUES (%s, %s, %s)",
                     (existing.id, access.repository_id, access.security_policy_override),

@@ -1,7 +1,8 @@
-import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, allowedPolicies, asError, asPolicy, policyLabel, renderParamFields, statusMessage as setStatus, validateKey, validateRequired, reportFieldErrors, messageOf, type FieldControl, type MountOptions, type ParamValue, type Route } from '../ui.js';
+import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, asError, renderParamFields, statusMessage as setStatus, validateKey, validateRequired, reportFieldErrors, messageOf, type FieldControl, type MountOptions, type ParamValue, type Route } from '../ui.js';
 import { api } from '../api.js';
-import type { AgentConfig, AgentList, CreateAgentRequest, DeleteResponse, InferenceParam, InferenceParamList, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, RepositoryConfig, RepositoryList, SecurityPolicy, UpdateAgentRequest } from '../api.js';
-import { Row, RowEnd, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, ListItem, Form, Summary } from '../components.js';
+import type { AgentConfig, AgentList, CreateAgentRequest, DeleteResponse, InferenceParam, InferenceParamList, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, RepositoryConfig, RepositoryList, UpdateAgentRequest } from '../api.js';
+import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, ListItem, Form, Summary } from '../components.js';
+import { createRepositoryAccessEditor, type RepositoryAccessEntry } from './repositoryAccess.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {
   const root = Page({});
@@ -161,7 +162,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     let models: ProviderModel[] = [];
     let params: InferenceParam[] = [];
     let config: Record<string, ParamValue> = { ...agent?.inference_config };
-    let access: { repository_id: number; repository_internal_name: string; security_policy_override: SecurityPolicy | null }[] =
+    const initialAccess: RepositoryAccessEntry[] =
       (agent?.repository_access || []).map((entry) => ({
         repository_id: entry.repository_id,
         repository_internal_name: entry.repository_internal_name,
@@ -176,6 +177,11 @@ export function mount(route: Route, _options: MountOptions = {}) {
     function markDirty(): void {
       dirty = true;
     }
+
+    const repoAccess = createRepositoryAccessEditor({
+      initial: initialAccess,
+      onChange: markDirty,
+    });
 
     const heading = Heading(2, isEdit ? `Edit ${agent?.display_name || originalKey}` : 'New agent');
     const formError = Notice({ level: 'error' });
@@ -246,23 +252,13 @@ export function mount(route: Route, _options: MountOptions = {}) {
     settingsDetails.appendChild(Summary('Model settings'));
     settingsDetails.appendChild(settingsBody);
 
-    const repoSelect = Select({});
-    const policySelect = Select({});
-    const repoAdd = Button('Add');
-    const repoPills = Row();
-    const repoStatus = Hint();
-    const repoSelectField = labeledField('Repository', repoSelect);
-    const policyField = labeledField('Permissions', policySelect);
-    const repoAddBar = RowEnd(repoSelectField.wrapper, policyField.wrapper, repoAdd);
-    const repoSection = Stack(Heading(3, 'Repository access'), LineHint('Access added here is available to the agent. Permissions stay within each repository’s base policy.'), repoAddBar, repoPills, repoStatus);
-
     const saveButton = Button(isEdit ? 'Save' : 'Create agent', { variant: 'primary', submit: true });
     const cancelButton = Button('Cancel');
     const deleteButton = isEdit
       ? Button('Delete', { variant: 'danger' })
       : null;
 
-    const form = Form({ novalidate: true }, nameField.wrapper, keyField.wrapper, descriptionField.wrapper, instructionsField.wrapper, spawnableField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelField.wrapper), providerStatus, modelStatus, settingsDetails, repoSection, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
+    const form = Form({ novalidate: true }, nameField.wrapper, keyField.wrapper, descriptionField.wrapper, instructionsField.wrapper, spawnableField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelField.wrapper), providerStatus, modelStatus, settingsDetails, repoAccess.section, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
 
     editorContainer.appendChild(el('header', {}, heading));
     editorContainer.appendChild(form);
@@ -409,94 +405,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
       }
     }
 
-    function updatePolicyOptions(): void {
-      clear(policySelect);
-      const repo = repositories.find((item) => String(item.id) === repoSelect.value);
-      if (!repo) {
-        policySelect.appendChild(Option('', 'Default'));
-        policySelect.disabled = true;
-        return;
-      }
-      policySelect.disabled = false;
-      policySelect.appendChild(Option('', `Repository default (${policyLabel(repo.security_policy)})`));
-      for (const policy of allowedPolicies(repo.security_policy)) {
-        policySelect.appendChild(Option(policy.value, policy.label));
-      }
-    }
-
-    function renderRepoAccess(): void {
-      clear(repoPills);
-      for (const entry of access) {
-        const repo = repositories.find((item) => item.id === entry.repository_id);
-        const name = repo?.display_name || entry.repository_internal_name || `Repository #${entry.repository_id}`;
-        const policy = repo
-          ? policyLabel(entry.security_policy_override || repo.security_policy)
-          : policyLabel(entry.security_policy_override || '');
-        const pill = el('span', { class: 'badge', dataset: { repo: String(entry.repository_id) } },
-          `${name} · ${policy}`,
-        );
-        const remove = el('button', {
-          type: 'button',
-          title: 'Remove repository access',
-        }, '×');
-        remove.addEventListener('click', () => {
-          access = access.filter((item) => item !== entry);
-          markDirty();
-          renderRepoAccess();
-        });
-        pill.appendChild(remove);
-        repoPills.appendChild(pill);
-      }
-    }
-
-    function populateRepositories(): void {
-      clear(repoSelect);
-      if (!data.repositoriesLoaded) {
-        repoSelect.appendChild(Option('', 'Loading repositories…'));
-        repoSelect.disabled = true;
-        repoAdd.disabled = true;
-        clear(repoStatus);
-        return;
-      }
-      if (repositories.length === 0) {
-        repoSelect.appendChild(Option('', 'No repositories'));
-        repoSelect.disabled = true;
-        repoAdd.disabled = true;
-        clear(repoStatus);
-        repoStatus.appendChild(InlineHint('Add a repository on the Repositories screen first.'));
-        return;
-      }
-      repoSelect.disabled = false;
-      repoAdd.disabled = false;
-      repoSelect.appendChild(Option('', 'Select a repository'));
-      for (const repo of repositories) {
-        repoSelect.appendChild(Option(String(repo.id), repo.display_name || repo.internal_name));
-      }
-      updatePolicyOptions();
-      clear(repoStatus);
-    }
-
-    repoSelect.addEventListener('change', updatePolicyOptions);
-    repoAdd.addEventListener('click', () => {
-      const repo = repositories.find((item) => String(item.id) === repoSelect.value);
-      if (!repo) return;
-      const existing = access.find((entry) => entry.repository_id === repo.id);
-      if (existing) {
-        const pill = repoPills.querySelector(`[data-repo="${String(repo.id)}"]`);
-        if (pill) pill.scrollIntoView({ block: 'nearest' });
-        repoStatus.textContent = 'That repository is already available to the agent.';
-        return;
-      }
-      access.push({
-        repository_id: repo.id,
-        repository_internal_name: repo.internal_name,
-        security_policy_override: asPolicy(policySelect.value),
-      });
-      markDirty();
-      renderRepoAccess();
-      repoStatus.textContent = '';
-    });
-
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       if (saving) return;
@@ -523,7 +431,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         provider_key: selectedProvider,
         model_id: selectedModel,
         inference_config: config,
-        repository_access: access.map((entry) => ({
+        repository_access: repoAccess.entries.map((entry) => ({
           repository_id: entry.repository_id,
           security_policy_override: entry.security_policy_override,
         })),
@@ -599,8 +507,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     });
 
     fillProviderSelect();
-    populateRepositories();
-    renderRepoAccess();
+    repoAccess.setRepositories(repositories, data.repositoriesLoaded);
     renderSpawnable(data.agents);
     renderSettings();
 
@@ -631,11 +538,10 @@ export function mount(route: Route, _options: MountOptions = {}) {
       },
       onRepositoriesLoaded(nextRepositories) {
         repositories = nextRepositories;
-        populateRepositories();
-        renderRepoAccess();
+        repoAccess.setRepositories(repositories, true);
       },
       onRepositoriesError(error, retry) {
-        setStatus(repoStatus, `Could not load repositories: ${messageOf(error)}`, { error: true, retry });
+        repoAccess.setError(error, retry);
       },
       onAgentsLoaded(nextAgents) {
         renderSpawnable(nextAgents);

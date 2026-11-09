@@ -34,6 +34,23 @@ class TestSystemPrompt(unittest.TestCase):
         self.assertIn("/workspace", prompt)
         self.assertIn("no network access", prompt)
 
+    def test_project_instructions_come_before_agent_instructions(self):
+        context = ChatContext(
+            messages=[],
+            scopes=[],
+            tools=[],
+            instructions="Be concise.",
+            project_instructions="  Use the project conventions.  ",
+        )
+
+        prompt = _build_system_prompt(context, today=datetime.date(2026, 1, 2))
+
+        self.assertIn(
+            "Project instructions:\nUse the project conventions.\n\n"
+            "Agent instructions:\nBe concise.",
+            prompt,
+        )
+
     def test_tool_results_and_arguments_are_not_truncated(self):
         # Truncating tool results here would corrupt the JSON envelope that the
         # sandbox produced; producers cap their own output instead.

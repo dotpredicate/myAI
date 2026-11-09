@@ -64,6 +64,7 @@ class MockE2EProvider(InferenceProvider):
         self.models = models or []
         self._streams: List[List[Any]] = []
         self.calls = 0
+        self.contexts: List[ChatContext] = []
 
     def schedule_stream(self, *actions: Any) -> None:
         self._streams.append(list(actions))
@@ -76,6 +77,7 @@ class MockE2EProvider(InferenceProvider):
     ) -> AsyncIterator[Tuple[Optional[StreamingElement], Optional[FinishedElement]]]:
         actions = self._streams[self.calls] if self.calls < len(self._streams) else []
         self.calls += 1
+        self.contexts.append(context)
         for action in actions:
             if isinstance(action, Yield):
                 yield action.streaming, action.finished
@@ -140,8 +142,9 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
         async with database.mk_conn() as conn, conn.cursor() as cur:
             await conn.set_autocommit(False)
             await cur.execute(
-                "TRUNCATE agents, agent_repository_access, conversations, "
-                "messages, repositories, documents, sd_cpp_image_models, "
+                "TRUNCATE agents, agent_repository_access, projects, "
+                "project_repository_access, conversations, messages, "
+                "repositories, documents, sd_cpp_image_models, "
                 "inference_providers RESTART IDENTITY CASCADE;"
             )
             await conn.commit()

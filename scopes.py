@@ -3,7 +3,14 @@ from typing import Optional
 from pydantic import BaseModel
 
 from agents import get_agent_by_name
-from domain import AgentConfig, ScopeSpec, SecurityPolicy, normalize_scope_name
+from domain import (
+    AgentConfig,
+    RepositoryConfig,
+    ScopeSpec,
+    SecurityPolicy,
+    normalize_scope_name,
+    scope_policy_is_escalation,
+)
 from repositories import get_repo_by_id, get_repo_by_name
 
 
@@ -12,31 +19,32 @@ class UserScopeChoice(BaseModel):
     security_policy_override: Optional[SecurityPolicy] = None
 
 
+def _scope(internal_name: str, policy: SecurityPolicy, repo: RepositoryConfig) -> ScopeSpec:
+    if scope_policy_is_escalation(policy, repo.security_policy):
+        raise ValueError(
+            f"Security policy '{policy}' is not allowed for repository "
+            f"'{repo.internal_name}' (base policy: {repo.security_policy.value})"
+        )
+    return ScopeSpec(internal_name=internal_name, security_policy=policy)
+
+
 async def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) -> ScopeSpec:
     """Resolve one requested scope: user override > agent override > repo policy."""
     internal_name = normalize_scope_name(choice.internal_name)
-    if choice.security_policy_override is not None:
-        return ScopeSpec(
-            internal_name=internal_name,
-            security_policy=choice.security_policy_override,
-        )
-    if agent is not None:
+    repo = await get_repo_by_name(internal_name)
+    if repo is None:
+        raise ValueError(f"Repository '{choice.internal_name}' not found")
+
+    policy = choice.security_policy_override
+    if policy is None and agent is not None:
         for access in agent.repository_access:
             if (
                 access.repository_internal_name == internal_name
                 and access.security_policy_override is not None
             ):
-                return ScopeSpec(
-                    internal_name=internal_name,
-                    security_policy=access.security_policy_override,
-                )
-    repo = await get_repo_by_name(internal_name)
-    if repo is None:
-        raise ValueError(f"Repository '{choice.internal_name}' not found")
-    return ScopeSpec(
-        internal_name=internal_name,
-        security_policy=repo.security_policy,
-    )
+                policy = access.security_policy_override
+                break
+    return _scope(internal_name, policy or repo.security_policy, repo)
 
 
 async def scopes_for_agent(agent: AgentConfig, req_scopes: list[UserScopeChoice]) -> list[ScopeSpec]:
@@ -47,14 +55,11 @@ async def scopes_for_agent(agent: AgentConfig, req_scopes: list[UserScopeChoice]
         repo_key = access.repository_internal_name
         if repo_key in seen:
             continue
-        if access.security_policy_override is None:
-            repo = await get_repo_by_id(access.repository_id)
-            if repo is None:
-                raise ValueError(f"Repository {access.repository_id} not found")
-            policy = repo.security_policy
-        else:
-            policy = access.security_policy_override
-        scopes.append(ScopeSpec(internal_name=repo_key, security_policy=policy))
+        repo = await get_repo_by_id(access.repository_id)
+        if repo is None:
+            raise ValueError(f"Repository {access.repository_id} not found")
+        policy = access.security_policy_override or repo.security_policy
+        scopes.append(_scope(repo_key, policy, repo))
         seen.add(repo_key)
     return scopes
 

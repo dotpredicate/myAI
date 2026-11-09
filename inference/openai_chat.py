@@ -62,6 +62,9 @@ def _build_system_prompt(context: ChatContext, today: Optional[datetime.date] = 
         )
         sections.append(f"Available repositories:\n{repositories}")
 
+    if context.project_instructions and context.project_instructions.strip():
+        sections.append(f"Project instructions:\n{context.project_instructions.strip()}")
+
     if context.instructions and context.instructions.strip():
         sections.append(f"Agent instructions:\n{context.instructions.strip()}")
 

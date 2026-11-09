@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
 import database
 from log_config import get_logger
-from domain import SecurityPolicy, RepositoryConfig
+from domain import RepositoryAccessEntry, SecurityPolicy, RepositoryConfig, scope_policy_is_escalation
 
 logger = get_logger(__name__)
 
@@ -38,6 +38,26 @@ async def get_repo_by_id(repo_id: int) -> Optional[RepositoryConfig]:
         if row:
             return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4], security_policy=row[5])
         return None
+
+
+async def validate_repository_access(entries: list[RepositoryAccessEntry]) -> None:
+    """Reject unknown, duplicated or escalating repository access entries."""
+    seen: set[int] = set()
+    for entry in entries:
+        if not entry.repository_id:
+            continue
+        if entry.repository_id in seen:
+            raise ValueError(f"Repository {entry.repository_id} is listed more than once")
+        seen.add(entry.repository_id)
+        repo = await get_repo_by_id(entry.repository_id)
+        if repo is None:
+            raise ValueError(f"Repository {entry.repository_id} not found")
+        if entry.security_policy_override is not None:
+            if scope_policy_is_escalation(entry.security_policy_override, repo.security_policy):
+                raise ValueError(
+                    f"Security policy override '{entry.security_policy_override}' is not allowed "
+                    f"for repository '{repo.internal_name}' (base policy: {repo.security_policy.value})"
+                )
 
 
 async def _auto_detect_repo_type(path: str) -> Literal['plain', 'git']:

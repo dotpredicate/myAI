@@ -20,6 +20,7 @@ from domain import (
 from scopes import UserScopeChoice, resolve_scopes
 from repositories import router as repositories_router
 from agents import provider_in_use, router as agents_router
+from projects import router as projects_router
 from images import router as images_router
 from inference.sd_cpp.router import router as sd_cpp_router
 from inference.providers import (
@@ -134,7 +135,7 @@ async def delete_provider(provider_key: str):
     if existing is None:
         return JSONResponse(status_code=404, content={'error': 'provider not found'})
     if await provider_in_use(provider_key):
-        return JSONResponse(status_code=409, content={'error': 'provider is used by one or more agents'})
+        return JSONResponse(status_code=409, content={'error': 'provider is used by one or more agents or projects'})
     await delete_provider_config(provider_key)
     await reload_providers()
     return JSONResponse(content={'status': 'deleted', 'key': provider_key})
@@ -174,6 +175,7 @@ async def get_cached_models():
 
 app.include_router(repositories_router)
 app.include_router(agents_router)
+app.include_router(projects_router)
 app.include_router(conversations_router)
 app.include_router(images_router)
 app.include_router(sd_cpp_router)

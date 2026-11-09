@@ -1,6 +1,6 @@
 import { el, clear, errorState, spinnerLabel, labeledField, notify, readString, readValue, writeValue, conversationLabel, allowedPolicies, policyLabel, pickDefined, renderParamFields, statusMessage as setStatus, asError, asRecord, asParamValueMap, asPolicy, messageOf, type MountOptions, type ParamValue, type Route } from '../ui.js';
 import { ApiError, isAbort, api, openNdjson } from '../api.js';
-import type { AgentConfig, AgentList, ConversationDetails, GenerationRequest, InferenceParam, InferenceParamList, NdjsonStream, PromptRequest, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, RepositoryConfig, RepositoryList, SecurityPolicy, StreamEvent, ToolCallDecisionRequest, ToolCallDecisionResponse } from '../api.js';
+import type { AgentConfig, AgentList, ConversationDetails, GenerationRequest, InferenceParam, InferenceParamList, NdjsonStream, ProjectConfig, ProjectList, PromptRequest, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, RepositoryConfig, RepositoryList, SecurityPolicy, StreamEvent, ToolCallDecisionRequest, ToolCallDecisionResponse } from '../api.js';
 import { Timeline, type ToolBlock } from './timeline.js';
 import { Row, RowEnd, Stack, Grid, Heading, Paragraph, Hint, InlineHint, FieldError, Notice, Button, TextArea, Select, Option, Spacer, Summary } from '../components.js';
 
@@ -17,15 +17,21 @@ function asStringMap(value: Record<string, unknown>): Record<string, string> {
 interface ChatScope {
   internal_name: string;
   security_policy_override: SecurityPolicy | null;
+  source: 'manual' | 'project';
 }
 
 interface ChatState {
   providers: ProviderInfo[];
+  providersReady: boolean;
   paramsCache: Record<string, InferenceParam[]>;
   agents: AgentConfig[];
   repositories: RepositoryConfig[];
+  projects: ProjectConfig[];
+  projectsReady: boolean;
   scopes: ChatScope[];
   selectedAgentKey: string;
+  selectedProjectKey: string;
+  appliedProjectKey: string | null;
   currentProvider: string;
   currentModel: string;
   currentParams: InferenceParam[];
@@ -58,6 +64,13 @@ export function mount(route: Route, options: MountOptions = {}) {
   const composerAlerts = Stack(approvalAlert, generationAlert);
 
   const emptyView = Notice({ level: 'state', stack: true }, Heading(2, 'No messages yet'), Paragraph('Type a message below to start.'));
+
+  const projectSelect = Select({});
+  const projectField = labeledField('Project', projectSelect, {
+    hint: 'Presets the agent, model and repositories for new conversations.',
+  });
+  const projectStatus = Hint();
+  projectField.wrapper.appendChild(projectStatus);
 
   const scopeRepoSelect = Select({});
   const scopePolicySelect = Select({});
@@ -103,6 +116,7 @@ export function mount(route: Route, options: MountOptions = {}) {
 
   const composer = el('div', { class: 'composer' },
     composerAlerts,
+    projectField.wrapper,
     scopeSection,
     textarea,
     selectRow,
@@ -138,11 +152,16 @@ export function mount(route: Route, options: MountOptions = {}) {
 
   const state: ChatState = {
     providers: [],
+    providersReady: false,
     paramsCache: {},
     agents: [],
     repositories: [],
+    projects: [],
+    projectsReady: false,
     scopes: [],
     selectedAgentKey: '',
+    selectedProjectKey: readString('chat.project', ''),
+    appliedProjectKey: null,
     currentProvider: '',
     currentModel: '',
     currentParams: [],
@@ -165,6 +184,101 @@ export function mount(route: Route, options: MountOptions = {}) {
 
 
   let lastAnnouncement = '';
+
+  function projectLocked(): boolean {
+    return conversationId !== null || state.generating;
+  }
+
+  function selectedProject(): ProjectConfig | null {
+    return state.projects.find((project) => project.internal_name === state.selectedProjectKey) || null;
+  }
+
+  function updateProjectStatus(): void {
+    clear(projectStatus);
+    const project = selectedProject();
+    if (!project) return;
+    if (projectLocked()) projectStatus.appendChild(InlineHint('The project is fixed for this conversation.'));
+    if (project.instructions) projectStatus.appendChild(InlineHint('Project instructions are applied automatically.'));
+  }
+
+  function updateProjectLock(): void {
+    projectSelect.disabled = !state.projectsReady || projectLocked();
+    updateProjectStatus();
+  }
+
+  function fillProjectSelect(): void {
+    clear(projectSelect);
+    projectSelect.appendChild(Option('', 'No project'));
+    for (const project of state.projects) {
+      projectSelect.appendChild(Option(project.internal_name, project.display_name || project.internal_name));
+    }
+    if (state.selectedProjectKey && state.projects.some((project) => project.internal_name === state.selectedProjectKey)) {
+      projectSelect.value = state.selectedProjectKey;
+    } else if (state.selectedProjectKey) {
+      state.selectedProjectKey = '';
+      projectSelect.value = '';
+    }
+    updateProjectLock();
+  }
+
+  function applyProjectPresets(project: ProjectConfig | null): void {
+    state.scopes = state.scopes.filter((scope) => scope.source !== 'project');
+    if (project) {
+      for (const entry of project.repository_access) {
+        const name = entry.repository_internal_name;
+        if (!name) continue;
+        if (state.scopes.some((scope) => scope.internal_name === name)) continue;
+        state.scopes.push({
+          internal_name: name,
+          security_policy_override: entry.security_policy_override,
+          source: 'project',
+        });
+      }
+    }
+    renderScopes();
+    if (!project) return;
+
+    if (project.default_agent !== null) {
+      const agent = state.agents.find((item) => item.id === project.default_agent);
+      if (agent) {
+        agentSelect.value = agent.internal_name;
+        void selectAgent(agent.internal_name);
+      }
+    } else if (project.provider_key && project.model_id) {
+      const provider = project.provider_key;
+      const model = project.model_id;
+      state.manualProvider = provider;
+      state.manualModel = model;
+      state.modelsStored[provider] = model;
+      if (Object.keys(project.inference_config).length > 0) {
+        state.configs[configKey(provider, model)] = { ...project.inference_config };
+      }
+      persistManualSelection();
+      saveConfigs();
+      agentSelect.value = '';
+      void selectAgent('', { restoreManual: false });
+    }
+    updateProjectStatus();
+  }
+
+  function tryApplyProjectPresets(): void {
+    if (!state.projectsReady) return;
+    const project = selectedProject();
+    const key = project?.internal_name ?? '';
+    if (state.appliedProjectKey === key) return;
+    if (project && project.default_agent !== null && !state.agentsReady) return;
+    if (project && project.default_agent === null && project.provider_key && project.model_id && !state.providersReady) return;
+    state.appliedProjectKey = key;
+    applyProjectPresets(project);
+  }
+
+  projectSelect.addEventListener('change', () => {
+    state.selectedProjectKey = projectSelect.value;
+    writeValue('chat.project', state.selectedProjectKey);
+    state.appliedProjectKey = null;
+    updateProjectStatus();
+    tryApplyProjectPresets();
+  });
 
   function announce(message: string): void {
     if (message === lastAnnouncement) return;
@@ -265,6 +379,7 @@ export function mount(route: Route, options: MountOptions = {}) {
     textarea.readOnly = blocking;
     if (blocking) announce('Approval required. The message box is paused.');
     else if (busy) announce('Assistant is responding…');
+    updateProjectLock();
   }
 
   function saveConfigs(): void {
@@ -485,10 +600,12 @@ export function mount(route: Route, options: MountOptions = {}) {
       const data = await api.get<ProviderList>('/api/providers');
       if (destroyed) return;
       state.providers = Array.isArray(data.providers) ? data.providers : [];
+      state.providersReady = true;
       fillProviderSelect();
       if (state.providers.length === 0) {
         setStatus(modelStatus, 'No inference providers are registered.');
         providerSelect.disabled = true;
+        tryApplyProjectPresets();
         return;
       }
       providerSelect.disabled = false;
@@ -497,9 +614,11 @@ export function mount(route: Route, options: MountOptions = {}) {
       }
       const agent = selectedAgent();
       await loadModelsFor(agent ? agent.provider_key : state.manualProvider, agent ? { agent: true } : { preferModel: state.modelsStored[state.manualProvider] });
+      tryApplyProjectPresets();
     } catch (error) {
       if (destroyed) return;
       state.providers = [];
+      state.providersReady = false;
       providerSelect.disabled = true;
       setStatus(modelStatus, `Could not load providers: ${messageOf(error)}`, {
         error: true,
@@ -527,6 +646,7 @@ export function mount(route: Route, options: MountOptions = {}) {
           await refreshSelection();
         }
       }
+      tryApplyProjectPresets();
     } catch (error) {
       if (destroyed) return;
       state.agents = [];
@@ -568,6 +688,29 @@ export function mount(route: Route, options: MountOptions = {}) {
       scopeRepoSelect.disabled = true;
       scopeAdd.disabled = true;
       setStatus(scopeStatus, `Could not load repositories: ${messageOf(error)}`, { error: true, retry: loadRepositories });
+    }
+  }
+
+  async function loadProjects(): Promise<void> {
+    clear(projectSelect);
+    projectSelect.appendChild(Option('', 'Loading projects…'));
+    projectSelect.disabled = true;
+    try {
+      const data = await api.get<ProjectList>('/api/projects');
+      if (destroyed) return;
+      state.projects = Array.isArray(data.projects) ? data.projects : [];
+      state.projectsReady = true;
+      fillProjectSelect();
+      state.appliedProjectKey = null;
+      tryApplyProjectPresets();
+    } catch (error) {
+      if (destroyed) return;
+      state.projects = [];
+      state.projectsReady = false;
+      clear(projectSelect);
+      projectSelect.appendChild(Option('', 'Projects unavailable'));
+      projectSelect.disabled = true;
+      setStatus(projectStatus, `Could not load projects: ${messageOf(error)}`, { error: true, retry: loadProjects });
     }
   }
 
@@ -618,6 +761,7 @@ export function mount(route: Route, options: MountOptions = {}) {
     state.scopes.push({
       internal_name: repo.internal_name,
       security_policy_override: override,
+      source: 'manual',
     });
     renderScopes();
     setStatus(scopeStatus, '');
@@ -708,6 +852,7 @@ export function mount(route: Route, options: MountOptions = {}) {
     const agent = selectedAgent();
     return {
       agent_id: agent ? agent.internal_name : null,
+      project_id: state.selectedProjectKey || null,
       provider_key: agent ? agent.provider_key : state.currentProvider || null,
       model_id: agent ? agent.model_id : state.currentModel || null,
       inference_config: agent ? {} : pickDefined(currentConfigValues()),
@@ -720,6 +865,7 @@ export function mount(route: Route, options: MountOptions = {}) {
 
   function setConversationInUrl(id: number): void {
     conversationId = id;
+    updateProjectLock();
     const hash = `#/chat/${id}`;
     window.history.replaceState(null, '', hash);
     writeValue('lastHash', hash);
@@ -742,6 +888,12 @@ export function mount(route: Route, options: MountOptions = {}) {
       if (destroyed) return;
       conversationDetails = details;
       conversationAvailable = true;
+      const projectKey = details.project_id || '';
+      if (state.selectedProjectKey !== projectKey) state.appliedProjectKey = null;
+      state.selectedProjectKey = projectKey;
+      projectSelect.value = projectKey;
+      updateProjectLock();
+      tryApplyProjectPresets();
       timeline.reset();
       setEmptyVisible(false);
       for (const record of details.messages) timeline.addStored(record);
@@ -904,7 +1056,7 @@ export function mount(route: Route, options: MountOptions = {}) {
       options.onConversationsChanged?.();
     }
     if (!conversationDetails && conversationId) {
-      conversationDetails = { id: conversationId, title: null, created_at: new Date().toISOString(), blocking_message_id: null, messages: [] };
+      conversationDetails = { id: conversationId, title: null, created_at: new Date().toISOString(), blocking_message_id: null, project_id: state.selectedProjectKey || null, messages: [] };
     }
     updateHeader();
     const result = await consumeStream(opened, controller);
@@ -990,10 +1142,13 @@ export function mount(route: Route, options: MountOptions = {}) {
     state.generationError = false;
     state.lastAnnouncedBlocking = null;
     state.scopes = [];
+    state.appliedProjectKey = null;
     timeline.reset();
     setEmptyVisible(true);
     history.appendChild(emptyView);
     renderScopes();
+    updateProjectLock();
+    tryApplyProjectPresets();
     clear(approvalAlert);
     approvalAlert.hidden = true;
     clearGenerationError();
@@ -1016,6 +1171,7 @@ export function mount(route: Route, options: MountOptions = {}) {
   loadProviders();
   loadAgents();
   loadRepositories();
+  loadProjects();
   updateScopePolicies();
   updateComposerState();
   updateJump();

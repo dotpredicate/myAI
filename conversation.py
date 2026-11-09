@@ -37,6 +37,7 @@ import system
 from log_config import get_logger
 from database import mk_conn
 from agents import get_agent_by_name
+from projects import get_project_by_name, resolve_project_id
 from scopes import UserScopeChoice, resolve_scopes, scopes_for_agent
 
 logger = get_logger(__name__)
@@ -46,6 +47,7 @@ router = APIRouter()
 
 class GenerationRequest(BaseModel):
     agent_id: Optional[str] = None
+    project_id: Optional[str] = None
     provider_key: Optional[str] = None
     model_id: Optional[str] = None
     inference_config: dict[str, Any] = {}
@@ -273,14 +275,33 @@ def stored_record_to_stream_events(record: StoredMessageRecord) -> list[StreamEv
 def serialize_ndjson_event(event: StreamEvent) -> str:
     return event.model_dump_json() + '\n'
 
-async def create_conversation(conn: AsyncConnection) -> int:
+async def create_conversation(conn: AsyncConnection, project_id: Optional[int] = None) -> int:
     async with conn.cursor() as cur:
-        await cur.execute("INSERT INTO conversations DEFAULT VALUES RETURNING id")
+        await cur.execute(
+            "INSERT INTO conversations (project_id) VALUES (%s) RETURNING id",
+            (project_id,),
+        )
         row = await cur.fetchone()
         if not row:
             raise RuntimeError("Failed to create conversation")
         conv_id = row[0]
         return conv_id
+
+
+async def get_conversation_project(conn: AsyncConnection, conv_id: int) -> tuple[Optional[int], Optional[str]]:
+    """Return the conversation's project id and internal name, if any."""
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT c.project_id, p.internal_name
+            FROM conversations c
+            LEFT JOIN projects p ON p.id = c.project_id
+            WHERE c.id = %s
+            """,
+            (conv_id,),
+        )
+        row = await cur.fetchone()
+        return (row[0], row[1]) if row else (None, None)
 
 
 async def get_latest_sequence_id(conn: AsyncConnection, conv_id: int) -> Optional[int]:
@@ -409,14 +430,20 @@ async def prepare_and_start_generation(
     prompt: str,
     conversation_id: Optional[int],
     agent_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     provider_key: Optional[str] = None,
     model_id: Optional[str] = None,
     extra_scopes: list[UserScopeChoice] = [],
     inference_config: dict[str, Any] = {},
 ) -> tuple[int, StoredMessageRecord]:
     if conversation_id is None:
+        numeric_project_id: Optional[int] = None
+        if project_id is not None:
+            numeric_project_id = await resolve_project_id(project_id)
+            if numeric_project_id is None:
+                raise ValueError(f"Project '{project_id}' not found")
         async with mk_conn() as conn:
-            conversation_id = await create_conversation(conn)
+            conversation_id = await create_conversation(conn, numeric_project_id)
             user_record = await insert_message(conn, conversation_id, 'user', Message(author='user', content=prompt))
             await conn.commit()
         async with active_generations_lock:
@@ -428,6 +455,9 @@ async def prepare_and_start_generation(
             if blocking_id is not None:
                 raise ConversationBlockedError(blocking_id)
             latest_sequence_id = await get_latest_sequence_id(conn, conversation_id)
+            _, stored_project_name = await get_conversation_project(conn, conversation_id)
+        if project_id is not None and project_id != stored_project_name:
+            raise ValueError('a conversation cannot change its project')
         async with active_generations_lock:
             existing = active_generations.get(conversation_id)
             if existing is not None and existing.status == 'running':
@@ -509,6 +539,9 @@ async def prompt_conversation(
     provider_key, model_id, inference_config, scopes, agent_prompt, agent = await _resolve_agent(
         agent_id, provider_key, model_id, extra_scopes, inference_config, resolved_scopes
     )
+    async with mk_conn() as conn:
+        _, project_name = await get_conversation_project(conn, conv_id)
+    project = await get_project_by_name(project_name) if project_name else None
     functions = tools_for_agent(agent)
     messages = await get_messages_for_continuation(conv_id)
     tool_context = ToolContext(
@@ -526,7 +559,13 @@ async def prompt_conversation(
     run_next_loop = True
     attempt = 0
     while run_next_loop:
-        chat_context = ChatContext(messages=messages, scopes=scopes, tools=functions, instructions=agent_prompt)
+        chat_context = ChatContext(
+            messages=messages,
+            scopes=scopes,
+            tools=functions,
+            instructions=agent_prompt,
+            project_instructions=project.instructions if project else None,
+        )
         chat_gen_inner = provider.run_chat_completion_stream(model_id, inference_config, chat_context)
         run_next_loop = False
         emitted = False
@@ -700,7 +739,15 @@ async def get_conversations(conn: AsyncConnection) -> list[dict[str, Any]]:
 
 async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optional[dict[str, Any]]:
     async with conn.cursor() as cur:
-        await cur.execute("SELECT id, title, created_at, blocking_message_id FROM conversations WHERE id = %s", (conv_id,))
+        await cur.execute(
+            """
+            SELECT c.id, c.title, c.created_at, c.blocking_message_id, p.internal_name
+            FROM conversations c
+            LEFT JOIN projects p ON p.id = c.project_id
+            WHERE c.id = %s
+            """,
+            (conv_id,),
+        )
         row = await cur.fetchone()
         if not row:
             return None
@@ -715,6 +762,7 @@ async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optio
             'title': row[1],
             'created_at': row[2].isoformat(),
             'blocking_message_id': row[3],
+            'project_id': row[4],
             'messages': messages
         }
 
@@ -835,6 +883,7 @@ async def prompt_model(payload: PromptRequest):
             payload.prompt,
             payload.conversation_id,
             agent_id=payload.agent_id,
+            project_id=payload.project_id,
             provider_key=payload.provider_key,
             model_id=payload.model_id,
             extra_scopes=payload.scopes,
@@ -847,6 +896,8 @@ async def prompt_model(payload: PromptRequest):
         )
     except ActiveGenerationExistsError:
         return JSONResponse(status_code=409, content={"error": "conversation is already generating"})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
 
     async def stream():
         async for event in stream_conversation_events(conversation_id, user_record.sequence_id):
@@ -936,6 +987,10 @@ async def continue_conversation_endpoint(conversation_id: int, payload: Continue
                 content={"error": "Action required", "blocking_message_id": details.get('blocking_message_id')}
             )
         after_sequence_id = await get_latest_sequence_id(conn, conversation_id)
+
+    project_id = details.get('project_id')
+    if payload.project_id is not None and payload.project_id != project_id:
+        return JSONResponse(status_code=400, content={"error": "a conversation cannot change its project"})
 
     try:
         await start_generation(

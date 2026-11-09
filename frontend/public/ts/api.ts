@@ -66,6 +66,54 @@ export interface UpdateAgentRequest {
   spawnable_agents?: string[];
 }
 
+export interface ProjectRepositoryAccess {
+  id: number;
+  project_id: number;
+  repository_id: number;
+  repository_internal_name: string;
+  security_policy_override: SecurityPolicy | null;
+}
+
+export interface ProjectConfig {
+  id: number;
+  display_name: string;
+  internal_name: string;
+  description: string;
+  instructions: string | null;
+  default_agent: number | null;
+  provider_key: string | null;
+  model_id: string | null;
+  inference_config: Record<string, ParamValue>;
+  repository_access: ProjectRepositoryAccess[];
+}
+
+export interface ProjectList {
+  projects: ProjectConfig[];
+}
+
+export interface CreateProjectRequest {
+  display_name: string;
+  internal_name: string;
+  description?: string;
+  instructions?: string | null;
+  default_agent?: number | null;
+  provider_key?: string | null;
+  model_id?: string | null;
+  inference_config?: Record<string, ParamValue>;
+  repository_access?: RepoAccessEntry[];
+}
+
+export interface UpdateProjectRequest {
+  display_name?: string;
+  description?: string;
+  instructions?: string | null;
+  default_agent?: number | null;
+  provider_key?: string | null;
+  model_id?: string | null;
+  inference_config?: Record<string, ParamValue>;
+  repository_access?: RepoAccessEntry[];
+}
+
 export interface ScopeSpec {
   internal_name: string;
   security_policy: SecurityPolicy;
@@ -103,6 +151,7 @@ export interface ConversationSummary {
 
 export interface ConversationDetails extends ConversationSummary {
   blocking_message_id: number | null;
+  project_id: string | null;
   messages: StoredMessageRecord[];
 }
 
@@ -113,6 +162,7 @@ export interface UserScopeChoice {
 
 export interface GenerationRequest {
   agent_id?: string | null;
+  project_id?: string | null;
   provider_key?: string | null;
   model_id?: string | null;
   inference_config?: Record<string, ParamValue>;

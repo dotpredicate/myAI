@@ -397,7 +397,7 @@ export function encodeKey(value: string | number): string {
   return encodeURIComponent(String(value));
 }
 
-export type ScreenName = 'chat' | 'images' | 'inference' | 'agents' | 'repositories';
+export type ScreenName = 'chat' | 'images' | 'inference' | 'agents' | 'projects' | 'repositories';
 
 export interface Route {
   name: ScreenName;
@@ -429,6 +429,11 @@ export function parseRoute(hash = window.location.hash): Route {
     if (!segments[1]) return { name: 'agents', mode: 'list' };
     if (segments[1] === 'new') return { name: 'agents', mode: 'new' };
     return { name: 'agents', mode: 'edit', key: segments[1] };
+  }
+  if (screen === 'projects') {
+    if (!segments[1]) return { name: 'projects', mode: 'list' };
+    if (segments[1] === 'new') return { name: 'projects', mode: 'new' };
+    return { name: 'projects', mode: 'edit', key: segments[1] };
   }
   if (screen === 'repositories') {
     if (!segments[1]) return { name: 'repositories', key: null };

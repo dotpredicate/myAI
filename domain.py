@@ -30,6 +30,10 @@ class RepositoryConfig(BaseModel):
     path: str
     security_policy: SecurityPolicy
 
+class RepositoryAccessEntry(BaseModel):
+    repository_id: int
+    security_policy_override: Optional[SecurityPolicy] = None
+
 class AgentRepositoryAccess(BaseModel):
     id: int = 0
     agent_id: int = 0
@@ -48,6 +52,25 @@ class AgentConfig(BaseModel):
     inference_config: dict[str, Any]
     repository_access: List[AgentRepositoryAccess]
     spawnable_agents: List[str] = []
+
+class ProjectRepositoryAccess(BaseModel):
+    id: int = 0
+    project_id: int = 0
+    repository_id: int
+    repository_internal_name: str = ''
+    security_policy_override: Optional[SecurityPolicy] = None
+
+class ProjectConfig(BaseModel):
+    id: int
+    display_name: str
+    internal_name: str
+    description: str
+    instructions: Optional[str] = None
+    default_agent: Optional[int] = None
+    provider_key: Optional[str] = None
+    model_id: Optional[str] = None
+    inference_config: dict[str, Any] = {}
+    repository_access: List[ProjectRepositoryAccess] = []
 
 
 class _InferenceProviderRules:
