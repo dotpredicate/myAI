@@ -1,17 +1,19 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, asError, renderParamFields, statusMessage as setStatus, validateKey, validateRequired, reportFieldErrors, messageOf, type FieldControl, type MountOptions, type ParamValue, type Route } from '../ui.js';
 import { api } from '../api.js';
 import type { AgentConfig, AgentList, CreateAgentRequest, DeleteResponse, InferenceParam, InferenceParamList, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, RepositoryConfig, RepositoryList, UpdateAgentRequest } from '../api.js';
-import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, ListItem, Form, Summary } from '../components.js';
+import { Row, Stack, Grid, Page, Heading, Card, Hint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, ListItem, Form, Summary } from '../components.js';
 import { createRepositoryAccessEditor, type RepositoryAccessEntry } from './repositoryAccess.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {
   const root = Page({});
-  const listContainer = el('div', {});
-  const listCard = Card(CardHeader('Agents', LinkButton('+ New agent', '#/agents/new', { variant: 'primary', small: true })), listContainer);
-  const editorContainer = el('div', { class: 'card', id: 'agent-editor' });
-  const layout = Split(listCard, editorContainer);
+  const listContainer = el('div', { class: 'stack' });
+  const editorContainer = el('div', { class: 'inset stack', id: 'agent-editor' });
+  const listHeader = el('header', {},
+    Row(Heading(2, 'Agents'), LinkButton('+ New agent', '#/agents/new', { variant: 'primary', small: true })),
+  );
+  const listCard = Card(listHeader, listContainer);
   root.appendChild(Heading(1, 'Agents'));
-  root.appendChild(layout);
+  root.appendChild(listCard);
 
   interface AgentsData {
     agents: AgentConfig[];
@@ -53,32 +55,40 @@ export function mount(route: Route, _options: MountOptions = {}) {
       listContainer.appendChild(errorState(message || 'Could not load agents.', loadAgents));
       return;
     }
+    if (currentMode === 'new') listContainer.appendChild(editorContainer);
     if (data.agents.length === 0) {
       listContainer.appendChild(emptyState(
         'No agents',
         'Create one to save a model and instructions.',
-        LinkButton('+ New agent', '#/agents/new', { variant: 'primary', small: true }),
       ));
       return;
     }
     const list = List();
     for (const agent of data.agents) {
-      const item = ListItem(el('div', { class: 'list-item-main' },
-          el('a', { href: `#/agents/${encodeKey(agent.internal_name)}` }, agent.display_name || agent.internal_name),
-          el('div', { class: 'hint truncate' }, agent.internal_name),
-        ));
-      list.appendChild(item);
+      const selected = currentMode === 'edit' && agent.internal_name === currentKey;
+      const open = () => navigate(selected
+        ? '#/agents'
+        : `#/agents/${encodeKey(agent.internal_name)}`);
+      const row = ListItem(el('button', { type: 'button', class: 'collection-row-main', onClick: open },
+        el('span', { class: 'collection-row-title' }, agent.display_name || agent.internal_name),
+        el('span', { class: 'collection-row-path truncate' }, agent.internal_name),
+      ));
+      row.dataset.selected = selected ? 'true' : 'false';
+      list.appendChild(row);
+      if (selected) {
+        const detail = el('li', { class: 'list-detail' });
+        detail.appendChild(editorContainer);
+        list.appendChild(detail);
+      }
     }
     listContainer.appendChild(list);
-  }
-
-  function showListPlaceholder() {
-    clear(editorContainer);
-    editorContainer.appendChild(emptyState(
-      'Select an agent',
-      'Choose an agent from the list, or create a new one.',
-      LinkButton('+ New agent', '#/agents/new', { small: true }),
-    ));
+    if (currentMode === 'edit' && currentKey && !data.agents.some((agent) => agent.internal_name === currentKey)) {
+      listContainer.appendChild(emptyState(
+        'Agent not found',
+        `There is no agent with the key “${currentKey}”.`,
+        LinkButton('Back to agents', '#/agents', { small: true }),
+      ));
+    }
   }
 
   async function loadAgents(): Promise<void> {
@@ -91,34 +101,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
       editor?.onAgentsLoaded(data.agents);
       if (currentMode === 'edit') {
         const agent = data.agents.find((item) => item.internal_name === currentKey);
-        if (!agent) {
-          clear(editorContainer);
-          editorContainer.appendChild(emptyState(
-            'Agent not found',
-            `There is no agent with the key “${currentKey}”.`,
-            LinkButton('Back to agents', '#/agents', { small: true }),
-          ));
-        } else if (!editor || editor.key !== currentKey) {
-          renderEditor(agent);
-        }
+        if (agent && (!editor || editor.key !== currentKey)) renderEditor(agent);
       }
-    } catch (error) {
-      if (destroyed) return;
-      renderList('error', messageOf(error));
-      if (currentMode === 'edit') {
-        clear(editorContainer);
-        editorContainer.appendChild(errorState(messageOf(error) || 'Could not load agents.', loadAgents));
-      }
-    }
-  }
-
-  async function refreshList(): Promise<void> {
-    try {
-      const response = await api.get<AgentList>('/api/agents');
-      if (destroyed) return;
-      data.agents = Array.isArray(response.agents) ? response.agents : [];
-      renderList();
-      editor?.onAgentsLoaded(data.agents);
     } catch (error) {
       if (destroyed) return;
       renderList('error', messageOf(error));
@@ -258,7 +242,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
       ? Button('Delete', { variant: 'danger' })
       : null;
 
-    const form = Form({ novalidate: true }, nameField.wrapper, keyField.wrapper, descriptionField.wrapper, instructionsField.wrapper, spawnableField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelField.wrapper), providerStatus, modelStatus, settingsDetails, repoAccess.section, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
+    const form = Form({ novalidate: true }, Grid({ columns: 2 }, nameField.wrapper, keyField.wrapper), descriptionField.wrapper, instructionsField.wrapper, spawnableField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelField.wrapper), providerStatus, modelStatus, settingsDetails, repoAccess.section, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
 
     editorContainer.appendChild(el('header', {}, heading));
     editorContainer.appendChild(form);
@@ -456,10 +440,12 @@ export function mount(route: Route, _options: MountOptions = {}) {
         if (destroyed) return;
         dirty = false;
         notify(isEdit ? 'Agent saved.' : 'Agent created.', { level: 'success' });
-        await refreshList();
         if (!isEdit) {
           navigate(`#/agents/${encodeKey(saved.internal_name)}`);
         } else {
+          const index = data.agents.findIndex((item) => item.internal_name === saved.internal_name);
+          if (index >= 0) data.agents[index] = saved;
+          renderList();
           renderEditor(saved);
         }
       } catch (error) {
@@ -549,17 +535,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
     };
   }
 
-  if (currentMode === 'list') {
-    showListPlaceholder();
-    loadAgents();
-  } else if (currentMode === 'new') {
-    renderEditor(null);
-    loadAgents();
-  } else {
-    clear(editorContainer);
-    editorContainer.appendChild(loadingState('Loading agent…'));
-    loadAgents();
-  }
+  if (currentMode === 'new') renderEditor(null);
+  loadAgents();
   loadRepositories();
   loadProviders();
 

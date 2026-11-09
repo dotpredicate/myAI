@@ -644,6 +644,54 @@ button.list-item {
   font: inherit;
 }
 
+/* Collection rows */
+.collection-row-main {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.collection-row-title {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.collection-row-meta {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.collection-row-path {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.8em;
+}
+
+.list-item[data-selected="true"] .collection-row-title {
+  color: var(--accent);
+}
+
+.list-detail {
+  padding: 0 0 0.75rem;
+}
+
+.list-detail + .list-item {
+  border-top: 1px solid var(--border);
+}
+
 .truncate {
   overflow: hidden;
   text-overflow: ellipsis;

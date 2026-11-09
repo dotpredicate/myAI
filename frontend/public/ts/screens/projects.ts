@@ -1,17 +1,19 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, asError, renderParamFields, statusMessage as setStatus, validateKey, validateRequired, reportFieldErrors, messageOf, type FieldControl, type MountOptions, type ParamValue, type Route } from '../ui.js';
 import { api } from '../api.js';
 import type { AgentConfig, AgentList, CreateProjectRequest, DeleteResponse, InferenceParam, InferenceParamList, ProjectConfig, ProjectList, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, RepositoryConfig, RepositoryList, UpdateProjectRequest } from '../api.js';
-import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, ListItem, Form, Summary } from '../components.js';
+import { Row, Stack, Grid, Page, Heading, Card, Hint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, ListItem, Form, Summary } from '../components.js';
 import { createRepositoryAccessEditor, type RepositoryAccessEntry } from './repositoryAccess.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {
   const root = Page({});
-  const listContainer = el('div', {});
-  const listCard = Card(CardHeader('Projects', LinkButton('+ New project', '#/projects/new', { variant: 'primary', small: true })), listContainer);
-  const editorContainer = el('div', { class: 'card', id: 'project-editor' });
-  const layout = Split(listCard, editorContainer);
+  const listContainer = el('div', { class: 'stack' });
+  const editorContainer = el('div', { class: 'inset stack', id: 'project-editor' });
+  const listHeader = el('header', {},
+    Row(Heading(2, 'Projects'), LinkButton('+ New project', '#/projects/new', { variant: 'primary', small: true })),
+  );
+  const listCard = Card(listHeader, listContainer);
   root.appendChild(Heading(1, 'Projects'));
-  root.appendChild(layout);
+  root.appendChild(listCard);
 
   interface ProjectsData {
     projects: ProjectConfig[];
@@ -58,32 +60,40 @@ export function mount(route: Route, _options: MountOptions = {}) {
       listContainer.appendChild(errorState(message || 'Could not load projects.', loadProjects));
       return;
     }
+    if (currentMode === 'new') listContainer.appendChild(editorContainer);
     if (data.projects.length === 0) {
       listContainer.appendChild(emptyState(
         'No projects',
         'Create one to bundle an agent, model, instructions and repositories.',
-        LinkButton('+ New project', '#/projects/new', { variant: 'primary', small: true }),
       ));
       return;
     }
     const list = List();
     for (const project of data.projects) {
-      const item = ListItem(el('div', { class: 'list-item-main' },
-          el('a', { href: `#/projects/${encodeKey(project.internal_name)}` }, project.display_name || project.internal_name),
-          el('div', { class: 'hint truncate' }, project.internal_name),
-        ));
-      list.appendChild(item);
+      const selected = currentMode === 'edit' && project.internal_name === currentKey;
+      const open = () => navigate(selected
+        ? '#/projects'
+        : `#/projects/${encodeKey(project.internal_name)}`);
+      const row = ListItem(el('button', { type: 'button', class: 'collection-row-main', onClick: open },
+        el('span', { class: 'collection-row-title' }, project.display_name || project.internal_name),
+        el('span', { class: 'collection-row-path truncate' }, project.internal_name),
+      ));
+      row.dataset.selected = selected ? 'true' : 'false';
+      list.appendChild(row);
+      if (selected) {
+        const detail = el('li', { class: 'list-detail' });
+        detail.appendChild(editorContainer);
+        list.appendChild(detail);
+      }
     }
     listContainer.appendChild(list);
-  }
-
-  function showListPlaceholder() {
-    clear(editorContainer);
-    editorContainer.appendChild(emptyState(
-      'Select a project',
-      'Choose a project from the list, or create a new one.',
-      LinkButton('+ New project', '#/projects/new', { small: true }),
-    ));
+    if (currentMode === 'edit' && currentKey && !data.projects.some((project) => project.internal_name === currentKey)) {
+      listContainer.appendChild(emptyState(
+        'Project not found',
+        `There is no project with the key “${currentKey}”.`,
+        LinkButton('Back to projects', '#/projects', { small: true }),
+      ));
+    }
   }
 
   async function loadProjects(): Promise<void> {
@@ -95,33 +105,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
       renderList();
       if (currentMode === 'edit') {
         const project = data.projects.find((item) => item.internal_name === currentKey);
-        if (!project) {
-          clear(editorContainer);
-          editorContainer.appendChild(emptyState(
-            'Project not found',
-            `There is no project with the key “${currentKey}”.`,
-            LinkButton('Back to projects', '#/projects', { small: true }),
-          ));
-        } else if (!editor || editor.key !== currentKey) {
-          renderEditor(project);
-        }
+        if (project && (!editor || editor.key !== currentKey)) renderEditor(project);
       }
-    } catch (error) {
-      if (destroyed) return;
-      renderList('error', messageOf(error));
-      if (currentMode === 'edit') {
-        clear(editorContainer);
-        editorContainer.appendChild(errorState(messageOf(error) || 'Could not load projects.', loadProjects));
-      }
-    }
-  }
-
-  async function refreshList(): Promise<void> {
-    try {
-      const response = await api.get<ProjectList>('/api/projects');
-      if (destroyed) return;
-      data.projects = Array.isArray(response.projects) ? response.projects : [];
-      renderList();
     } catch (error) {
       if (destroyed) return;
       renderList('error', messageOf(error));
@@ -256,8 +241,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
     const form = Form(
       { novalidate: true },
-      nameField.wrapper,
-      keyField.wrapper,
+      Grid({ columns: 2 }, nameField.wrapper, keyField.wrapper),
       descriptionField.wrapper,
       instructionsField.wrapper,
       defaultAgentField.wrapper,
@@ -492,10 +476,12 @@ export function mount(route: Route, _options: MountOptions = {}) {
         if (destroyed) return;
         dirty = false;
         notify(isEdit ? 'Project saved.' : 'Project created.', { level: 'success' });
-        await refreshList();
         if (!isEdit) {
           navigate(`#/projects/${encodeKey(saved.internal_name)}`);
         } else {
+          const index = data.projects.findIndex((item) => item.internal_name === saved.internal_name);
+          if (index >= 0) data.projects[index] = saved;
+          renderList();
           renderEditor(saved);
         }
       } catch (error) {
@@ -581,17 +567,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
     };
   }
 
-  if (currentMode === 'list') {
-    showListPlaceholder();
-    loadProjects();
-  } else if (currentMode === 'new') {
-    renderEditor(null);
-    loadProjects();
-  } else {
-    clear(editorContainer);
-    editorContainer.appendChild(loadingState('Loading project…'));
-    loadProjects();
-  }
+  if (currentMode === 'new') renderEditor(null);
+  loadProjects();
   loadRepositories();
   loadProviders();
   loadAgents();

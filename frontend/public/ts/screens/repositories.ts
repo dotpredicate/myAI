@@ -1,24 +1,24 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, slugifyKey, plural, policyLabel, POLICIES, validateKey, validateRequired, reportFieldErrors, compactError, messageOf, type FieldControl, type MountOptions, type Route } from '../ui.js';
 import { api } from '../api.js';
 import type { BrowseEntry, BrowseResult, DeleteResponse, RepositoryConfig, RepositoryFiles, RepositoryList, SearchResponse, SyncResponse } from '../api.js';
-import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldGroup, Badge, Notice, Button, LinkButton, Input, Select, Option, List, ListItem, Form, IconButton } from '../components.js';
+import { Row, RowEnd, Stack, Grid, Page, Heading, Card, Hint, InlineHint, LineHint, FieldGroup, Badge, Notice, Button, LinkButton, Input, Select, Option, List, ListItem, Form, IconButton } from '../components.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {
   const root = Page({});
-  root.appendChild(Heading(1, 'Repositories'));
-
-  const left = Card();
-  const right = Card();
-  root.appendChild(Split(left, right));
 
   // Index actions
   const updateButton = Button('Update index');
   const clearButton = Button('Clear index');
   const indexStatus = Hint();
-  const indexActions = Row(updateButton, clearButton);
+
+  root.appendChild(el('header', {},
+    Heading(1, 'Repositories'),
+    Row(updateButton, clearButton),
+  ));
+  root.appendChild(indexStatus);
 
   // Add repository form
-  const addToggle = Button('Add repository');
+  const addToggle = Button('+ New repository', { variant: 'primary', small: true });
   const nameInput = Input({ name: 'display_name', required: true, autocomplete: 'off' });
   const pathInput = Input({ name: 'path', required: true, autocomplete: 'off', placeholder: '/home/you/code/project' });
   const keyInput = Input({ name: 'internal_name', required: true, autocomplete: 'off', placeholder: 'project' });
@@ -39,18 +39,20 @@ export function mount(route: Route, _options: MountOptions = {}) {
   const keyField = labeledField('Key', keyInput, { hint: 'Letters, numbers, hyphens and underscores only.' });
   const typeField = labeledField('Type', typeSelect);
   const securityField = labeledField('Security', securitySelect, { hint: 'Highest permissions the repository allows.' });
-  const addForm = Form({ novalidate: true, hidden: true }, nameField.wrapper, FieldGroup(pathField.wrapper, Row(browseButton)), keyField.wrapper, Grid({ columns: 2 }, typeField.wrapper, securityField.wrapper), browsePanel, formError, Row(addSave, addCancel));
+  const addForm = Form({ novalidate: true, hidden: true, class: 'inset' },
+    el('header', {}, Heading(3, 'New repository')),
+    Grid({ columns: 2 }, nameField.wrapper, keyField.wrapper),
+    FieldGroup(pathField.wrapper, Row(browseButton)),
+    Grid({ columns: 2 }, typeField.wrapper, securityField.wrapper),
+    browsePanel,
+    formError,
+    Row(addSave, addCancel),
+  );
 
   const repoList = el('div', {});
-  left.appendChild(CardHeader('Index'));
-  left.appendChild(indexActions);
-  left.appendChild(indexStatus);
-  left.appendChild(CardHeader('Repositories', addToggle));
-  left.appendChild(addForm);
-  left.appendChild(repoList);
-
-  const detailContainer = Stack();
-  right.appendChild(detailContainer);
+  const listHeader = el('header', {}, Row(Heading(2, 'Repositories'), addToggle));
+  const listCard = Card(listHeader, addForm, repoList);
+  root.appendChild(listCard);
 
   interface ScreenState {
     repositories: RepositoryConfig[];
@@ -96,8 +98,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
   }
 
   addToggle.addEventListener('click', () => {
-    if (addForm.hidden) openAddForm();
-    else closeAddForm();
+    openAddForm();
+    nameInput.focus();
   });
   addCancel.addEventListener('click', () => {
     closeAddForm();
@@ -269,6 +271,26 @@ export function mount(route: Route, _options: MountOptions = {}) {
     }
   });
 
+  function repositoryRow(repo: RepositoryConfig): HTMLLIElement {
+    const selected = repo.internal_name === state.selectedKey;
+    const open = () => navigate(selected
+      ? '#/repositories'
+      : `#/repositories/${encodeKey(repo.internal_name)}`);
+    const main = el('button', { type: 'button', class: 'collection-row-main', onClick: open },
+      el('span', { class: 'collection-row-title' }, repo.display_name || repo.internal_name),
+      el('span', { class: 'collection-row-meta' },
+        Badge(repo.repo_type),
+        Badge(policyLabel(repo.security_policy), { accent: true }),
+      ),
+      el('span', { class: 'collection-row-path truncate' }, repo.path),
+    );
+    const deleteButton = IconButton('×', { title: 'Delete repository' });
+    deleteButton.addEventListener('click', () => deleteRepository(repo));
+    const row = ListItem(main, deleteButton);
+    row.dataset.selected = selected ? 'true' : 'false';
+    return row;
+  }
+
   function renderRepoList(mode: 'ready' | 'loading' | 'error' = 'ready', message = ''): void {
     clear(repoList);
     if (mode === 'loading') {
@@ -283,22 +305,28 @@ export function mount(route: Route, _options: MountOptions = {}) {
       repoList.appendChild(emptyState(
         'No repositories',
         'Add a folder to make its files available for search.',
-        Button('Add repository', { variant: 'primary', small: true, onClick: openAddForm }),
       ));
       return;
     }
     const list = List();
     for (const repo of state.repositories) {
-      const deleteButton = IconButton('×', { title: 'Delete repository' });
-      deleteButton.addEventListener('click', () => deleteRepository(repo));
-      const item = ListItem(el('div', { class: 'list-item-main' },
-          el('a', { href: `#/repositories/${encodeKey(repo.internal_name)}` },
-            repo.display_name || repo.internal_name),
-          Row(Badge(repo.repo_type), Badge(policyLabel(repo.security_policy), { accent: true })),
-        ), deleteButton);
-      list.appendChild(item);
+      list.appendChild(repositoryRow(repo));
+      if (repo.internal_name === state.selectedKey) {
+        const detail = el('li', { class: 'list-detail' });
+        const panel = el('div', { class: 'inset stack' });
+        detail.appendChild(panel);
+        list.appendChild(detail);
+        renderDetails(repo, panel);
+      }
     }
     repoList.appendChild(list);
+    if (state.selectedKey && !state.repositories.some((repo) => repo.internal_name === state.selectedKey)) {
+      repoList.appendChild(emptyState(
+        'Repository not found',
+        `There is no repository with the key “${state.selectedKey}”.`,
+        LinkButton('Back to repositories', '#/repositories', { small: true }),
+      ));
+    }
   }
 
   async function deleteRepository(repo: RepositoryConfig): Promise<void> {
@@ -328,70 +356,31 @@ export function mount(route: Route, _options: MountOptions = {}) {
       if (destroyed) return;
       state.repositories = Array.isArray(data.repositories) ? data.repositories : [];
       renderRepoList();
-      if (state.repositories.length === 0) {
-        openAddForm();
-        renderDetailPlaceholder();
-      } else {
-        renderSelectedDetail();
-      }
+      if (state.repositories.length === 0) openAddForm();
     } catch (error) {
       if (destroyed) return;
       renderRepoList('error', messageOf(error));
-      clear(detailContainer);
-      detailContainer.appendChild(errorState(messageOf(error) || 'Could not load repositories.', loadRepositories));
     }
   }
 
-  function renderDetailPlaceholder(): void {
-    clear(detailContainer);
-    if (state.repositories.length === 0) {
-      detailContainer.appendChild(emptyState(
-        'No repository selected',
-        'Add a folder on the left to begin.',
-      ));
-    } else {
-      detailContainer.appendChild(emptyState(
-        'Select a repository',
-        'Choose a repository on the left to see its files and search its contents.',
-      ));
-    }
-  }
-
-  function renderSelectedDetail(): void {
-    if (!state.selectedKey) {
-      renderDetailPlaceholder();
-      return;
-    }
-    const repo = state.repositories.find((item) => item.internal_name === state.selectedKey);
-    if (!repo) {
-      clear(detailContainer);
-      detailContainer.appendChild(emptyState(
-        'Repository not found',
-        `There is no repository with the key “${state.selectedKey}”.`,
-        LinkButton('Back to repositories', '#/repositories', { small: true }),
-      ));
-      return;
-    }
-    renderDetails(repo);
-  }
-
-  function renderDetails(repo: RepositoryConfig): void {
+  function renderDetails(repo: RepositoryConfig, container: HTMLElement): void {
     const token = ++state.detailToken;
-    clear(detailContainer);
+    clear(container);
 
-    detailContainer.appendChild(el('header', {},
+    container.appendChild(el('header', {},
       el('div', {},
         Heading(2, repo.display_name || repo.internal_name),
         Row(Badge(repo.internal_name, { accent: true }), Badge(repo.repo_type), Badge(policyLabel(repo.security_policy))),
       ),
+      IconButton('×', { title: 'Close repository', onClick: () => navigate('#/repositories') }),
     ));
-    detailContainer.appendChild(LineHint(el('code', {}, repo.path)));
+    container.appendChild(LineHint(el('code', {}, repo.path)));
 
     const searchInput = Input({ type: 'search', placeholder: 'Describe what you are looking for…' });
     const searchField = labeledField('Semantic search', searchInput);
     const searchButton = Button('Search', { variant: 'primary', submit: true });
     const searchResults = el('div', {});
-    const searchForm = Form({}, searchField.wrapper, Row(searchButton));
+    const searchForm = Form({}, RowEnd(searchField.wrapper, searchButton));
     const searchSection = Stack(el('header', {}, Heading(3, 'Search')), searchForm, searchResults);
     searchResults.appendChild(emptyState(
       'Search this repository',
@@ -454,8 +443,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
     filesSection.appendChild(filesHeader);
     filesSection.appendChild(filterWrap);
     filesSection.appendChild(filesContainer);
-    detailContainer.appendChild(searchSection);
-    detailContainer.appendChild(filesSection);
+    container.appendChild(searchSection);
+    container.appendChild(filesSection);
 
     let allFiles: string[] = [];
     let fileCount: HTMLSpanElement | null = null;
@@ -509,12 +498,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
     loadFiles();
   }
 
-  if (state.selectedKey) {
-    clear(detailContainer);
-    detailContainer.appendChild(loadingState('Loading repository…'));
-  } else {
-    renderDetailPlaceholder();
-  }
   loadRepositories();
 
   return {

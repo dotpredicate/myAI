@@ -87,8 +87,8 @@ export function labeledField<T extends FieldControl>(
 
   const wrapper = el('div', { class: `field ${options.className || ''}`.trim() },
     el('label', { class: 'field-label', for: id }, labelText),
-    hintEl,
     control,
+    hintEl,
     errorEl,
   );
 
