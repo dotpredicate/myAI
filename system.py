@@ -8,9 +8,10 @@ from domain import ScopeSpec, SecurityPolicy, RepositoryConfig
 from repositories import get_repo_by_name
 
 
+import paths
+
 # Paths and configuration
 REPOSITORIES_VROOT = "/repositories"
-WORKSPACES_ROOT = Path(os.getenv('MYAI_WORKSPACES_DIR', os.path.expanduser('~/.myai/workspaces')))
 WORKSPACE_VROOT = "/workspace"
 MAX_OUTPUT_CHARS = 32 * 1024
 
@@ -23,13 +24,13 @@ def _truncate_output(text: str, label: str) -> str:
 
 
 def _workspace_dir_for(conversation_id: int) -> Path:
-    path = WORKSPACES_ROOT / str(conversation_id)
+    path = paths.WORKSPACES_ROOT / str(conversation_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def remove_workspace(conversation_id: int) -> None:
-    shutil.rmtree(WORKSPACES_ROOT / str(conversation_id), ignore_errors=True)
+    shutil.rmtree(paths.WORKSPACES_ROOT / str(conversation_id), ignore_errors=True)
 
 
 def is_safe_vpath(vpath: Path, expected_vroot: Path, allowed_scopes: Optional[List[ScopeSpec]] = None) -> tuple[bool, str]:

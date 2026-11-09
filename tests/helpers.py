@@ -1,16 +1,13 @@
 import asyncio
-import time
 import unittest
 import tempfile
-import atexit
 from pathlib import Path
 import httpx
 import logging
 from typing import AsyncIterator, Optional, Any, List, Tuple
 
-from testcontainers.postgres import PostgresContainer  # type: ignore
-
 import database
+import paths
 from inference.engine import (
     EmbeddingInput,
     EmbeddingProvider,
@@ -27,18 +24,6 @@ from inference.engine import (
 )
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-t0 = time.time()
-_container = PostgresContainer("pgvector/pgvector:pg16")
-_container.start()
-logging.info(f"[SETUP] Postgres container started in {time.time()-t0:.1f}s")
-
-t0 = time.time()
-_db_url = _container.get_connection_url(driver=None)
-database.DATABASE_URL = _db_url
-asyncio.run(database.init_database())
-logging.info(f"[SETUP] Database initialized in {time.time()-t0:.1f}s")
-atexit.register(_container.stop)
 
 
 class Yield:
@@ -133,27 +118,17 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
         from app import app
-        import database
         from inference.providers import reload_providers
         from inference.registry import registry, image_registry
-        import system
+
+        self._myai_dir = tempfile.TemporaryDirectory()
+        paths.use_dir(Path(self._myai_dir.name))
+        await database.init_database()
 
         image_registry._providers.clear()
-        async with database.mk_conn() as conn, conn.cursor() as cur:
-            await conn.set_autocommit(False)
-            await cur.execute(
-                "TRUNCATE agents, agent_repository_access, projects, "
-                "project_repository_access, conversations, messages, "
-                "repositories, documents, sd_cpp_image_models, "
-                "inference_providers RESTART IDENTITY CASCADE;"
-            )
-            await conn.commit()
-
         await reload_providers()
 
-        self._workspace_dir = tempfile.TemporaryDirectory()
         self._repo_dir = tempfile.TemporaryDirectory()
-        system.WORKSPACES_ROOT = Path(self._workspace_dir.name)
 
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -184,5 +159,5 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def asyncTearDown(self):
         await self.client.aclose()
-        self._workspace_dir.cleanup()
+        self._myai_dir.cleanup()
         self._repo_dir.cleanup()

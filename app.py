@@ -1,9 +1,7 @@
 import asyncio
-import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import psycopg
 from fastapi import BackgroundTasks, FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -11,29 +9,16 @@ from pydantic import BaseModel, Field
 from database import init_database
 from typing import Optional
 from conversation import router as conversations_router
-from domain import (
-    LLAMA_CPP_PROVIDER_KEY,
-    InferenceProviderConfig,
-    InferenceProviderInput,
-    InferenceProviderUpdate,
-)
 from scopes import UserScopeChoice, resolve_scopes
 from repositories import router as repositories_router
-from agents import provider_in_use, router as agents_router
+from agents import router as agents_router
 from projects import router as projects_router
 from images import router as images_router
 from inference.sd_cpp.router import router as sd_cpp_router
-from inference.providers import (
-    create_provider_config,
-    delete_provider_config,
-    get_provider_config,
-    list_provider_configs,
-    reload_providers,
-    update_provider_config,
-)
+from inference.providers import reload_providers, router as providers_router
 from log_config import get_logger, setup_logging
 from search import synchronize, semantic_search, clear_index
-from inference import managed_processes, registry
+from inference import managed_processes
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.llama_cpp import benchmark
 from inference.llama_cpp.gguf import list_cached_models
@@ -54,115 +39,6 @@ app = FastAPI(title="MyAI FastAPI", lifespan=lifespan)
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend" / "public"
 
 
-class CreateProviderRequest(InferenceProviderInput):
-    key: str
-
-
-def _provider_response(config: InferenceProviderConfig) -> dict[str, object]:
-    return {
-        'key': config.key,
-        'display_name': config.display_name,
-        'description': config.description,
-        'base_url': config.base_url,
-        'has_api_key': config.has_api_key,
-        'models': config.models,
-        'timeout_seconds': config.timeout_seconds,
-        'extra_body': config.extra_body,
-        'include_reasoning_content': config.include_reasoning_content,
-    }
-
-
-@app.get('/api/providers')
-async def get_providers():
-    configs = {config.key: config for config in await list_provider_configs()}
-    providers = []
-    for registration in registry.list_registrations():
-        config = configs.get(registration.key)
-        providers.append({
-            "key": registration.key,
-            "display_name": config.display_name if config else registration.display_name,
-            "description": config.description if config else registration.description,
-            "kind": "openai_compatible" if config else "builtin",
-            "has_api_key": config.has_api_key if config else False,
-        })
-    return JSONResponse(content={"providers": providers})
-
-
-@app.get('/api/providers/{provider_key}')
-async def get_provider(provider_key: str):
-    config = await get_provider_config(provider_key)
-    if config is None:
-        return JSONResponse(status_code=404, content={'error': 'provider not found'})
-    return JSONResponse(content=_provider_response(config))
-
-
-@app.post('/api/providers')
-async def create_provider(payload: CreateProviderRequest):
-    key = payload.key.strip()
-    if not re.fullmatch(r'[a-zA-Z0-9._-]+', key):
-        return JSONResponse(status_code=400, content={'error': 'key must contain only letters, numbers, dots, hyphens and underscores'})
-    if key == LLAMA_CPP_PROVIDER_KEY or any(r.key == key for r in registry.list_registrations()):
-        return JSONResponse(status_code=409, content={'error': f"provider '{key}' already exists"})
-
-    config = InferenceProviderConfig(key=key, **payload.model_dump(exclude={'key'}))
-    try:
-        await create_provider_config(config)
-    except psycopg.errors.UniqueViolation:
-        return JSONResponse(status_code=409, content={'error': f"provider '{key}' already exists"})
-    await reload_providers()
-    return JSONResponse(content=_provider_response(config), status_code=201)
-
-
-@app.patch('/api/providers/{provider_key}')
-async def update_provider(provider_key: str, payload: InferenceProviderUpdate):
-    existing = await get_provider_config(provider_key)
-    if existing is None:
-        return JSONResponse(status_code=404, content={'error': 'provider not found'})
-    if not payload.model_fields_set:
-        return JSONResponse(content=_provider_response(existing))
-
-    await update_provider_config(provider_key, payload)
-    await reload_providers()
-    result = await get_provider_config(provider_key)
-    if result is None:
-        return JSONResponse(status_code=404, content={'error': 'provider not found'})
-    return JSONResponse(content=_provider_response(result))
-
-
-@app.delete('/api/providers/{provider_key}')
-async def delete_provider(provider_key: str):
-    existing = await get_provider_config(provider_key)
-    if existing is None:
-        return JSONResponse(status_code=404, content={'error': 'provider not found'})
-    if await provider_in_use(provider_key):
-        return JSONResponse(status_code=409, content={'error': 'provider is used by one or more agents or projects'})
-    await delete_provider_config(provider_key)
-    await reload_providers()
-    return JSONResponse(content={'status': 'deleted', 'key': provider_key})
-
-
-@app.get('/api/providers/{provider_key}/models')
-async def get_models(provider_key: str):
-    try:
-        provider = registry.get(provider_key)
-        models = await provider.list_models()
-    except KeyError:
-        return JSONResponse(status_code=404, content={"error": f"Provider '{provider_key}' not found"})
-    except Exception as e:
-        logger.error("Error fetching models for provider '%s': %s", provider_key, e)
-        models = []
-    return JSONResponse(content={"models": [{'id': m.id, 'name': m.id} for m in models]})
-
-
-@app.get('/api/providers/{provider_key}/inference-params')
-async def get_inference_params(provider_key: str):
-    try:
-        provider = registry.get(provider_key)
-        return provider.get_inference_params()
-    except KeyError:
-        return JSONResponse(status_code=404, content={"error": f"Provider '{provider_key}' not found"})
-
-
 @app.get('/api/cached-models')
 async def get_cached_models():
     try:
@@ -173,6 +49,7 @@ async def get_cached_models():
         return JSONResponse(content={"models": []})
 
 
+app.include_router(providers_router)
 app.include_router(repositories_router)
 app.include_router(agents_router)
 app.include_router(projects_router)

@@ -1,6 +1,8 @@
 import os
 import unittest
 from pathlib import Path
+
+import paths
 from tests.helpers import BaseTestCase
 from system import (
     MAX_OUTPUT_CHARS,
@@ -16,7 +18,7 @@ from domain import ScopeSpec, SecurityPolicy
 class TestSystem(BaseTestCase):
     @property
     def workspace_dir(self) -> Path:
-        path = Path(self._workspace_dir.name) / "1"
+        path = paths.WORKSPACES_ROOT / "1"
         path.mkdir(parents=True, exist_ok=True)
         return path
 

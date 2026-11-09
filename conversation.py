@@ -2,7 +2,6 @@ from typing import AsyncGenerator, Literal, Optional, Any, Union, cast
 import asyncio
 import json
 from pydantic import BaseModel
-from psycopg import AsyncConnection
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 
@@ -35,7 +34,7 @@ from tools import FunctionDefinition, Tool, ToolContext, run_tool_call, TOOL_REG
 import system
 
 from log_config import get_logger
-from database import mk_conn
+from database import AsyncConnection, mk_conn
 from agents import get_agent_by_name
 from projects import get_project_by_name, resolve_project_id
 from scopes import UserScopeChoice, resolve_scopes, scopes_for_agent
@@ -312,19 +311,20 @@ async def get_latest_sequence_id(conn: AsyncConnection, conv_id: int) -> Optiona
 
 async def _allocate_next_sequence_id(conn: AsyncConnection, conv_id: int) -> int:
     async with conn.cursor() as cur:
-        await cur.execute("SELECT id FROM conversations WHERE id = %s FOR UPDATE", (conv_id,))
+        await cur.execute("SELECT id FROM conversations WHERE id = %s", (conv_id,))
         if not await cur.fetchone():
             raise ValueError('conversation not found')
     latest = await get_latest_sequence_id(conn, conv_id)
     return 1 if latest is None else latest + 1
 
 async def insert_message(conn: AsyncConnection, conv_id: int, role: str, element: ConversationElement) -> StoredMessageRecord:
+    await conn.begin_immediate()
     sequence_id = await _allocate_next_sequence_id(conn, conv_id)
     async with conn.cursor() as cur:
         await cur.execute(
             """
             INSERT INTO messages (conversation_id, sequence_id, role, elements, created_at)
-            VALUES (%s, %s, %s, %s, NOW())
+            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
             RETURNING id, created_at
             """,
             (conv_id, sequence_id, role, json.dumps(element.model_dump()))
@@ -769,6 +769,7 @@ async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optio
 async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> Optional[str]:
     """Returns the execution result on approve, None on reject."""
     async with mk_conn() as conn:
+        await conn.begin_immediate()
         async with conn.cursor() as cur:
             await cur.execute(
                 'SELECT messages.elements, conversations.blocking_message_id '

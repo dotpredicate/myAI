@@ -152,7 +152,6 @@ async def create_agent(payload: CreateAgentRequest) -> AgentConfig:
     await validate_repository_access(repository_access)
 
     async with database.mk_conn() as conn, conn.cursor() as cur:
-        await conn.set_autocommit(False)
         await cur.execute(
             "INSERT INTO agents (display_name, internal_name, description, instructions, provider_key, model_id, inference_config, spawnable_agents) VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
             (display_name, internal_name, description, instructions, provider_key, model_id, json.dumps(inference_config), json.dumps(spawnable_agents)),
@@ -207,7 +206,6 @@ async def update_agent(name: str, payload: UpdateAgentRequest) -> AgentConfig:
     await validate_repository_access(repository_access)
 
     async with database.mk_conn() as conn, conn.cursor() as cur:
-        await conn.set_autocommit(False)
         await cur.execute(
             "UPDATE agents SET display_name = %s, description = %s, instructions = %s, provider_key = %s, model_id = %s, inference_config = %s, spawnable_agents = %s WHERE id = %s",
             (display_name, description, instructions, provider_key, model_id, json.dumps(inference_config), json.dumps(spawnable_agents), existing.id),

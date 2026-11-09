@@ -1,2 +1,0 @@
-TRUNCATE TABLE conversations CASCADE;
-ALTER TABLE conversations ADD COLUMN title TEXT NOT NULL;

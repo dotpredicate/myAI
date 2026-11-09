@@ -1,9 +1,11 @@
 import asyncio
 import hashlib
 from dataclasses import dataclass, field
-from itertools import islice
+from itertools import batched
 from pathlib import Path
 from typing import NamedTuple, Optional
+
+from sqlite_vec import serialize_float32  # type: ignore[import-untyped]
 
 import database
 from . import documents
@@ -108,6 +110,8 @@ async def semantic_search(
     """
     if not scopes:
         return []
+    if top_k <= 0:
+        return []
 
     names = list(dict.fromkeys(
         name for name in (normalize_scope_name(scope) for scope in scopes) if name
@@ -119,18 +123,19 @@ async def semantic_search(
     embed_results = await active_provider.embed(EMBEDDING_MODEL, query)
     query_vec = embed_results[0]
 
-    base_query = """
+    placeholders = ", ".join("?" for _ in names)
+    base_query = f"""
         SELECT dc.document_id, d.file_path, dc.chunk_index, dc.chunk_text,
-               dc.embedding <=> %s::vector AS cosine_distance
+               vec_distance_cosine(dc.embedding, ?) AS cosine_distance
         FROM document_chunks dc
         JOIN documents d ON d.id = dc.document_id
         JOIN repositories r ON r.id = d.repository_id
-        WHERE r.internal_name = ANY(%s)
-        ORDER BY cosine_distance ASC LIMIT %s
+        WHERE r.internal_name IN ({placeholders})
+        ORDER BY cosine_distance ASC LIMIT ?
     """
 
     async with database.mk_conn() as conn, conn.cursor() as cur:
-        await cur.execute(base_query, (query_vec, names, top_k))
+        await cur.execute(base_query, (serialize_float32(query_vec), *names, top_k))
         rows = await cur.fetchall()
         results = []
         for row in rows:
@@ -139,18 +144,12 @@ async def semantic_search(
         return results
 
 
-def _batched(iterable, n: int):
-    """Yield successive n-sized chunks from an iterable."""
-    iterator = iter(iterable)
-    while batch := list(islice(iterator, n)):
-        yield batch
-
-
 async def _index_file(
     repo: RepositoryConfig,
     relative_path: str,
     full_path: Path,
     provider: EmbeddingProvider,
+    conn: database.AsyncConnection,
 ) -> Optional[IndexedFile]:
     """Read, hash and tokenize a single file. Returns None if unchanged or unreadable."""
     try:
@@ -162,8 +161,7 @@ async def _index_file(
 
     file_hash = hashlib.sha256(file_bytes).hexdigest()
     indexed_path = f"{repo.internal_name}/{relative_path}"
-    async with database.mk_conn() as conn:
-        existing = await documents.get_document_by_path(conn, indexed_path)
+    existing = await documents.get_document_by_path(conn, indexed_path)
     if existing and existing[1] == file_hash:
         logger.debug("%s - unchanged checksum %s", relative_path, file_hash)
         return None
@@ -187,8 +185,14 @@ async def _process_file_batch(
 ) -> None:
     """Tokenize a batch of files in parallel, batch-embed all chunks, then bulk-upsert to DB."""
     # Step 1: parallel tokenization
-    tasks = [_index_file(repo, rel, full, provider) for rel, full in files]
-    indexed_files: list[IndexedFile] = [r for r in await asyncio.gather(*tasks) if r is not None]
+    async with database.mk_conn() as read_conn:
+        tasks = [
+            _index_file(repo, rel, full, provider, read_conn)
+            for rel, full in files
+        ]
+        indexed_files: list[IndexedFile] = [
+            r for r in await asyncio.gather(*tasks) if r is not None
+        ]
 
     if not indexed_files:
         logger.debug("No changed files in this batch")
@@ -209,8 +213,8 @@ async def _process_file_batch(
 
     # Step 3: embed in sub-batches
     all_embeddings: list[list[float]] = []
-    for sub_batch in _batched(all_token_ids, EMBED_BATCH_SIZE):
-        sub_embeddings = await provider.embed(EMBEDDING_MODEL, sub_batch)
+    for sub_batch in batched(all_token_ids, EMBED_BATCH_SIZE):
+        sub_embeddings = await provider.embed(EMBEDDING_MODEL, list(sub_batch))
         all_embeddings.extend(sub_embeddings)
 
     assert len(all_embeddings) == len(all_chunk_texts)
@@ -221,7 +225,7 @@ async def _process_file_batch(
         doc_ids = await documents.batch_upsert_documents(conn, doc_tuples)
 
         embed_offset = 0
-        all_db_chunks: list[tuple[int, int, str, list[float]]] = []
+        all_db_chunks: list[tuple[int, int, str, bytes]] = []
         for idx, f in enumerate(indexed_files):
             doc_id = doc_ids[idx]
             n_chunks = file_chunk_counts[idx]
@@ -230,11 +234,11 @@ async def _process_file_batch(
                     doc_id,
                     ci,
                     f.chunk_texts[ci],
-                    all_embeddings[embed_offset + ci],
+                    serialize_float32(all_embeddings[embed_offset + ci]),
                 ))
             embed_offset += n_chunks
 
-        await documents.batch_replace_document_chunks(conn, all_db_chunks)
+        await documents.batch_replace_document_chunks(conn, doc_ids, all_db_chunks)
         await conn.commit()
 
     logger.info("%s - %s files indexed (%s chunks, %s embeddings)", repo_name, len(indexed_files), total_plans, len(all_embeddings))
@@ -245,7 +249,7 @@ async def clear_index() -> None:
     global _sync_pending
     async with _sync_lock:
         async with database.mk_conn() as conn, conn.cursor() as cur:
-            await cur.execute("TRUNCATE TABLE documents RESTART IDENTITY CASCADE")
+            await cur.execute("DELETE FROM documents")
             await conn.commit()
         pending = _sync_pending
         _sync_pending = False
@@ -283,10 +287,10 @@ async def _sync_repositories(provider: EmbeddingProvider) -> None:
         total_files = len(repo_docs)
         logger.info("Processing repository %s (%s files)", repo.internal_name, total_files)
 
-        for batch_idx, file_batch in enumerate(_batched(repo_docs, FILE_BATCH_SIZE)):
+        for batch_idx, file_batch in enumerate(batched(repo_docs, FILE_BATCH_SIZE)):
             logger.info("Repository %s - batch %s (%s files)", repo.internal_name, batch_idx, len(file_batch))
             try:
-                await _process_file_batch(repo, file_batch, provider)
+                await _process_file_batch(repo, list(file_batch), provider)
             except Exception:
                 logger.exception("Repository %s - batch %s failed", repo.internal_name, batch_idx)
 

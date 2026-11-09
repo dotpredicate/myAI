@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-import system
+import paths
 from tests.helpers import BaseTestCase, Wait, Yield
 from inference.engine import FinishedMessage, FinishedThinking, FinishedToolCall, StreamingMessage
 
@@ -426,7 +426,7 @@ class TestConversations(BaseTestCase):
         }))
         await asyncio.sleep(0.1)
         conversation_id = (await self.client.get("/api/conversations")).json()[0]["id"]
-        workspace = system.WORKSPACES_ROOT / str(conversation_id)
+        workspace = paths.WORKSPACES_ROOT / str(conversation_id)
         workspace.mkdir(parents=True, exist_ok=True)
 
         cancel_res = await self.client.post(f"/api/conversations/{conversation_id}/cancel")
@@ -624,7 +624,7 @@ class TestConversations(BaseTestCase):
 
     async def test_delete_conversation_removes_workspace(self):
         conversation_id, _ = await self._setup_blocking_conversation()
-        workspace = system.WORKSPACES_ROOT / str(conversation_id)
+        workspace = paths.WORKSPACES_ROOT / str(conversation_id)
         self.assertTrue(workspace.exists())
 
         res = await self.client.delete(f"/api/conversations/{conversation_id}")

@@ -2,5 +2,6 @@ __pycache__
 .mypy_cache
 repositories
 workspace
+.myai
 gguf-parser-linux-amd64
 .env

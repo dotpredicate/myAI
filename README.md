@@ -11,7 +11,7 @@ myAI
 
 ### Guidelines
 - Keep it simple
-- Just use postgres
+- Just use SQLite
 - Move fast and break things
 
 ## Technical info
@@ -25,7 +25,8 @@ Project structure:
 - `./agents.py` - agent configuration and repository access
 - `./projects.py` - project configuration and conversation presets
 - `./search/` - indexing and vector search
-- `./database.py` - database connection and utility functions
+- `./database.py` - SQLite connection and utility functions
+- `./paths.py` - `MYAI_HOME`, database and workspace paths
 - `./system.py` - system-level utilities (workspaces, sandbox)
 - `./tools.py` - tool execution logic
 - `./log_config.py` - logging configuration
@@ -62,7 +63,16 @@ Server runs at http://127.0.0.1:8000
 
 
 ### Migrations
-At startup, the module scans the `migrations` folder for SQL files, sorts them in lexicographic order, executes those that have not yet been applied and records the execution in the `migrations` table
+At startup, the module scans `migrations` for SQL files, sorts them in lexicographic order, executes those that have not yet been applied and records the execution in the `migrations` table.
+
+### Data location
+`MYAI_HOME` defaults to `~/.myai`; relative `.env` paths resolve from the repo root.
+
+```text
+$MYAI_HOME/
+├── db.sqlite
+└── workspaces/
+```
 
 ### Code style
 - Use explicit Python typing

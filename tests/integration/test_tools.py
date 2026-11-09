@@ -1,6 +1,8 @@
 import json
 import unittest
 from pathlib import Path
+
+import paths
 from tests.helpers import BaseTestCase
 from domain import AgentConfig, ScopeSpec, SecurityPolicy
 from tools import (
@@ -18,7 +20,7 @@ class TestTools(BaseTestCase):
 
     @property
     def workspace_dir(self) -> Path:
-        path = Path(self._workspace_dir.name) / str(self.conversation_id)
+        path = paths.WORKSPACES_ROOT / str(self.conversation_id)
         path.mkdir(parents=True, exist_ok=True)
         return path
 

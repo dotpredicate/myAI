@@ -1,6 +1,5 @@
+import sqlite3
 import unittest
-
-import psycopg.errors
 
 from inference.sd_cpp import image_models
 from tests.helpers import BaseTestCase
@@ -35,7 +34,7 @@ class TestImageModelStore(BaseTestCase):
     async def test_name_is_unique(self):
         await image_models.create_image_model("same", "qwen-image-21", {})
 
-        with self.assertRaises(psycopg.errors.UniqueViolation):
+        with self.assertRaises(sqlite3.IntegrityError):
             await image_models.create_image_model("same", "flux", {})
 
 

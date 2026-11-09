@@ -1,8 +1,7 @@
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
-
-from psycopg.types.json import Jsonb
 
 import database
 
@@ -78,7 +77,7 @@ async def create_image_model(name: str, recipe: str, files: dict[str, str]) -> S
             VALUES (%s, %s, %s)
             RETURNING id, name, recipe, files, created_at
             """,
-            (name, recipe, Jsonb(files)),
+            (name, recipe, json.dumps(files)),
         )
         row = await cur.fetchone()
         await conn.commit()

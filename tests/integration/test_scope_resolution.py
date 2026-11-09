@@ -28,7 +28,7 @@ def _agent(policy: SecurityPolicy | None) -> AgentConfig:
 class TestScopeResolution(BaseTestCase):
     async def test_empty_request_scopes_expand_to_all_agent_repositories(self):
         first = await self._helper_create_repo("first_repo", self._repo_dir.name, security="read-only")
-        second_dir = Path(self._workspace_dir.name) / "second_repo"
+        second_dir = Path(self._myai_dir.name) / "second_repo"
         second_dir.mkdir()
         second = await self._helper_create_repo("second_repo", str(second_dir), security="read-only")
         self.assertEqual(first.status_code, 201)

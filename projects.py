@@ -2,8 +2,6 @@ import json
 import re
 from typing import Any, Optional
 
-import psycopg
-from psycopg import AsyncCursor
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -52,7 +50,7 @@ def _access_from_row(row: tuple[Any, ...]) -> ProjectRepositoryAccess:
 
 
 async def _fetch_repository_access(
-    cur: AsyncCursor[Any],
+    cur: Any,
     project_id: int,
 ) -> list[ProjectRepositoryAccess]:
     await cur.execute(
@@ -95,7 +93,7 @@ async def _validate_default_agent(agent_id: Optional[int]) -> None:
 
 
 async def _replace_repository_access(
-    cur: AsyncCursor[Any],
+    cur: Any,
     project_id: int,
     entries: list[RepositoryAccessEntry],
 ) -> None:
@@ -197,7 +195,6 @@ async def create_project(payload: CreateProjectRequest) -> ProjectConfig:
     await validate_repository_access(payload.repository_access)
 
     async with database.mk_conn() as conn, conn.cursor() as cur:
-        await conn.set_autocommit(False)
         await cur.execute(
             """
             INSERT INTO projects
@@ -275,7 +272,6 @@ async def update_project(name: str, payload: UpdateProjectRequest) -> ProjectCon
         ]
 
     async with database.mk_conn() as conn, conn.cursor() as cur:
-        await conn.set_autocommit(False)
         await cur.execute(
             """
             UPDATE projects
@@ -321,16 +317,17 @@ async def list_projects():
 
 @router.post('/api/projects')
 async def create_project_endpoint(payload: CreateProjectRequest):
+    internal_name = payload.internal_name.strip()
+    if internal_name and await resolve_project_id(internal_name) is not None:
+        return JSONResponse(
+            status_code=409,
+            content={'error': f"project with internal_name '{internal_name}' already exists"},
+        )
     try:
         project = await create_project(payload)
         return JSONResponse(content=project.model_dump(), status_code=201)
     except ValueError as e:
         return JSONResponse(status_code=400, content={'error': str(e)})
-    except psycopg.errors.UniqueViolation:
-        return JSONResponse(
-            status_code=409,
-            content={'error': f"project with internal_name '{payload.internal_name}' already exists"},
-        )
 
 
 @router.put('/api/projects/{name}')

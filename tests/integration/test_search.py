@@ -48,7 +48,7 @@ class TestSearch(BaseTestCase):
 
     async def _make_two_repos(self):
         first_repo_dir = Path(self._repo_dir.name)
-        second_repo_dir = Path(self._workspace_dir.name) / "second_repo"
+        second_repo_dir = Path(self._myai_dir.name) / "second_repo"
         second_repo_dir.mkdir()
         (first_repo_dir / "notes.txt").write_text(
             "content unique to first repository", encoding="utf-8"
@@ -183,8 +183,8 @@ class TestSearch(BaseTestCase):
         path_prefix = prefix + "/"
         async with database.mk_conn() as conn, conn.cursor() as cur:
             await cur.execute(
-                "SELECT count(*) FROM documents WHERE left(file_path, char_length(%s)) = %s",
-                (path_prefix, path_prefix),
+                "SELECT count(*) FROM documents WHERE substr(file_path, 1, ?) = ?",
+                (len(path_prefix), path_prefix),
             )
             return (await cur.fetchone())[0]
 
@@ -373,6 +373,35 @@ class TestSearch(BaseTestCase):
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.json(), {"status": "accepted"})
 
+    async def test_synchronize_removes_chunks_when_file_becomes_empty(self):
+        repo_dir = Path(self._repo_dir.name)
+        notes = repo_dir / "notes.txt"
+        notes.write_text("some content", encoding="utf-8")
+        response = await self._helper_create_repo("empty_file_repo", str(repo_dir))
+        self.assertEqual(response.status_code, 201)
+
+        await search.synchronize(provider=self.embedding_provider)
+        self.assertEqual(await self._document_count("empty_file_repo"), 1)
+
+        notes.write_text("", encoding="utf-8")
+        await search.synchronize(provider=self.embedding_provider)
+
+        self.assertEqual(await self._document_count("empty_file_repo"), 1)
+        async with database.mk_conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT count(*) FROM document_chunks "
+                "WHERE document_id IN (SELECT id FROM documents WHERE repository_id = "
+                "(SELECT id FROM repositories WHERE internal_name = 'empty_file_repo'))"
+            )
+            self.assertEqual((await cur.fetchone())[0], 0)
+
+        self.assertEqual(
+            await search.semantic_search(
+                "some content", 10, scopes=["empty_file_repo"], provider=self.embedding_provider
+            ),
+            [],
+        )
+
     async def test_synchronize_runs_again_when_a_sync_was_queued(self):
         calls: list[int] = []
         original = search._sync_repositories
@@ -394,7 +423,8 @@ class TestSearch(BaseTestCase):
         repo = await self._helper_create_repo("clear_repo", self._repo_dir.name)
         self.assertEqual(repo.status_code, 201)
         repo_id = repo.json()["id"]
-        embedding = "[" + ",".join(["0"] * 768) + "]"
+        from sqlite_vec import serialize_float32  # type: ignore[import-untyped]
+        embedding = serialize_float32([0.0] * 768)
         async with database.mk_conn() as conn, conn.cursor() as cur:
             await cur.execute(
                 "INSERT INTO documents (repository_id, file_path, file_hash, content) "
@@ -406,7 +436,7 @@ class TestSearch(BaseTestCase):
             await cur.execute(
                 "INSERT INTO document_chunks "
                 "(document_id, chunk_index, chunk_text, embedding) "
-                "VALUES (%s, %s, %s, %s::vector)",
+                "VALUES (%s, %s, %s, %s)",
                 (row[0], 0, "indexed text", embedding),
             )
             await conn.commit()
