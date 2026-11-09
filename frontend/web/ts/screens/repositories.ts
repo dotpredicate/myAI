@@ -1,6 +1,6 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, slugifyKey, plural, policyLabel, POLICIES, validateKey, validateRequired, reportFieldErrors, compactError, messageOf, type FieldControl, type MountOptions, type Route } from '../ui.js';
-import { api } from '../api.js';
-import type { BrowseEntry, BrowseResult, DeleteResponse, RepositoryConfig, RepositoryFiles, RepositoryList, SearchResponse, SyncResponse } from '../api.js';
+import { api } from '../core/api.js';
+import type { BrowseEntry, BrowseResult, DeleteResponse, RepositoryConfig, RepositoryFiles, RepositoryList, SearchResponse, SyncResponse } from '../core/api.js';
 import { Row, RowEnd, Stack, Grid, Page, Heading, Card, Hint, InlineHint, LineHint, FieldGroup, Badge, Notice, Button, LinkButton, Input, Select, Option, List, ListItem, Form, IconButton } from '../components.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {

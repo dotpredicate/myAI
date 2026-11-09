@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
-    "rootDir": "public/ts",
-    "outDir": "public/js",
+    "rootDir": "ts",
+    "outDir": "js",
     "target": "es2022",
     "module": "esnext",
     "moduleResolution": "bundler",
@@ -15,6 +15,5 @@
     "inlineSources": false,
     "allowJs": false
   },
-  "include": ["public/ts/**/*.ts"],
-  "exclude": ["public/js"]
+  "include": ["ts/**/*.ts"]
 }

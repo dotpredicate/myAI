@@ -1,6 +1,6 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, formatBytes, formatGigabytes, formatIdle, formatNumber, formatPercent, compactError, messageOf, statusMessage as setStatus, type MountOptions, type Route } from '../ui.js';
-import { api } from '../api.js';
-import type { BenchmarkResult, CachedModelList, GpuBenchmark, GpuStats, ManagedProcessList, ManagedServer, ModelInfo, ModelQuantInfo, ProviderCreateRequest, ProviderDetails, ProviderInfo, ProviderList, ProviderUpdateRequest, StopProcessResponse } from '../api.js';
+import { api } from '../core/api.js';
+import type { BenchmarkResult, CachedModelList, GpuBenchmark, GpuStats, ManagedProcessList, ManagedServer, ModelInfo, ModelQuantInfo, ProviderCreateRequest, ProviderDetails, ProviderInfo, ProviderList, ProviderUpdateRequest, StopProcessResponse } from '../core/api.js';
 import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldError, Badge, Button, LinkButton, Input, Form, Select, Option, Table, TableHead, TableRow, TableHeaderCell, TableCell } from '../components.js';
 
 const TABS: { key: string; label: string }[] = [

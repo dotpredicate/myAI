@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MyAI FastAPI", lifespan=lifespan)
 
-FRONTEND_DIR = Path(__file__).resolve().parent / "frontend" / "public"
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend" / "web"
 
 
 @app.get('/api/cached-models')

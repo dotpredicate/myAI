@@ -469,14 +469,12 @@ function property(source: unknown, key: string): unknown {
 
 export class ApiError extends Error {
   status: number;
-  body: unknown;
   blockingMessageId: number | null;
 
   constructor(message: string, status = 0, body: unknown = null) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
-    this.body = body;
     const blockingId = property(body, 'blocking_message_id');
     this.blockingMessageId = typeof blockingId === 'number' ? blockingId : null;
   }
@@ -575,7 +573,6 @@ async function* readNdjson<T>(response: Response): AsyncGenerator<T, void, unkno
 }
 
 export interface NdjsonStream<T> {
-  response: Response;
   conversationId: number | null;
   events: AsyncGenerator<T, void, unknown>;
 }
@@ -591,7 +588,6 @@ export async function openNdjson<T = unknown>(
   }
   const header = response.headers.get('X-Conversation-ID');
   return {
-    response,
     conversationId: header ? Number(header) : null,
     events: readNdjson<T>(response),
   };

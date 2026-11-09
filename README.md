@@ -33,7 +33,8 @@ Project structure:
 - `./inference/` - AI protocol handling (stateless), split into submodules
 - `./images.py` - image generation routes
 - `./migrations/` - folder with migration scripts
-- `./frontend/` - web front-end sources
+- `./frontend/` - front-end sources and scripts (one npm project)
+  - `./frontend/web/` - browser client, served by FastAPI; the HTTP transport and wire types shared with the terminal client live in `web/ts/core/api.ts`
 - `./build.sh` - build the front-end
 - `./dev.sh` - development entrypoint (live reload)
 - `./lint.sh` - lint and type-check
@@ -59,8 +60,7 @@ Project structure:
 Server runs at http://127.0.0.1:8000
 
 ### Front-end
-`frontend/public/` is served directly by FastAPI; `public/ts/` -> `tsc` -> `public/js/`. No bundler.
-
+`frontend/web/` is served directly by FastAPI; `frontend/web/ts/` -> `tsc` -> `frontend/web/js/`. No bundler, one `tsc` project.
 
 ### Migrations
 At startup, the module scans `migrations` for SQL files, sorts them in lexicographic order, executes those that have not yet been applied and records the execution in the `migrations` table.

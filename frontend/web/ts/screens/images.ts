@@ -1,6 +1,6 @@
 import { el, clear, emptyState, spinnerLabel, labeledField, notify, confirmAction, readValue, writeValue, readString, pickDefined, renderParamFields, statusMessage as setStatus, asError, asParamValueMap, asParamValues, messageOf, type MountOptions, type ParamValue, type Route } from '../ui.js';
-import { api } from '../api.js';
-import type { AddImageModelRequest, DeleteImageModelResponse, GenerateImageRequest, GenerateImageResponse, ImageFile, ImageFileList, ImageModel, ImageModelList, ImageRecipe, ImageRecipeList, InferenceParam, InferenceParamList } from '../api.js';
+import { api } from '../core/api.js';
+import type { AddImageModelRequest, DeleteImageModelResponse, GenerateImageRequest, GenerateImageResponse, ImageFile, ImageFileList, ImageModel, ImageModelList, ImageRecipe, ImageRecipeList, InferenceParam, InferenceParamList } from '../core/api.js';
 import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldGroup, FieldLabel, Notice, Button, LinkButton, Input, TextArea, Select, Option, Form } from '../components.js';
 
 function defaultsFor(params: InferenceParam[]): Record<string, ParamValue> {

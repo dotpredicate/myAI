@@ -1,5 +1,5 @@
 import { el, clear, labeledField, allowedPolicies, asPolicy, policyLabel, statusMessage as setStatus } from '../ui.js';
-import type { RepositoryConfig, SecurityPolicy } from '../api.js';
+import type { RepositoryConfig, SecurityPolicy } from '../core/api.js';
 import { RowEnd, Stack, Heading, Hint, InlineHint, LineHint, Button, Select, Option } from '../components.js';
 
 export interface RepositoryAccessEntry {

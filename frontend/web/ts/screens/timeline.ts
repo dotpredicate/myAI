@@ -1,6 +1,6 @@
 import { el, clear, prettyJson, parseJsonObject, createCopyButton, messageOf } from '../ui.js';
 import { default_renderer, parser, parser_end, parser_write } from '../../vendor/smd.js';
-import type { ConversationElement, StreamEvent, StoredMessageRecord } from '../api.js';
+import type { ConversationElement, StreamEvent, StoredMessageRecord } from '../core/api.js';
 import { Row, Stack, LineHint, FieldLabel, Notice, Button, TextArea, Summary } from '../components.js';
 
 type Role = 'user' | 'assistant';

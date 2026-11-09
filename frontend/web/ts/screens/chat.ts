@@ -1,6 +1,6 @@
 import { el, clear, errorState, spinnerLabel, labeledField, notify, readString, readValue, writeValue, conversationLabel, allowedPolicies, policyLabel, pickDefined, renderParamFields, statusMessage as setStatus, asError, asRecord, asParamValueMap, asPolicy, messageOf, type MountOptions, type ParamValue, type Route } from '../ui.js';
-import { ApiError, isAbort, api, openNdjson } from '../api.js';
-import type { AgentConfig, AgentList, ConversationDetails, GenerationRequest, InferenceParam, InferenceParamList, NdjsonStream, ProjectConfig, ProjectList, PromptRequest, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, RepositoryConfig, RepositoryList, SecurityPolicy, StreamEvent, ToolCallDecisionRequest, ToolCallDecisionResponse } from '../api.js';
+import { ApiError, isAbort, api, openNdjson } from '../core/api.js';
+import type { AgentConfig, AgentList, ConversationDetails, GenerationRequest, InferenceParam, InferenceParamList, NdjsonStream, ProjectConfig, ProjectList, PromptRequest, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, RepositoryConfig, RepositoryList, SecurityPolicy, StreamEvent, ToolCallDecisionRequest, ToolCallDecisionResponse } from '../core/api.js';
 import { Timeline, type ToolBlock } from './timeline.js';
 import { Row, RowEnd, Stack, Grid, Heading, Paragraph, Hint, InlineHint, FieldError, Notice, Button, TextArea, Select, Option, Spacer, Summary } from '../components.js';
 

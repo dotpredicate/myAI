@@ -3,7 +3,7 @@ import {
   initNotifications, parseRoute, onRoute, navigate, readString, writeValue,
   conversationLabel, messageOf, type MountOptions, type Route, type ScreenName,
 } from './ui.js';
-import { api, type ConversationSummary, type DeleteResponse } from './api.js';
+import { api, type ConversationSummary, type DeleteResponse } from './core/api.js';
 import { mount as mountChat } from './screens/chat.js';
 import { mount as mountImages } from './screens/images.js';
 import { mount as mountInference } from './screens/inference.js';
