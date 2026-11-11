@@ -1,6 +1,7 @@
 // API transport plus the wire types produced by the Python back-end.
-// Shapes mirror domain.py, agents.py, workspaces.py, conversation.py,
-// repositories.py, images.py, inference/ and system.py; keep them in sync.
+// Shapes mirror backend/domain.py, backend/agents.py, backend/workspaces.py,
+// backend/conversation.py, backend/repositories.py, backend/images.py,
+// backend/inference/ and backend/system.py; keep them in sync.
 
 export type ParamValue = string | number | boolean;
 

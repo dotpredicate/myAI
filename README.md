@@ -17,24 +17,25 @@ myAI
 ## Technical info
 
 Project structure:
-- `./app.py` - FastAPI routes and application entrypoint
+- `./backend/` - back-end Python package
+  - `./backend/app.py` - FastAPI routes and application entrypoint
+  - `./backend/conversation.py` - conversation state management and orchestration
+  - `./backend/domain.py` - conversation model
+  - `./backend/scopes.py` - repository scopes of a workspace, used by conversations
+  - `./backend/repositories.py` - repository registry and indexing input
+  - `./backend/agents.py` - agent configuration and optional model preference
+  - `./backend/workspaces.py` - workspace sources and path resolution
+  - `./backend/search/` - indexing and vector search
+  - `./backend/database.py` - SQLite connection and utility functions
+  - `./backend/paths.py` - `MYAI_HOME`, database, model space and sandbox paths
+  - `./backend/system.py` - model spaces, sandboxed shell and sandbox path checks
+  - `./backend/system_metrics.py` - host CPU, memory and GPU usage sampling
+  - `./backend/gpu_metrics.py` - ROCm GPU data shared by system and per-process metrics
+  - `./backend/tools.py` - tool execution logic
+  - `./backend/log_config.py` - logging configuration
+  - `./backend/inference/` - AI protocol handling (stateless), split into submodules
+  - `./backend/images.py` - image generation routes
 - `./myai-server` - server launcher
-- `./conversation.py` - conversation state management and orchestration
-- `./domain.py` - conversation model
-- `./scopes.py` - repository scopes of a workspace, used by conversations
-- `./repositories.py` - repository registry and indexing input
-- `./agents.py` - agent configuration and optional model preference
-- `./workspaces.py` - workspace sources and path resolution
-- `./search/` - indexing and vector search
-- `./database.py` - SQLite connection and utility functions
-- `./paths.py` - `MYAI_HOME`, database, model space and sandbox paths
-- `./system.py` - model spaces, sandboxed shell and sandbox path checks
-- `./system_metrics.py` - host CPU, memory and GPU usage sampling
-- `./gpu_metrics.py` - ROCm GPU data shared by system and per-process metrics
-- `./tools.py` - tool execution logic
-- `./log_config.py` - logging configuration
-- `./inference/` - AI protocol handling (stateless), split into submodules
-- `./images.py` - image generation routes
 - `./migrations/` - folder with migration scripts
 - `./frontend/` - front-end sources and scripts (one npm project)
   - `./frontend/web/` - browser client, served by FastAPI; the HTTP transport and wire types shared with the TUI live in `web/ts/core/api.ts` (TUI imports it as `#core/api`)
