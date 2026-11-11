@@ -56,6 +56,7 @@ class TestInference(BaseTestCase):
         async for delta, finished in provider.run_chat_completion_stream("test_model", {}, context):
             if finished is not None:
                 self.assertIsInstance(finished, FinishedMessage)
+                assert isinstance(finished, FinishedMessage)
                 self.assertEqual(finished.content, "hello world")
 
     async def test_mock_provider_list_models(self):

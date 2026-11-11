@@ -161,6 +161,7 @@ class TestSystem(BaseTestCase):
         vpath = Path("/repositories/my_repo/src/main.py")
         result = await get_repo_from_vpath(vpath)
         self.assertIsNotNone(result)
+        assert result is not None
         self.assertEqual(result.internal_name, "my_repo")
 
     async def test_get_repo_from_vpath_accepts_trailing_slash(self):
@@ -168,6 +169,7 @@ class TestSystem(BaseTestCase):
         self.assertEqual(repo.status_code, 201)
         result = await get_repo_from_vpath(Path("/repositories/my_repo/"))
         self.assertIsNotNone(result)
+        assert result is not None
         self.assertEqual(result.internal_name, "my_repo")
 
     async def test_get_repo_from_vpath_invalid(self):

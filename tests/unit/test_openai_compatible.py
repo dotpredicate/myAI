@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from domain import InferenceProviderConfig, Message, Thinking
-from inference.engine import ChatContext, FinishedMessage, FinishedThinking, FinishedToolCall
+from inference.engine import ChatContext, FinishedMessage, FinishedThinking, FinishedToolCall, StreamingMessage
 from inference.openai_chat import DeltaProcessor, OpenAICompatibleProvider, _to_oai_messages
 
 
@@ -162,7 +162,7 @@ class TestOpenAICompatibleProvider(unittest.IsolatedAsyncioTestCase):
             )
         ]
 
-        self.assertEqual([event[0].content for event in events if event[0] is not None], ["Hello", " world"])
+        self.assertEqual([event[0].content for event in events if isinstance(event[0], StreamingMessage)], ["Hello", " world"])
         self.assertEqual(events[-1][1], FinishedMessage(content="Hello world"))
         assert client.chat.completions.kwargs is not None
         kwargs = client.chat.completions.kwargs
@@ -269,4 +269,4 @@ class TestMessageConversion(unittest.TestCase):
         with_reasoning = _to_oai_messages(context, include_reasoning_content=True)
 
         self.assertNotIn("reasoning_content", without[1])
-        self.assertEqual(with_reasoning[1]["reasoning_content"], "internal reasoning")
+        self.assertEqual(cast(dict[str, Any], with_reasoning[1])["reasoning_content"], "internal reasoning")

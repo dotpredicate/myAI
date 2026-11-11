@@ -2,6 +2,7 @@ import json
 import subprocess
 import unittest
 from pathlib import Path
+from typing import Any, cast
 
 import database
 from domain import RepositoryConfig, ScopeSpec
@@ -28,9 +29,10 @@ class _DeletingEmbeddingProvider(DeterministicEmbeddingProvider):
 class TestSearchToolSchema(unittest.TestCase):
     def test_search_tool_uses_query_parameter(self):
         search_tool = next(tool for tool in TOOL_REGISTRY if tool["name"] == "search")
-        schema = search_tool["schema"]["parameters"]
-        self.assertIn("query", schema["properties"])
-        self.assertNotIn("prompt", schema["properties"])
+        schema = cast(dict[str, Any], search_tool["schema"]["parameters"])
+        properties = cast(dict[str, Any], schema["properties"])
+        self.assertIn("query", properties)
+        self.assertNotIn("prompt", properties)
         self.assertEqual(schema["required"], ["query"])
 
 
@@ -233,7 +235,7 @@ class TestSearch(BaseTestCase):
             [],
         )
 
-    async def test_synchronize_runs_again_when_a_sync_was_queued(self):
+    async def test_synchronize_runs_again_when_a_sync_was_queued(self) -> None:
         calls: list[int] = []
         original = search._sync_repositories
 

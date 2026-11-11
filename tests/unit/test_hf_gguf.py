@@ -1,4 +1,7 @@
 import unittest
+from typing import cast
+
+from huggingface_hub import HfApi
 
 from inference.llama_cpp.gguf import (
     SplitInfo,
@@ -16,9 +19,13 @@ class FakeApi:
         return self._files
 
 
+def fake_api(files: list[str]) -> HfApi:
+    return cast(HfApi, FakeApi(files))
+
+
 class TestListGgufQuants(unittest.TestCase):
     def test_dedupes_and_skips_non_model_files(self):
-        api = FakeApi([
+        api = fake_api([
             "Model-Q4_K_M.gguf",
             "Model-Q5_K_M.gguf",
             "Model-Q4_K_M.gguf",
@@ -32,10 +39,10 @@ class TestListGgufQuants(unittest.TestCase):
         )
 
     def test_empty_repo(self):
-        self.assertEqual(list_gguf_quants("org/repo", api=FakeApi([])), [])
+        self.assertEqual(list_gguf_quants("org/repo", api=fake_api([])), [])
 
     def test_first_shard_represents_split_quant(self):
-        api = FakeApi([
+        api = fake_api([
             "Q4_K_M/Qwen-Q4_K_M-00001-of-00003.gguf",
             "Q4_K_M/Qwen-Q4_K_M-00002-of-00003.gguf",
             "Q4_K_M/Qwen-Q4_K_M-00003-of-00003.gguf",
@@ -63,7 +70,7 @@ class TestListGgufQuants(unittest.TestCase):
         )
 
     def test_regular_and_dynamic_quant_are_not_deduplicated(self):
-        api = FakeApi([
+        api = fake_api([
             "Model-Q4_K_M.gguf",
             "Model-UD-Q4_K_M.gguf",
         ])
@@ -78,14 +85,14 @@ class TestListGgufQuants(unittest.TestCase):
 
 class TestResolveHfAlias(unittest.TestCase):
     def test_skips_mmproj(self):
-        api = FakeApi(["mmproj-Model-F16.gguf", "Model-F16.gguf"])
+        api = fake_api(["mmproj-Model-F16.gguf", "Model-F16.gguf"])
         self.assertEqual(
             resolve_hf_alias("org/repo:F16", api=api),
             ("org/repo", "Model-F16.gguf"),
         )
 
     def test_prefers_regular_quant_over_dynamic_shard(self):
-        api = FakeApi([
+        api = fake_api([
             "UD-Q4_K_M/Qwen-UD-Q4_K_M-00001-of-00002.gguf",
             "Q4_K_M/Qwen-Q4_K_M.gguf",
         ])
