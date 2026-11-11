@@ -4,13 +4,13 @@ import unittest
 from pathlib import Path
 from typing import Any, cast
 
-import database
-from domain import RepositoryConfig, ScopeSpec
-from inference import EmbeddingInput
-from repositories import delete_repository, get_repo_documents, scan_repo_documents
+from backend import database
+from backend.domain import RepositoryConfig, ScopeSpec
+from backend.inference import EmbeddingInput
+from backend.repositories import delete_repository, get_repo_documents, scan_repo_documents
 from tests.helpers import BaseTestCase, DeterministicEmbeddingProvider
-import search
-from tools import TOOL_REGISTRY, ToolContext, run_semantic_search
+from backend import search
+from backend.tools import TOOL_REGISTRY, ToolContext, run_semantic_search
 
 
 class _DeletingEmbeddingProvider(DeterministicEmbeddingProvider):

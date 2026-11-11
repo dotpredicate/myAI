@@ -1,10 +1,10 @@
 import json
 from pathlib import Path
 
-import paths
+from backend import paths
 from tests.helpers import BaseTestCase
-from domain import AgentConfig, ScopeSpec
-from tools import (
+from backend.domain import AgentConfig, ScopeSpec
+from backend.tools import (
     MAX_SPAWN_DEPTH,
     ToolContext,
     run_propose_diff,

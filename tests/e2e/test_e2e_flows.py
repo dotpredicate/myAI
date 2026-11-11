@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from tests.helpers import BaseTestCase, Yield
-from inference.engine import FinishedMessage, FinishedToolCall
+from backend.inference.engine import FinishedMessage, FinishedToolCall
 
 
 class TestE2EFlows(BaseTestCase):

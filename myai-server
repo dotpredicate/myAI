@@ -23,7 +23,7 @@ fi
 case "${1:-run}" in
     run)
         cd "$ROOT"
-        exec "$PYTHON" -m uvicorn app:app --host 127.0.0.1 --port "${MYAI_PORT:-8000}"
+        exec "$PYTHON" -m uvicorn backend.app:app --host 127.0.0.1 --port "${MYAI_PORT:-8000}"
         ;;
     stop)
         exec "$PYTHON" - <<'PY'

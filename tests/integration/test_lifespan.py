@@ -1,6 +1,6 @@
 import asyncio
 
-from app import app, lifespan
+from backend.app import app, lifespan
 from tests.helpers import BaseTestCase
 
 

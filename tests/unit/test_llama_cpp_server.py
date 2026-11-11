@@ -1,7 +1,7 @@
 import unittest
 
-from inference.llama_cpp import server as module
-from inference.engine import TokenPiece
+from backend.inference.llama_cpp import server as module
+from backend.inference.engine import TokenPiece
 
 
 class TestTokenizationResponse(unittest.TestCase):

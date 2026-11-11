@@ -2,9 +2,9 @@ import unittest
 from types import SimpleNamespace
 from typing import Any, cast
 
-from domain import InferenceProviderConfig, Message, Thinking
-from inference.engine import ChatContext, FinishedMessage, FinishedThinking, FinishedToolCall, StreamingMessage
-from inference.openai_chat import DeltaProcessor, OpenAICompatibleProvider, _to_oai_messages
+from backend.domain import InferenceProviderConfig, Message, Thinking
+from backend.inference.engine import ChatContext, FinishedMessage, FinishedThinking, FinishedToolCall, StreamingMessage
+from backend.inference.openai_chat import DeltaProcessor, OpenAICompatibleProvider, _to_oai_messages
 
 
 def _chunk(**delta: Any) -> Any:
@@ -174,7 +174,7 @@ class TestOpenAICompatibleProvider(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("tools", kwargs)
 
     async def test_sends_tools_and_disables_parallel_tool_calls(self):
-        from tools import TOOL_REGISTRY
+        from backend.tools import TOOL_REGISTRY
 
         client = FakeClient([_chunk(content="done")])
         provider = OpenAICompatibleProvider(_config(), client=cast(Any, client))

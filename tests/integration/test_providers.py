@@ -1,6 +1,6 @@
 
-import database
-from inference.providers import reload_providers
+from backend import database
+from backend.inference.providers import reload_providers
 from tests.helpers import BaseTestCase
 
 

@@ -2,7 +2,7 @@ import asyncio
 import unittest
 from unittest import mock
 
-from inference.llama_cpp.benchmark import (
+from backend.inference.llama_cpp.benchmark import (
     HeaderUnavailable,
     ModelQuantInfo,
     _extract_bench_error,
@@ -11,7 +11,7 @@ from inference.llama_cpp.benchmark import (
     _quant_info_from_header,
     parse_llama_bench_output,
 )
-from inference.llama_cpp.gguf_header import GgufHeader
+from backend.inference.llama_cpp.gguf_header import GgufHeader
 
 
 HEADER = GgufHeader(
@@ -35,7 +35,7 @@ class TestModelInfoFormatting(unittest.TestCase):
 
     def test_quant_info_error(self) -> None:
         with mock.patch(
-            "inference.llama_cpp.benchmark._gguf_header",
+            "backend.inference.llama_cpp.benchmark._gguf_header",
             new=mock.AsyncMock(side_effect=HeaderUnavailable("boom")),
         ):
             r = asyncio.run(_quant_info("repo", "Model-Q4_K_M.gguf", "Q4_K_M"))

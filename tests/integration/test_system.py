@@ -1,9 +1,9 @@
 import os
 from pathlib import Path
 
-import paths
+from backend import paths
 from tests.helpers import BaseTestCase
-from system import (
+from backend.system import (
     MAX_OUTPUT_CHARS,
     is_safe_realpath,
     is_safe_vpath,
@@ -11,7 +11,7 @@ from system import (
     get_repo_from_vpath,
     resolve_repo_vpath,
 )
-from domain import ScopeSpec
+from backend.domain import ScopeSpec
 
 
 class TestSystem(BaseTestCase):

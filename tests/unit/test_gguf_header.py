@@ -3,8 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from inference.llama_cpp.gguf import find_cached_gguf, list_cached_quants, resolve_cached_alias
-from inference.llama_cpp.gguf_header import (
+from backend.inference.llama_cpp.gguf import find_cached_gguf, list_cached_quants, resolve_cached_alias
+from backend.inference.llama_cpp.gguf_header import (
     GgufParseError,
     TruncatedGgufError,
     parse_gguf_header,

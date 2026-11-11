@@ -10,8 +10,8 @@ from unittest import mock
 
 import httpx
 
-import inference.managed_processes as mp
-import inference.process_metrics as process_metrics
+import backend.inference.managed_processes as mp
+import backend.inference.process_metrics as process_metrics
 
 
 class FakeProcess:

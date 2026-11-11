@@ -22,7 +22,7 @@ npm --prefix frontend run build || true
 setsid npm --prefix frontend run dev &
 frontend_pid=$!
 
-setsid fastapi dev &
+setsid fastapi dev backend/app.py &
 backend_pid=$!
 
 cleanup() {

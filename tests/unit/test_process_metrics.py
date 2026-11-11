@@ -3,7 +3,7 @@ import sys
 import unittest
 from unittest import mock
 
-import inference.process_metrics as process_metrics
+import backend.inference.process_metrics as process_metrics
 
 
 class TestProcessMetrics(unittest.TestCase):

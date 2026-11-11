@@ -1,6 +1,6 @@
 from pathlib import Path
 
-import paths
+from backend import paths
 from tests.helpers import BaseTestCase
 
 

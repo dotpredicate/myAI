@@ -2,9 +2,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-import paths
+from backend import paths
 from tests.helpers import BaseTestCase, Yield
-from inference.engine import FinishedMessage, FinishedToolCall, StreamingMessage
+from backend.inference.engine import FinishedMessage, FinishedToolCall, StreamingMessage
 
 
 async def _read_ndjson_response(response) -> list[dict[str, Any]]:

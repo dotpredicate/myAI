@@ -3,7 +3,7 @@ import subprocess
 import unittest
 from unittest import mock
 
-import gpu_metrics
+from backend import gpu_metrics
 
 
 def completed(stdout: str) -> subprocess.CompletedProcess[str]:

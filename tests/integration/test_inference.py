@@ -1,6 +1,6 @@
 from tests.helpers import BaseTestCase, MockE2EProvider, Yield
-from inference.registry import registry
-from inference.engine import FinishedMessage, StreamingMessage
+from backend.inference.registry import registry
+from backend.inference.engine import FinishedMessage, StreamingMessage
 
 
 class TestInference(BaseTestCase):
@@ -50,8 +50,8 @@ class TestInference(BaseTestCase):
             Yield(streaming=StreamingMessage(content="hello world")),
             Yield(finished=FinishedMessage(content="hello world")),
         )
-        from inference.engine import ChatContext
-        from domain import Message
+        from backend.inference.engine import ChatContext
+        from backend.domain import Message
         context = ChatContext(messages=[(1, Message(author="user", content="hi"))], scopes=[], tools=[], instructions="")
         async for delta, finished in provider.run_chat_completion_stream("test_model", {}, context):
             if finished is not None:
@@ -60,7 +60,7 @@ class TestInference(BaseTestCase):
                 self.assertEqual(finished.content, "hello world")
 
     async def test_mock_provider_list_models(self):
-        from inference.engine import Model
+        from backend.inference.engine import Model
         models = [Model(id="model-1", created=123, owned_by="test")]
         provider = MockE2EProvider(models=models)
         result = await provider.list_models()

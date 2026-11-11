@@ -1,7 +1,7 @@
 import unittest
 from unittest import mock
 
-import system_metrics
+from backend import system_metrics
 
 
 class TestGpuStats(unittest.TestCase):

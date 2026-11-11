@@ -1,6 +1,6 @@
 import sqlite3
 
-from inference.sd_cpp import image_models
+from backend.inference.sd_cpp import image_models
 from tests.helpers import BaseTestCase
 
 

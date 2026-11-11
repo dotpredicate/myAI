@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from tests.helpers import BaseTestCase, Yield
-from inference.engine import FinishedToolCall
+from backend.inference.engine import FinishedToolCall
 
 
 class TestHybridFlow(BaseTestCase):

@@ -6,10 +6,10 @@ import httpx
 import logging
 from typing import AsyncIterator, Optional, Any, List, Tuple
 
-import database
-import paths
-from domain import WorkspaceConfig
-from inference.engine import (
+from backend import database
+from backend import paths
+from backend.domain import WorkspaceConfig
+from backend.inference.engine import (
     EmbeddingInput,
     EmbeddingProvider,
     ImageGenerationRequest,
@@ -118,9 +118,9 @@ class DeterministicEmbeddingProvider(EmbeddingProvider):
 class BaseTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
-        from app import app
-        from inference.providers import reload_providers
-        from inference.registry import registry, image_registry
+        from backend.app import app
+        from backend.inference.providers import reload_providers
+        from backend.inference.registry import registry, image_registry
 
         self._myai_dir = tempfile.TemporaryDirectory()
         paths.use_dir(Path(self._myai_dir.name))
@@ -198,7 +198,7 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
         )
 
     async def asyncTearDown(self):
-        import search
+        from backend import search
         task = getattr(search, '_sync_task', None)
         if task is not None and not task.done():
             task.cancel()

@@ -1,9 +1,9 @@
 import unittest
 from typing import Any
 
-from inference.sd_cpp import provider as server
-from inference.sd_cpp import recipes as server_recipes
-from inference.engine import InferenceParamType
+from backend.inference.sd_cpp import provider as server
+from backend.inference.sd_cpp import recipes as server_recipes
+from backend.inference.engine import InferenceParamType
 
 DEFAULTS: dict[str, Any] = {
     "width": 2048,
