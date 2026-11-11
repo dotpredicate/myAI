@@ -1,4 +1,5 @@
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -37,6 +38,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="MyAI FastAPI", lifespan=lifespan)
 
 FRONTEND_DIR = Path(__file__).resolve().parent / "frontend" / "web"
+
+
+@app.get('/api/info')
+async def server_info():
+    return JSONResponse(content={'pid': os.getpid()})
 
 
 @app.get('/api/cached-models')

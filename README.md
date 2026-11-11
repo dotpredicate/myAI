@@ -18,6 +18,7 @@ myAI
 
 Project structure:
 - `./app.py` - FastAPI routes and application entrypoint
+- `./myai-server` - server launcher
 - `./conversation.py` - conversation state management and orchestration
 - `./domain.py` - conversation model
 - `./scopes.py` - repository scope resolution shared by conversations and search
@@ -37,7 +38,7 @@ Project structure:
   - `./frontend/web/` - browser client, served by FastAPI; the HTTP transport and wire types shared with the TUI live in `web/ts/core/api.ts` (TUI imports it as `#core/api`)
   - `./frontend/tui/` - terminal client (Node, runs from source)
 - `./build.sh` - build the front-end
-- `./install.sh` - install the terminal client as `myai`
+- `./install.sh` - install the terminal client as `myai` and the server as `myai-server`
 - `./dev.sh` - development entrypoint (live reload)
 - `./lint.sh` - lint and type-check
 - `./test.sh` - test runner
@@ -59,17 +60,20 @@ Project structure:
 
 `./dev.sh` requires the active virtualenv and `setsid`; Ctrl+C twice forces `KILL`.
 
-Server runs at http://127.0.0.1:8000
+### Server
+`./myai-server` runs the FastAPI app with uvicorn on `127.0.0.1:8000`; `MYAI_PORT` overrides
+the port, and `myai-server stop` stops it. `GET /api/info` reports the process id, which
+clients use to recognize a running server.
 
 ### Front-end
 `frontend/web/` is served directly by FastAPI; `frontend/web/ts/` -> `tsc` -> `frontend/web/js/`. No bundler, one `tsc` project; the TUI is not compiled at all (Node runs its `.ts` sources).
 
 ### TUI
-`frontend/tui/` is a Node client for a running instance; TypeScript runs from source
-(no build step, no runtime dependencies):
+`frontend/tui/` is a Node client; TypeScript runs from source (no build step, no runtime
+dependencies). It starts the server if needed.
 
 ```sh
-node frontend/tui/src/main.ts                 # MYAI_URL defaults to http://127.0.0.1:8000
+node frontend/tui/src/main.ts                 # interactive
 node frontend/tui/src/main.ts --dump [conv]   # render one frame without a TTY
 ```
 
@@ -101,5 +105,5 @@ $MYAI_HOME/
 - no accessibility work: no ARIA attributes or roles, no screen-reader tuning, no keyboard-only flows beyond what the browser gives for free
 - single user, no log-in
 - no built-in cloud sync; external model providers are opt-in
-- monolithic back-end, single instance
+- monolithic back-end, single server instance
 - no caching like Redis, prefer in-memory structures

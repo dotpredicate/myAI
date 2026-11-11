@@ -3,7 +3,7 @@
 //
 //   node src/main.ts                 # interactive
 //   node src/main.ts --dump [id]     # render one frame and exit (no TTY needed)
-//   MYAI_URL=http://host:port ...    # server to talk to
+//   MYAI_URL=http://host:port ...    # explicit server; disables autostart
 
 import {
   ApiError,
@@ -21,9 +21,10 @@ import { Badge, Box, Heading, Hint, KeyHint, Line, Paragraph, Row, Spacer, Stack
 import { applyStreamEvent, applyToolResult, findTool, transcriptFromMessages, truncate, type TranscriptItem } from './transcript.ts';
 import { Screen, layout, paint, type Line as RenderedLine } from './render.ts';
 import { startInput, type InputHandle, type Key } from './input.ts';
+import { resolveServer } from './service.ts';
 import { type VNode } from './h.ts';
 
-const BASE = (process.env.MYAI_URL ?? 'http://127.0.0.1:8000').replace(/\/+$/, '');
+let BASE = '';
 
 function url(path: string): string {
   return `${BASE}${path}`;
@@ -104,7 +105,8 @@ if (process.argv.includes('--help') || process.argv.includes('-h')) {
       '  --help        show this help',
       '',
       'Environment:',
-      '  MYAI_URL        server base URL (default http://127.0.0.1:8000)',
+      '  MYAI_URL        explicit server base URL; disables autostart',
+      '  MYAI_PORT       port for the local server (default 8000)',
       '  MYAI_PROVIDER   preselected provider key',
       '  MYAI_MODEL      preselected model id',
       '',
@@ -764,6 +766,8 @@ function shutdown(code = 0): void {
 }
 
 async function main(): Promise<void> {
+  BASE = await resolveServer();
+
   if (dumpMode) {
     const idArgument = process.argv.find((argument) => /^\d+$/.test(argument));
     await loadConversations();

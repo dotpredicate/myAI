@@ -1,0 +1,65 @@
+#!/bin/sh
+# Runs the FastAPI app with uvicorn, or stops the local instance.
+# Resolves the repository even when invoked through a symlink in ~/.local/bin.
+set -eu
+
+SCRIPT=$0
+while [ -L "$SCRIPT" ]; do
+    DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd -P)
+    SCRIPT=$(readlink "$SCRIPT")
+    case "$SCRIPT" in
+        /*) ;;
+        *) SCRIPT="$DIR/$SCRIPT" ;;
+    esac
+done
+ROOT=$(CDPATH= cd -- "$(dirname -- "$SCRIPT")" && pwd -P)
+
+if [ -x "$ROOT/.venv/bin/python" ]; then
+    PYTHON="$ROOT/.venv/bin/python"
+else
+    PYTHON=python3
+fi
+
+case "${1:-run}" in
+    run)
+        cd "$ROOT"
+        exec "$PYTHON" -m uvicorn app:app --host 127.0.0.1 --port "${MYAI_PORT:-8000}"
+        ;;
+    stop)
+        exec "$PYTHON" - <<'PY'
+import json
+import os
+import signal
+import sys
+import time
+import urllib.request
+
+port = os.environ.get('MYAI_PORT', '8000')
+try:
+    with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/info', timeout=2) as response:
+        pid = json.load(response)['pid']
+except Exception:
+    sys.exit('myai-server is not running')
+
+try:
+    os.kill(pid, signal.SIGTERM)
+except ProcessLookupError:
+    sys.exit(0)
+
+for _ in range(100):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        break
+    time.sleep(0.05)
+else:
+    os.kill(pid, signal.SIGKILL)
+
+print(f'myai-server stopped (pid {pid})')
+PY
+        ;;
+    *)
+        echo "usage: myai-server [run|stop]" >&2
+        exit 2
+        ;;
+esac
