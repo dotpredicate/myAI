@@ -1,5 +1,6 @@
-import { el, clear, labeledField, readString, writeValue, conversationLabel, messageOf, type MountOptions, type Route } from '../ui.js';
+import { el, clear, labeledField, readString, writeValue, conversationLabel, messageOf, createPicker, type MountOptions, type Route } from '../ui.js';
 import { ApiError, api, openNdjson } from '../core/api.js';
+import { modelChoices } from '../core/models.js';
 import type {
   AgentConfig,
   AgentList,
@@ -8,7 +9,6 @@ import type {
   NdjsonStream,
   ProviderInfo,
   ProviderList,
-  ProviderModel,
   ProviderModelList,
   StreamEvent,
   ToolCallDecisionResponse,
@@ -30,9 +30,17 @@ export function mount(route: Route, _options: MountOptions = {}) {
   const agentField = labeledField('Agent', agentSelect, { hint: 'Optional instructions.' });
   const providerSelect = Select({});
   const providerField = labeledField('Provider', providerSelect);
-  const modelSelect = Select({});
-  const modelField = labeledField('Model', modelSelect);
-  const selectRow = Grid({ columns: 2 }, workspaceField.wrapper, agentField.wrapper, providerField.wrapper, modelField.wrapper);
+  const modelPicker = createPicker({
+    label: 'Model',
+    emptyLabel: 'Select a model',
+    placeholder: 'Search models…',
+    onChange(value) {
+      modelId = value;
+      writeValue('chat.model', value);
+      updateComposerState();
+    },
+  });
+  const selectRow = Grid({ columns: 2 }, workspaceField.wrapper, agentField.wrapper, providerField.wrapper, modelPicker.element);
 
   const textarea = TextArea({ rows: 3, placeholder: 'Ask anything…' });
   const sendButton = Button('Send', { variant: 'primary' });
@@ -56,7 +64,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
   let workspaces: WorkspaceConfig[] = [];
   let agents: AgentConfig[] = [];
   let providers: ProviderInfo[] = [];
-  let models: ProviderModel[] = [];
   let workspaceId: number | null = null;
   let agentKey = readString('chat.agent', '');
   let providerKey = readString('chat.provider', '');
@@ -107,7 +114,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     workspaceSelect.disabled = generating || blocking || conversationId !== null;
     agentSelect.disabled = generating || blocking;
     providerSelect.disabled = generating || blocking;
-    modelSelect.disabled = generating || blocking;
+    modelPicker.setDisabled(generating || blocking);
   }
 
   function fillWorkspaces(): void {
@@ -142,27 +149,20 @@ export function mount(route: Route, _options: MountOptions = {}) {
     providerSelect.value = providerKey;
   }
 
-  function fillModels(): void {
-    clear(modelSelect);
-    modelSelect.appendChild(Option('', 'Select a model'));
-    for (const model of models) modelSelect.appendChild(Option(model.id, model.name || model.id));
-    if (modelId && !models.some((model) => model.id === modelId)) modelId = '';
-    modelSelect.value = modelId;
-  }
-
   async function loadModels(preferred?: string): Promise<void> {
-    models = [];
     modelId = '';
-    fillModels();
+    modelPicker.setItems([]);
+    modelPicker.setValue('');
     if (!providerKey) return;
     try {
       const data = await api.get<ProviderModelList>(`/api/providers/${encodeURIComponent(providerKey)}/models`);
       if (destroyed) return;
-      models = Array.isArray(data.models) ? data.models : [];
-      modelId = preferred && models.some((model) => model.id === preferred)
+      const choices = modelChoices(Array.isArray(data.models) ? data.models : []);
+      modelId = preferred && choices.some((choice) => choice.value === preferred)
         ? preferred
-        : (models[0]?.id ?? '');
-      fillModels();
+        : (choices[0]?.value ?? '');
+      modelPicker.setItems(choices);
+      modelPicker.setValue(modelId);
       updateComposerState();
     } catch (error) {
       showError(messageOf(error));
@@ -364,12 +364,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
     providerKey = providerSelect.value;
     writeValue('chat.provider', providerKey);
     void loadModels();
-  });
-
-  modelSelect.addEventListener('change', () => {
-    modelId = modelSelect.value;
-    writeValue('chat.model', modelId);
-    updateComposerState();
   });
 
   textarea.addEventListener('input', updateComposerState);

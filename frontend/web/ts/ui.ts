@@ -1,5 +1,6 @@
 import { clear, el, uid } from './dom.js';
 import { api, type BrowseEntry, type BrowseResult } from './core/api.js';
+import { filterItems, type PickItem } from './core/models.js';
 import { Row, RowRight, Stack, Heading, Paragraph, InlineHint, FieldError, FieldGroup, FieldLabel, Notice, Button, Input, Select, Option, InlineLoading, LineHint } from './components.js';
 
 export { el, clear, uid } from './dom.js';
@@ -409,6 +410,166 @@ export function createFolderBrowser(onSelect: (path: string) => void): FolderBro
       void load(path);
     },
     hide,
+  };
+}
+
+export interface PickerOptions {
+  label: string;
+  placeholder?: string;
+  emptyLabel?: string;
+  onChange?: (value: string) => void;
+}
+
+export interface Picker {
+  element: HTMLDivElement;
+  setItems(items: PickItem[]): void;
+  setValue(value: string): void;
+  getValue(): string;
+  setDisabled(disabled: boolean): void;
+  setError(message?: string | null): void;
+}
+
+/**
+ * A searchable single-choice list: a control showing the current value that
+ * opens a filterable list. Scales to hundreds of options, unlike a select.
+ */
+export function createPicker(options: PickerOptions): Picker {
+  const emptyLabel = options.emptyLabel ?? 'Select';
+  const toggleLabel = el('span', {}, emptyLabel);
+  const toggle = el('button', { type: 'button', class: 'picker-toggle', id: uid('picker') }, toggleLabel);
+  const search = Input({
+    type: 'search',
+    class: 'picker-search',
+    placeholder: options.placeholder ?? 'Search…',
+    autocomplete: 'off',
+  });
+  const list = el('ul', { class: 'picker-list' });
+  const panel = el('div', { class: 'picker-panel', hidden: true }, search, list);
+  const errorEl = FieldError(undefined, { hidden: true });
+  const element = el('div', { class: 'field picker' },
+    FieldLabel(options.label, toggle.id),
+    toggle,
+    panel,
+    errorEl,
+  );
+
+  let items: PickItem[] = [];
+  let selected = '';
+  let visible: PickItem[] = [];
+  let active = 0;
+
+  function labelFor(value: string): string {
+    return items.find((item) => item.value === value)?.label ?? (value || emptyLabel);
+  }
+
+  function renderVisible(): void {
+    visible = filterItems(items, search.value);
+    active = Math.min(active, Math.max(0, visible.length - 1));
+    clear(list);
+    if (visible.length === 0) {
+      list.appendChild(el('li', { class: 'picker-empty' }, items.length === 0 ? 'Nothing to choose from' : 'No matches'));
+      return;
+    }
+    for (const [index, item] of visible.entries()) {
+      const button = el('button', { type: 'button', class: 'picker-item' },
+        el('span', { class: 'picker-item-label' }, item.label),
+        item.hint ? el('span', { class: 'picker-item-hint' }, item.hint) : null,
+      );
+      button.dataset.active = index === active ? 'true' : 'false';
+      button.dataset.current = item.value === selected ? 'true' : 'false';
+      button.addEventListener('mousedown', (event) => event.preventDefault());
+      button.addEventListener('click', () => choose(item));
+      list.appendChild(el('li', {}, button));
+    }
+    list.children[active]?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function open(): void {
+    if (toggle.disabled) return;
+    const room = window.innerHeight - toggle.getBoundingClientRect().bottom;
+    panel.classList.toggle('picker-panel--up', room < 360);
+    panel.hidden = false;
+    search.value = '';
+    active = Math.max(0, items.findIndex((item) => item.value === selected));
+    renderVisible();
+    search.focus();
+  }
+
+  function close(): void {
+    panel.hidden = true;
+  }
+
+  function choose(item: PickItem): void {
+    const changed = item.value !== selected;
+    selected = item.value;
+    toggleLabel.textContent = labelFor(selected);
+    close();
+    toggle.focus();
+    if (changed) options.onChange?.(selected);
+  }
+
+  toggle.addEventListener('click', () => {
+    if (panel.hidden) open();
+    else close();
+  });
+  search.addEventListener('input', () => {
+    active = 0;
+    renderVisible();
+  });
+  search.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      active = Math.min(active + 1, Math.max(0, visible.length - 1));
+      renderVisible();
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      active = Math.max(active - 1, 0);
+      renderVisible();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      const item = visible[active];
+      if (item) choose(item);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      close();
+      toggle.focus();
+    }
+  });
+  element.addEventListener('focusout', (event) => {
+    const related = event.relatedTarget;
+    if (!(related instanceof Node) || !element.contains(related)) close();
+  });
+
+  return {
+    element,
+    setItems(next: PickItem[]): void {
+      items = next;
+      if (!items.some((item) => item.value === selected)) selected = '';
+      toggleLabel.textContent = labelFor(selected);
+      if (!panel.hidden) renderVisible();
+    },
+    setValue(value: string): void {
+      selected = value;
+      toggleLabel.textContent = labelFor(value);
+    },
+    getValue(): string {
+      return selected;
+    },
+    setDisabled(disabled: boolean): void {
+      toggle.disabled = disabled;
+      if (disabled) close();
+    },
+    setError(message?: string | null): void {
+      if (message) {
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+        toggle.dataset.invalid = 'true';
+      } else {
+        errorEl.textContent = '';
+        errorEl.hidden = true;
+        delete toggle.dataset.invalid;
+      }
+    },
   };
 }
 

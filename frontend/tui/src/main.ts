@@ -24,6 +24,8 @@ import { Badge, Box, Heading, Hint, KeyHint, Line, Paragraph, Row, Spacer, Stack
 import { applyStreamEvent, applyToolResult, findTool, transcriptFromMessages, truncate, type TranscriptItem } from './transcript.ts';
 import { Screen, layout, paint, type Line as RenderedLine } from './render.ts';
 import { startInput, type InputHandle, type Key } from './input.ts';
+import { handlePickerKey, openPicker, pickerFrame, type Picker } from './picker.ts';
+import { modelChoices, type PickItem } from '#core/models';
 import { resolveServer } from './service.ts';
 import { type VNode } from './h.ts';
 
@@ -216,8 +218,8 @@ function newScreen(): string[] {
     Row(Heading('new conversation'), Spacer(), Hint(state.workspace ? state.workspace.name : '')),
     Line(),
     Row(Text('agent    ', { dim: true }), Text(agentLabel), Text('  '), KeyHint('a', 'cycle')),
-    Row(Text('provider ', { dim: true }), Text(provider), Text('  '), KeyHint('p', 'cycle')),
-    Row(Text('model    ', { dim: true }), Text(model), Text('  '), KeyHint('m', 'cycle')),
+    Row(Text('provider ', { dim: true }), Text(provider), Text('  '), KeyHint('p', 'choose')),
+    Row(Text('model    ', { dim: true }), Text(model), Text('  '), KeyHint('m', 'choose')),
     Line(),
     Paragraph(Hint('sources (fixed by workspace):')),
   ];
@@ -280,7 +282,7 @@ function chatScreen(): string[] {
 
   const hints: VNode[] = state.blockingId !== null
     ? [KeyHint('y/n', 'decide')]
-    : [KeyHint('enter', 'send'), Text('  '), KeyHint('↑↓', 'scroll'), Text('  '), KeyHint('m', 'model'), Text('  '), KeyHint('ctrl-c', 'cancel'), Text('  '), KeyHint('esc', 'list')];
+    : [KeyHint('enter', 'send'), Text('  '), KeyHint('↑↓', 'scroll'), Text('  '), KeyHint('alt-m', 'model'), Text('  '), KeyHint('alt-p', 'provider'), Text('  '), KeyHint('ctrl-c', 'cancel'), Text('  '), KeyHint('esc', 'list')];
 
   const out = [
     ...paint(header, width, 1),
@@ -291,7 +293,47 @@ function chatScreen(): string[] {
   return out;
 }
 
+let picker: { view: Picker; choose: (value: string) => void } | null = null;
+
+function openPickerOverlay(title: string, items: PickItem[], onChoose: (value: string) => void): void {
+  picker = { view: openPicker(title, items), choose: onChoose };
+  render();
+}
+
+function closePicker(): void {
+  picker = null;
+  render();
+}
+
+function openProviderPicker(): void {
+  openPickerOverlay('provider', state.providers.map((key) => ({ value: key, label: key })), (value) => {
+    const index = state.providers.indexOf(value);
+    if (index >= 0 && index !== state.providerIndex) {
+      state.providerIndex = index;
+      state.status = `provider: ${value}`;
+      fire(loadModels());
+    }
+  });
+}
+
+function openModelPicker(): void {
+  if (state.models.length === 0) {
+    state.status = state.modelsLoading ? 'models are loading' : 'no models for this provider';
+    render();
+    return;
+  }
+  const provider = state.providers[state.providerIndex] ?? '—';
+  openPickerOverlay(`model · ${provider}`, modelChoices(state.models), (value) => {
+    const index = state.models.findIndex((model) => model.id === value);
+    if (index >= 0) {
+      state.modelIndex = index;
+      state.status = `model: ${value}`;
+    }
+  });
+}
+
 function currentFrame(): string[] {
+  if (picker) return pickerFrame(picker.view, columns(), rows());
   if (state.view === 'list') return listScreen();
   if (state.view === 'new') return newScreen();
   return chatScreen();
@@ -486,7 +528,7 @@ async function sendPrompt(prompt: string): Promise<void> {
   const provider = state.providers[state.providerIndex];
   const model = state.models[state.modelIndex]?.id;
   if (!provider || !model) {
-    state.error = 'wybierz provider i model (p/m)';
+    state.error = 'wybierz provider i model (alt-p / alt-m)';
     render();
     return;
   }
@@ -669,6 +711,25 @@ async function cancelGeneration(): Promise<void> {
 /* --------------------------------------------------------------- keyboard */
 
 function onKey(key: Key): void {
+  if (picker) {
+    if (key.name === 'ctrl-c') {
+      closePicker();
+      return;
+    }
+    const result = handlePickerKey(picker.view, key);
+    if (result.kind === 'cancelled') {
+      closePicker();
+      return;
+    }
+    if (result.kind === 'chosen') {
+      const choose = picker.choose;
+      closePicker();
+      choose(result.value);
+      return;
+    }
+    render();
+    return;
+  }
   if (state.view === 'list') return onListKey(key);
   if (state.view === 'new') return onNewKey(key);
   return onChatKey(key);
@@ -733,13 +794,8 @@ function onNewKey(key: Key): void {
       state.status = '';
       break;
     case 'char':
-      if (key.char === 'p' && state.providers.length > 0) {
-        state.providerIndex = (state.providerIndex + 1) % state.providers.length;
-        fire(loadModels());
-      }
-      if (key.char === 'm' && state.models.length > 0) {
-        state.modelIndex = (state.modelIndex + 1) % state.models.length;
-      }
+      if (key.char === 'p') openProviderPicker();
+      if (key.char === 'm') openModelPicker();
       if (key.char === 'a') {
         const next = state.agentIndex + 1 > state.agents.length ? 0 : state.agentIndex + 1;
         fire(selectAgent(next));
@@ -790,12 +846,11 @@ function onChatKey(key: Key): void {
       state.scroll = Math.max(0, state.scroll - 1);
       break;
     case 'char':
-      if (key.char === 'm' && state.models.length > 0 && state.conversationId !== null) {
-        state.modelIndex = (state.modelIndex + 1) % state.models.length;
-        state.status = `model: ${state.models[state.modelIndex]?.id ?? ''}`;
-      } else {
-        state.buffer += key.char;
-      }
+      state.buffer += key.char;
+      break;
+    case 'alt':
+      if (key.char === 'm') openModelPicker();
+      if (key.char === 'p') openProviderPicker();
       break;
     default:
       return;

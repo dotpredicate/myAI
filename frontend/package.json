@@ -5,7 +5,8 @@
   "description": "myAI front-end: shared core, web client, terminal client",
   "type": "module",
   "imports": {
-    "#core/api": "./web/ts/core/api.ts"
+    "#core/api": "./web/ts/core/api.ts",
+    "#core/models": "./web/ts/core/models.ts"
   },
   "scripts": {
     "build": "rm -rf web/js && tsc -p web",

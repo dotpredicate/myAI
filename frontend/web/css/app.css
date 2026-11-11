@@ -368,6 +368,142 @@ textarea[data-invalid="true"] {
   border-color: var(--danger);
 }
 
+/* Searchable single-choice list */
+.picker {
+  position: relative;
+}
+
+.picker-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-toggle:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.picker-toggle:disabled {
+  background: var(--surface-muted);
+  color: var(--text-soft);
+  cursor: not-allowed;
+}
+
+.picker-toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-toggle::after {
+  content: "▾";
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.picker-toggle[data-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.picker-panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 0.25rem);
+  right: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.4rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 55%);
+}
+
+.picker-panel[hidden] {
+  display: none;
+}
+
+.picker-panel--up {
+  top: auto;
+  bottom: calc(100% + 0.25rem);
+}
+
+.picker-search {
+  font: inherit;
+}
+
+.picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 17rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.picker-list li {
+  list-style: none;
+}
+
+.picker-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.35rem 0.5rem;
+  border: 0;
+  border-radius: calc(var(--radius) - 2px);
+  appearance: none;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 0.82em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.picker-item[data-active="true"] {
+  background: var(--surface-hover);
+}
+
+.picker-item[data-current="true"] .picker-item-label {
+  color: var(--accent);
+}
+
+.picker-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.picker-item-hint {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--font);
+  font-size: 0.95em;
+  white-space: nowrap;
+}
+
+.picker-empty {
+  padding: 0.5rem;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
 form {
   display: flex;
   flex-direction: column;

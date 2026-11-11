@@ -1,6 +1,7 @@
-import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, asError, renderParamFields, statusMessage as setStatus, validateKey, validateRequired, reportFieldErrors, messageOf, type FieldControl, type MountOptions, type ParamValue, type Route } from '../ui.js';
+import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, asError, renderParamFields, createPicker, statusMessage as setStatus, validateKey, validateRequired, reportFieldErrors, messageOf, type FieldControl, type MountOptions, type ParamValue, type Route } from '../ui.js';
 import { api } from '../core/api.js';
-import type { AgentConfig, AgentList, CreateAgentRequest, DeleteResponse, InferenceParam, InferenceParamList, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, UpdateAgentRequest } from '../core/api.js';
+import { modelChoices } from '../core/models.js';
+import type { AgentConfig, AgentList, CreateAgentRequest, DeleteResponse, InferenceParam, InferenceParamList, ProviderInfo, ProviderList, ProviderModelList, UpdateAgentRequest } from '../core/api.js';
 import { Row, Stack, Grid, Page, Heading, Card, Hint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, ListItem, Form, Summary } from '../components.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {
@@ -122,7 +123,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
     const originalKey = agent?.internal_name || '';
     let providerKey = agent?.provider_key || '';
     let modelId = agent?.model_id || '';
-    let models: ProviderModel[] = [];
     let params: InferenceParam[] = [];
     let config: Record<string, ParamValue> = { ...agent?.inference_config };
     let dirty = false;
@@ -186,13 +186,21 @@ export function mount(route: Route, _options: MountOptions = {}) {
     });
 
     const providerSelect = Select({ name: 'provider_key' });
-    const modelSelect = Select({ name: 'model_id' });
     const providerField = labeledField('Provider', providerSelect);
-    const modelField = labeledField('Model', modelSelect);
+    const modelPicker = createPicker({
+      label: 'Model',
+      emptyLabel: 'Select a model',
+      placeholder: 'Search models…',
+      onChange(value) {
+        markDirty();
+        modelId = value;
+        modelPicker.setError('');
+        renderSettings();
+      },
+    });
     const providerStatus = Hint();
     const modelStatus = Hint();
     providerField.wrapper.appendChild(providerStatus);
-    modelField.wrapper.appendChild(modelStatus);
 
     const settingsDetails = el('details', { hidden: true });
     const settingsBody = Stack();
@@ -209,7 +217,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
       ? Button('Delete', { variant: 'danger' })
       : null;
 
-    const form = Form({ novalidate: true }, Grid({ columns: 2 }, nameField.wrapper, keyField.wrapper), descriptionField.wrapper, instructionsField.wrapper, spawnableField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelField.wrapper), providerStatus, modelStatus, settingsDetails, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
+    const form = Form({ novalidate: true }, Grid({ columns: 2 }, nameField.wrapper, keyField.wrapper), descriptionField.wrapper, instructionsField.wrapper, spawnableField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelPicker.element), providerStatus, modelStatus, settingsDetails, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
 
     editorContainer.appendChild(el('header', {}, heading));
     editorContainer.appendChild(form);
@@ -224,13 +232,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
       modelId = previous;
       loadModelsFor(providerKey, { previousModel: previous, providerChanged: true });
     });
-    modelSelect.addEventListener('change', () => {
-      markDirty();
-      modelId = modelSelect.value;
-      modelField.setError('');
-      renderSettings();
-    });
-
     function setFormError(message: string): void {
       formError.textContent = message || '';
     }
@@ -286,16 +287,13 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
     async function loadModelsFor(key: string, options: { previousModel?: string; providerChanged?: boolean } = {}): Promise<void> {
       const token = ++requestToken;
-      models = [];
       modelId = options.previousModel ?? modelId;
-      clear(modelSelect);
-      modelSelect.appendChild(Option('', 'Loading models…'));
-      modelSelect.disabled = true;
+      modelPicker.setItems([]);
+      modelPicker.setValue('');
+      modelPicker.setDisabled(true);
       clear(modelStatus);
       if (!key) {
         modelId = '';
-        clear(modelSelect);
-        modelSelect.appendChild(Option('', 'Select a provider'));
         params = [];
         renderSettings();
         return;
@@ -304,35 +302,31 @@ export function mount(route: Route, _options: MountOptions = {}) {
       try {
         const response = await api.get<ProviderModelList>(`/api/providers/${encodeURIComponent(key)}/models`);
         if (destroyed || token !== requestToken) return;
-        models = Array.isArray(response.models) ? response.models : [];
-        clear(modelSelect);
-        modelSelect.appendChild(Option('', models.length ? 'Select a model' : 'No models available'));
-        for (const model of models) {
-          modelSelect.appendChild(Option(model.id, model.name));
-        }
+        const choices = modelChoices(Array.isArray(response.models) ? response.models : []);
+        modelPicker.setItems(choices);
         let missing = false;
-        if (modelId && models.some((model) => model.id === modelId)) {
-          modelSelect.value = modelId;
+        if (modelId && choices.some((choice) => choice.value === modelId)) {
+          modelPicker.setValue(modelId);
         } else if (modelId) {
           missing = true;
           modelId = '';
-          modelSelect.value = '';
-        } else if (models.length > 0) {
-          const first = models[0];
+          modelPicker.setValue('');
+        } else {
+          const first = choices[0];
           if (first) {
-            modelId = first.id;
-            modelSelect.value = modelId;
+            modelId = first.value;
+            modelPicker.setValue(modelId);
           }
         }
-        modelSelect.disabled = models.length === 0;
-        modelField.setError(missing ? `The previous model is not available from “${key}”. Choose a model.` : '');
+        modelPicker.setDisabled(choices.length === 0);
+        modelPicker.setError(missing ? `The previous model is not available from “${key}”. Choose a model.` : '');
         setStatus(modelStatus, missing ? 'Choose a model for the new provider.' : '', { error: missing });
         await loadParamsFor(key, token);
       } catch (error) {
         if (destroyed || token !== requestToken) return;
-        clear(modelSelect);
-        modelSelect.appendChild(Option('', 'Models unavailable'));
-        modelSelect.disabled = true;
+        modelPicker.setItems([]);
+        modelPicker.setValue('');
+        modelPicker.setDisabled(true);
         setStatus(modelStatus, messageOf(error) || 'Could not load models.', {
           error: true,
           retry: () => loadModelsFor(key, { previousModel: modelId }),
@@ -362,12 +356,12 @@ export function mount(route: Route, _options: MountOptions = {}) {
       nameField.setError('');
       keyField.setError('');
       providerField.setError('');
-      modelField.setError('');
+      modelPicker.setError('');
       setFormError('');
       const displayName = nameInput.value.trim();
       const internalName = keyInput.value.trim();
       const selectedProvider = providerSelect.value;
-      const selectedModel = modelSelect.value;
+      const selectedModel = modelPicker.getValue();
       const errors: FieldControl[] = [];
       validateRequired(nameField, displayName, 'Name is required.', errors);
       if (!isEdit) validateKey(keyField, internalName, errors);
@@ -460,9 +454,9 @@ export function mount(route: Route, _options: MountOptions = {}) {
     if (providerKey) {
       loadModelsFor(providerKey, { previousModel: modelId });
     } else {
-      clear(modelSelect);
-      modelSelect.appendChild(Option('', 'Select a provider'));
-      modelSelect.disabled = true;
+      modelPicker.setItems([]);
+      modelPicker.setValue('');
+      modelPicker.setDisabled(true);
     }
 
     editor = {
