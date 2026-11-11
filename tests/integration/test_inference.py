@@ -1,4 +1,3 @@
-import unittest
 from tests.helpers import BaseTestCase, MockE2EProvider, Yield
 from inference.registry import registry
 from inference.engine import FinishedMessage, StreamingMessage
@@ -66,7 +65,3 @@ class TestInference(BaseTestCase):
         result = await provider.list_models()
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].id, "model-1")
-
-
-if __name__ == "__main__":
-    unittest.main()

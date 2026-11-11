@@ -1,8 +1,6 @@
 // API transport plus the wire types produced by the Python back-end.
-// Shapes mirror domain.py, agents.py, conversation.py, repositories.py,
-// images.py, inference/ and system.py; keep them in sync with those files.
-
-export type SecurityPolicy = 'read-only' | 'privileged-write' | 'write';
+// Shapes mirror domain.py, agents.py, workspaces.py, conversation.py,
+// repositories.py, images.py, inference/ and system.py; keep them in sync.
 
 export type ParamValue = string | number | boolean;
 
@@ -14,15 +12,6 @@ export interface RepositoryConfig {
   internal_name: string;
   repo_type: 'plain' | 'git';
   path: string;
-  security_policy: SecurityPolicy;
-}
-
-export interface AgentRepositoryAccess {
-  id: number;
-  agent_id: number;
-  repository_id: number;
-  repository_internal_name: string;
-  security_policy_override: SecurityPolicy | null;
 }
 
 export interface AgentConfig {
@@ -31,16 +20,10 @@ export interface AgentConfig {
   internal_name: string;
   description: string;
   instructions: string | null;
-  provider_key: string;
-  model_id: string;
+  provider_key: string | null;
+  model_id: string | null;
   inference_config: Record<string, ParamValue>;
-  repository_access: AgentRepositoryAccess[];
   spawnable_agents: string[];
-}
-
-export interface RepoAccessEntry {
-  repository_id: number;
-  security_policy_override?: SecurityPolicy | null;
 }
 
 export interface CreateAgentRequest {
@@ -48,10 +31,9 @@ export interface CreateAgentRequest {
   internal_name: string;
   description?: string;
   instructions?: string | null;
-  provider_key: string;
-  model_id: string;
+  provider_key?: string | null;
+  model_id?: string | null;
   inference_config?: Record<string, ParamValue>;
-  repository_access?: RepoAccessEntry[];
   spawnable_agents?: string[];
 }
 
@@ -59,70 +41,50 @@ export interface UpdateAgentRequest {
   display_name?: string;
   description?: string;
   instructions?: string | null;
-  provider_key?: string;
-  model_id?: string;
+  provider_key?: string | null;
+  model_id?: string | null;
   inference_config?: Record<string, ParamValue>;
-  repository_access?: RepoAccessEntry[];
   spawnable_agents?: string[];
 }
 
-export interface ProjectRepositoryAccess {
-  id: number;
-  project_id: number;
+export interface WorkspaceSource {
   repository_id: number;
-  repository_internal_name: string;
-  security_policy_override: SecurityPolicy | null;
+  internal_name: string;
+  display_name: string;
+  repo_type: 'plain' | 'git';
+  path: string;
 }
 
-export interface ProjectConfig {
+export interface WorkspaceConfig {
   id: number;
-  display_name: string;
-  internal_name: string;
-  description: string;
-  instructions: string | null;
-  default_agent: number | null;
-  provider_key: string | null;
-  model_id: string | null;
-  inference_config: Record<string, ParamValue>;
-  repository_access: ProjectRepositoryAccess[];
+  name: string;
+  created_at: string;
+  sources: WorkspaceSource[];
 }
 
-export interface ProjectList {
-  projects: ProjectConfig[];
+export interface WorkspaceList {
+  workspaces: WorkspaceConfig[];
 }
 
-export interface CreateProjectRequest {
-  display_name: string;
-  internal_name: string;
-  description?: string;
-  instructions?: string | null;
-  default_agent?: number | null;
-  provider_key?: string | null;
-  model_id?: string | null;
-  inference_config?: Record<string, ParamValue>;
-  repository_access?: RepoAccessEntry[];
+export interface UpdateWorkspaceRequest {
+  name: string;
 }
 
-export interface UpdateProjectRequest {
-  display_name?: string;
-  description?: string;
-  instructions?: string | null;
-  default_agent?: number | null;
-  provider_key?: string | null;
-  model_id?: string | null;
-  inference_config?: Record<string, ParamValue>;
-  repository_access?: RepoAccessEntry[];
+export interface AddWorkspaceSourceRequest {
+  repository_id: number;
 }
 
-export interface ScopeSpec {
-  internal_name: string;
-  security_policy: SecurityPolicy;
+export interface ResolveWorkspaceResponse {
+  workspace: WorkspaceConfig;
+  created: boolean;
+  repository_created: boolean;
+  sync_started: boolean;
 }
 
 export type ConversationElement =
   | { type: 'message'; author: 'user' | 'assistant'; content: string }
   | { type: 'thinking'; content: string }
-  | { type: 'tool_call'; name: string; parameters: string; result: string; scopes: ScopeSpec[] }
+  | { type: 'tool_call'; name: string; parameters: string; result: string }
   | { type: 'approval_request'; original_message_id: number }
   | { type: 'tool_call_result'; original_message_id: number; result: string }
   | {
@@ -151,32 +113,18 @@ export interface ConversationSummary {
 
 export interface ConversationDetails extends ConversationSummary {
   blocking_message_id: number | null;
-  project_id: string | null;
+  workspace_id: number | null;
+  workspace_name: string | null;
+  provider_key: string | null;
+  model_id: string | null;
+  agent_id: string | null;
+  inference_config: Record<string, ParamValue>;
   messages: StoredMessageRecord[];
 }
 
-export interface UserScopeChoice {
-  internal_name: string;
-  security_policy_override?: SecurityPolicy | null;
-}
-
-export interface GenerationRequest {
+export interface CreateConversationRequest {
+  workspace_id: number;
   agent_id?: string | null;
-  project_id?: string | null;
-  provider_key?: string | null;
-  model_id?: string | null;
-  inference_config?: Record<string, ParamValue>;
-  scopes?: UserScopeChoice[];
-}
-
-export interface PromptRequest extends GenerationRequest {
-  prompt: string;
-  conversation_id?: number | null;
-}
-
-export interface ToolCallDecisionRequest {
-  decision: 'approve' | 'reject';
-  comment?: string;
 }
 
 export type StreamEvent =

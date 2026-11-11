@@ -6,19 +6,19 @@ from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from database import init_database
 from typing import Optional
 from conversation import router as conversations_router
-from scopes import UserScopeChoice, resolve_scopes
-from repositories import router as repositories_router
+from scopes import resolve_workspace_scopes
+from repositories import router as repositories_router, get_repo_by_id
 from agents import router as agents_router
-from projects import router as projects_router
+from workspaces import router as workspaces_router
 from images import router as images_router
 from inference.sd_cpp.router import router as sd_cpp_router
 from inference.providers import reload_providers, router as providers_router
 from log_config import get_logger, setup_logging
-from search import synchronize, semantic_search, clear_index
+from search import schedule_sync, synchronize, semantic_search, clear_index
 from inference import managed_processes
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.llama_cpp import benchmark
@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
     setup_logging()
     await init_database()
     await reload_providers()
-    asyncio.create_task(synchronize())
+    schedule_sync()
     yield
     await managed_processes.stop_servers()
 
@@ -58,7 +58,7 @@ async def get_cached_models():
 app.include_router(providers_router)
 app.include_router(repositories_router)
 app.include_router(agents_router)
-app.include_router(projects_router)
+app.include_router(workspaces_router)
 app.include_router(conversations_router)
 app.include_router(images_router)
 app.include_router(sd_cpp_router)
@@ -67,8 +67,8 @@ app.include_router(sd_cpp_router)
 class SearchRequest(BaseModel):
     query: str = ''
     top_k: int = 3
-    scopes: list[str] = Field(default_factory=list)
-    agent_id: str | None = None
+    workspace_id: int | None = None
+    repository_id: int | None = None
 
 
 @app.post('/api/search')
@@ -76,12 +76,14 @@ async def search(payload: SearchRequest):
     if not payload.query:
         return JSONResponse(status_code=400, content={'error': 'query required'})
 
-    choices = [UserScopeChoice(internal_name=name) for name in payload.scopes]
-    try:
-        resolved_scopes = await resolve_scopes(payload.agent_id, choices)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={'error': str(exc)})
-    scope_names = [scope.internal_name for scope in resolved_scopes]
+    if payload.repository_id is not None:
+        repo = await get_repo_by_id(payload.repository_id)
+        if repo is None:
+            return JSONResponse(status_code=404, content={'error': 'repository not found'})
+        scope_names = [repo.internal_name]
+    else:
+        resolved_scopes = await resolve_workspace_scopes(payload.workspace_id)
+        scope_names = [scope.internal_name for scope in resolved_scopes]
 
     results = []
     for hit in await semantic_search(payload.query, payload.top_k, scopes=scope_names):

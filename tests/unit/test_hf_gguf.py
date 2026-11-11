@@ -93,7 +93,3 @@ class TestResolveHfAlias(unittest.TestCase):
             resolve_hf_alias("org/repo:Q4_K_M", api=api),
             ("org/repo", "Q4_K_M/Qwen-Q4_K_M.gguf"),
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -79,7 +79,3 @@ class TestExtractBenchError(unittest.TestCase):
 
     def test_empty_stderr(self) -> None:
         self.assertEqual(_extract_bench_error(""), "unknown error")
-
-
-if __name__ == "__main__":
-    unittest.main()

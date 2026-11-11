@@ -1,5 +1,4 @@
 import sqlite3
-import unittest
 
 from inference.sd_cpp import image_models
 from tests.helpers import BaseTestCase
@@ -36,7 +35,3 @@ class TestImageModelStore(BaseTestCase):
 
         with self.assertRaises(sqlite3.IntegrityError):
             await image_models.create_image_model("same", "flux", {})
-
-
-if __name__ == "__main__":
-    unittest.main()

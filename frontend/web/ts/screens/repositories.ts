@@ -1,6 +1,6 @@
-import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, slugifyKey, plural, policyLabel, POLICIES, validateKey, validateRequired, reportFieldErrors, compactError, messageOf, type FieldControl, type MountOptions, type Route } from '../ui.js';
+import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, slugifyKey, plural, validateKey, validateRequired, reportFieldErrors, messageOf, createFolderBrowser, type FieldControl, type MountOptions, type Route } from '../ui.js';
 import { api } from '../core/api.js';
-import type { BrowseEntry, BrowseResult, DeleteResponse, RepositoryConfig, RepositoryFiles, RepositoryList, SearchResponse, SyncResponse } from '../core/api.js';
+import type { DeleteResponse, RepositoryConfig, RepositoryFiles, RepositoryList, SearchResponse, SyncResponse } from '../core/api.js';
 import { Row, RowEnd, Stack, Grid, Page, Heading, Card, Hint, InlineHint, LineHint, FieldGroup, Badge, Notice, Button, LinkButton, Input, Select, Option, List, ListItem, Form, IconButton } from '../components.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {
@@ -27,10 +27,9 @@ export function mount(route: Route, _options: MountOptions = {}) {
     Option('plain', 'Plain folder'),
     Option('git', 'Git repository'),
   );
-  const securitySelect = Select({ name: 'security' },
-    POLICIES.map((policy) => Option(policy.value, policy.label)));
   const browseButton = Button('Browse');
-  const browsePanel = el('div', { class: 'inset stack', hidden: true });
+  const browser = createFolderBrowser(selectFolder);
+  const browsePanel = browser.element;
   const formError = Notice({ level: 'error' });
   const addSave = Button('Add repository', { variant: 'primary', submit: true });
   const addCancel = Button('Cancel');
@@ -38,12 +37,11 @@ export function mount(route: Route, _options: MountOptions = {}) {
   const pathField = labeledField('Path', pathInput);
   const keyField = labeledField('Key', keyInput, { hint: 'Letters, numbers, hyphens and underscores only.' });
   const typeField = labeledField('Type', typeSelect);
-  const securityField = labeledField('Security', securitySelect, { hint: 'Highest permissions the repository allows.' });
   const addForm = Form({ novalidate: true, hidden: true, class: 'inset' },
     el('header', {}, Heading(3, 'New repository')),
     Grid({ columns: 2 }, nameField.wrapper, keyField.wrapper),
     FieldGroup(pathField.wrapper, Row(browseButton)),
-    Grid({ columns: 2 }, typeField.wrapper, securityField.wrapper),
+    FieldGroup(typeField.wrapper),
     browsePanel,
     formError,
     Row(addSave, addCancel),
@@ -56,9 +54,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
   interface ScreenState {
     repositories: RepositoryConfig[];
-    browsePath: string;
-    browseEntries: BrowseEntry[];
-    browseToken: number;
     selectedKey: string | null;
     detailToken: number;
     actionsBusy: boolean;
@@ -66,9 +61,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
   const state: ScreenState = {
     repositories: [],
-    browsePath: '',
-    browseEntries: [],
-    browseToken: 0,
     selectedKey: route.key || null,
     detailToken: 0,
     actionsBusy: false,
@@ -81,7 +73,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
   function closeAddForm() {
     addForm.hidden = true;
-    browsePanel.hidden = true;
+    browser.hide();
   }
 
   function resetAddForm() {
@@ -89,12 +81,11 @@ export function mount(route: Route, _options: MountOptions = {}) {
     pathInput.value = '';
     keyInput.value = '';
     typeSelect.value = '';
-    securitySelect.value = 'read-only';
     nameField.setError('');
     pathField.setError('');
     keyField.setError('');
     formError.textContent = '';
-    browsePanel.hidden = true;
+    browser.hide();
   }
 
   addToggle.addEventListener('click', () => {
@@ -107,82 +98,16 @@ export function mount(route: Route, _options: MountOptions = {}) {
   });
 
   // Browse
-  function renderBreadcrumbs(path: string): void {
-    clear(browsePanel);
-    const crumbs = el('nav', { class: 'row' });
-    const rootButton = Button('/', { variant: 'quiet', small: true });
-    rootButton.addEventListener('click', () => loadBrowse('/'));
-    crumbs.appendChild(rootButton);
-    const parts = path.split('/').filter(Boolean);
-    let accumulated = '';
-    for (const part of parts) {
-      accumulated += `/${part}`;
-      const target = accumulated;
-      crumbs.appendChild(document.createTextNode(' / '));
-      const button = Button(part, { variant: 'quiet', small: true });
-      button.addEventListener('click', () => loadBrowse(target));
-      crumbs.appendChild(button);
-    }
-    browsePanel.appendChild(crumbs);
-
-    const selectFolderButton = Button('Select this folder', { small: true });
-    selectFolderButton.addEventListener('click', () => selectFolder(path));
-    const current = Row(selectFolderButton);
-    browsePanel.appendChild(current);
-
-    if (state.browseEntries.length === 0) {
-      browsePanel.appendChild(LineHint('This folder has no subfolders.'));
-      return;
-    }
-    const list = el('ul', { class: 'browse-list' });
-    for (const entry of state.browseEntries) {
-      const openButton = el('button', { type: 'button', class: 'browse-open' }, `${entry.name}/`);
-      const selectButton = el('button', { type: 'button', class: 'browse-select' }, 'Select');
-      openButton.addEventListener('click', () => loadBrowse(entry.path));
-      selectButton.addEventListener('click', () => selectFolder(entry.path));
-      list.appendChild(el('li', { class: 'browse-entry' }, openButton, selectButton));
-    }
-    browsePanel.appendChild(list);
-  }
-
   function selectFolder(path: string): void {
     pathInput.value = path;
     const folderName = path.replace(/\/+$/, '').split('/').pop() || 'repository';
     if (!nameInput.value.trim()) nameInput.value = folderName;
     if (!keyInput.value.trim()) keyInput.value = slugifyKey(folderName);
-    browsePanel.hidden = true;
     pathInput.focus();
   }
 
-  async function loadBrowse(path: string): Promise<void> {
-    const token = ++state.browseToken;
-    browsePanel.hidden = false;
-    clear(browsePanel);
-    browsePanel.appendChild(loadingState('Reading folders…'));
-    try {
-      const data = await api.get<BrowseResult>(`/api/browse?path=${encodeURIComponent(path)}&include=folders`);
-      if (destroyed || token !== state.browseToken) return;
-      state.browsePath = data.path;
-      state.browseEntries = Array.isArray(data.entries) ? data.entries : [];
-      renderBreadcrumbs(state.browsePath);
-    } catch (error) {
-      if (destroyed || token !== state.browseToken) return;
-      clear(browsePanel);
-      browsePanel.appendChild(compactError(messageOf(error) || 'Could not read this folder.'));
-      const retry = Button('Retry', { small: true });
-      retry.addEventListener('click', () => loadBrowse(path));
-      browsePanel.appendChild(retry);
-      const close = Button('Close', { variant: 'quiet', small: true });
-      close.addEventListener('click', () => {
-        browsePanel.hidden = true;
-      });
-      browsePanel.appendChild(close);
-    }
-  }
-
   browseButton.addEventListener('click', () => {
-    const path = pathInput.value.trim() || '~';
-    loadBrowse(path);
+    browser.open(pathInput.value.trim() || '~');
   });
 
   addForm.addEventListener('submit', async (event) => {
@@ -200,11 +125,10 @@ export function mount(route: Route, _options: MountOptions = {}) {
     validateRequired(pathField, path, 'Path is required.', errors);
     validateKey(keyField, internalName, errors);
     if (reportFieldErrors(errors)) return;
-    const payload: { display_name: string; internal_name: string; path: string; security: string; type?: string } = {
+    const payload: { display_name: string; internal_name: string; path: string; type?: string } = {
       display_name: displayName,
       internal_name: internalName,
       path,
-      security: securitySelect.value,
     };
     if (typeSelect.value) payload.type = typeSelect.value;
     state.actionsBusy = true;
@@ -280,7 +204,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
       el('span', { class: 'collection-row-title' }, repo.display_name || repo.internal_name),
       el('span', { class: 'collection-row-meta' },
         Badge(repo.repo_type),
-        Badge(policyLabel(repo.security_policy), { accent: true }),
       ),
       el('span', { class: 'collection-row-path truncate' }, repo.path),
     );
@@ -332,13 +255,13 @@ export function mount(route: Route, _options: MountOptions = {}) {
   async function deleteRepository(repo: RepositoryConfig): Promise<void> {
     const confirmed = await confirmAction({
       title: 'Delete repository?',
-      message: `“${repo.display_name || repo.internal_name}” will be removed from myAI. Files on disk are not touched.`,
+      message: `“${repo.display_name || repo.internal_name}” will be removed from myAI and detached from every workspace. Files on disk are not touched.`,
       confirmLabel: 'Delete repository',
     });
     if (!confirmed) return;
     try {
       await api.del<DeleteResponse>(`/api/repositories/${encodeKey(repo.internal_name)}`);
-      notify('Repository removed. Files on disk remain untouched.', { level: 'success' });
+      notify('Repository removed and detached from workspaces. Files on disk remain untouched.', { level: 'success' });
       if (state.selectedKey === repo.internal_name) {
         navigate('#/repositories');
       } else {
@@ -370,7 +293,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     container.appendChild(el('header', {},
       el('div', {},
         Heading(2, repo.display_name || repo.internal_name),
-        Row(Badge(repo.internal_name, { accent: true }), Badge(repo.repo_type), Badge(policyLabel(repo.security_policy))),
+        Row(Badge(repo.internal_name, { accent: true }), Badge(repo.repo_type)),
       ),
       IconButton('×', { title: 'Close repository', onClick: () => navigate('#/repositories') }),
     ));
@@ -403,7 +326,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         const data = await api.post<SearchResponse>('/api/search', {
           query,
           top_k: 5,
-          scopes: [repo.internal_name],
+          repository_id: repo.id,
         });
         if (destroyed || token !== state.detailToken) return;
         clear(searchResults);
@@ -504,7 +427,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
     element: root,
     destroy() {
       destroyed = true;
-      state.browseToken += 1;
       state.detailToken += 1;
     },
   };

@@ -126,7 +126,3 @@ class TestLocalGgufCache(unittest.TestCase):
             resolved = resolve_cached_alias("org/model:Q8_0", root)
 
         self.assertEqual(resolved, ("org/model", "Model-Q8_0.gguf"))
-
-
-if __name__ == "__main__":
-    unittest.main()

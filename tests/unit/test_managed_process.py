@@ -356,7 +356,3 @@ class TestPortLifecycleRecord(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await mp.ensure_server_started(port, "test", "model", ["fake"], never_ready)
         self.assertIs(mp.get_managed_process(port), record)
-
-
-if __name__ == "__main__":
-    unittest.main()

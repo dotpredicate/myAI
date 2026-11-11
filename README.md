@@ -21,14 +21,14 @@ Project structure:
 - `./myai-server` - server launcher
 - `./conversation.py` - conversation state management and orchestration
 - `./domain.py` - conversation model
-- `./scopes.py` - repository scope resolution shared by conversations and search
+- `./scopes.py` - repository scopes of a workspace, used by conversations
 - `./repositories.py` - repository registry and indexing input
-- `./agents.py` - agent configuration and repository access
-- `./projects.py` - project configuration and conversation presets
+- `./agents.py` - agent configuration and optional model preference
+- `./workspaces.py` - workspace sources and path resolution
 - `./search/` - indexing and vector search
 - `./database.py` - SQLite connection and utility functions
-- `./paths.py` - `MYAI_HOME`, database and workspace paths
-- `./system.py` - system-level utilities (workspaces, sandbox)
+- `./paths.py` - `MYAI_HOME`, database, model space and sandbox paths
+- `./system.py` - model spaces, sandboxed shell and sandbox path checks
 - `./tools.py` - tool execution logic
 - `./log_config.py` - logging configuration
 - `./inference/` - AI protocol handling (stateless), split into submodules
@@ -44,12 +44,12 @@ Project structure:
 - `./test.sh` - test runner
 - `./tests/` - unit, integration and e2e tests
 - `./doc/` - design and documentation
-  - `context.md`
+  - `workspaces.md`
   - `repositories.md`
-  - `inference_providers.md`
   - `agents.md`
-  - `projects.md`
-  - `generation.md`
+  - `conversations.md`
+  - `environment.md`
+  - `inference.md`
   - `analysis/image_backends.md`
 
 ### Quickstart
@@ -70,7 +70,8 @@ clients use to recognize a running server.
 
 ### TUI
 `frontend/tui/` is a Node client; TypeScript runs from source (no build step, no runtime
-dependencies). It starts the server if needed.
+dependencies). It starts the server if needed and resolves the current directory
+into a workspace.
 
 ```sh
 node frontend/tui/src/main.ts                 # interactive
@@ -87,7 +88,8 @@ At startup, the module scans `migrations` for SQL files, sorts them in lexicogra
 ```text
 $MYAI_HOME/
 ├── db.sqlite
-└── workspaces/
+├── spaces/       # durable model space per workspace
+└── sandboxes/    # ephemeral space per conversation
 ```
 
 ### Code style
@@ -101,7 +103,7 @@ $MYAI_HOME/
 ### Simplifications for now
 - language model providers: the embedded llama.cpp server and user-configured OpenAI-compatible endpoints
 - image generation uses an embedded stable-diffusion.cpp server; models are user-registered presets in `sd_cpp_image_models` (recipe + file IDs from `MYAI_SD_MODEL_DIRS`)
-- web UI only, no mobile, minimal styling
+- web UI and a terminal client, no mobile, minimal styling
 - no accessibility work: no ARIA attributes or roles, no screen-reader tuning, no keyboard-only flows beyond what the browser gives for free
 - single user, no log-in
 - no built-in cloud sync; external model providers are opt-in

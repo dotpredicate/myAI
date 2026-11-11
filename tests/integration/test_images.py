@@ -1,4 +1,3 @@
-import unittest
 
 from tests.helpers import BaseTestCase
 
@@ -75,7 +74,3 @@ class TestImages(BaseTestCase):
 
         self.assertEqual(res.status_code, 200, res.text)
         self.assertEqual(self.mock_image_provider.requests[0].model, "mock-image")
-
-
-if __name__ == "__main__":
-    unittest.main()

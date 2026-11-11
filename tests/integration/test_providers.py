@@ -1,4 +1,3 @@
-import unittest
 
 import database
 from inference.providers import reload_providers
@@ -190,7 +189,3 @@ class TestProviders(BaseTestCase):
         })
         self.assertEqual(response.status_code, 201, response.text)
         self.assertEqual(response.json()["provider_key"], "remote")
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -14,7 +14,6 @@ from domain import (
     ToolCallResult,
     ToolCallDecision,
     ConversationElement,
-    ScopeSpec,
     stored_element_adapter,
 )
 from inference import (
@@ -36,28 +35,23 @@ import system
 from log_config import get_logger
 from database import AsyncConnection, mk_conn
 from agents import get_agent_by_name
-from projects import get_project_by_name, resolve_project_id
-from scopes import UserScopeChoice, resolve_scopes, scopes_for_agent
+from scopes import resolve_workspace_scopes
 
 logger = get_logger(__name__)
 
 router = APIRouter()
 
 
-class GenerationRequest(BaseModel):
+class CreateConversationRequest(BaseModel):
+    workspace_id: int
     agent_id: Optional[str] = None
-    project_id: Optional[str] = None
+
+
+class PromptRequest(BaseModel):
+    prompt: str
     provider_key: Optional[str] = None
     model_id: Optional[str] = None
     inference_config: dict[str, Any] = {}
-    scopes: list[UserScopeChoice] = []
-
-class PromptRequest(GenerationRequest):
-    prompt: str
-    conversation_id: Optional[int] = None
-
-class ContinueRequest(GenerationRequest):
-    pass
 
 
 class MessageChunk(BaseModel):
@@ -274,33 +268,66 @@ def stored_record_to_stream_events(record: StoredMessageRecord) -> list[StreamEv
 def serialize_ndjson_event(event: StreamEvent) -> str:
     return event.model_dump_json() + '\n'
 
-async def create_conversation(conn: AsyncConnection, project_id: Optional[int] = None) -> int:
+async def create_conversation(
+    conn: AsyncConnection,
+    workspace_id: Optional[int],
+    agent_id: Optional[str] = None,
+    provider_key: Optional[str] = None,
+    model_id: Optional[str] = None,
+    inference_config: Optional[dict[str, Any]] = None,
+) -> int:
     async with conn.cursor() as cur:
         await cur.execute(
-            "INSERT INTO conversations (project_id) VALUES (%s) RETURNING id",
-            (project_id,),
+            """
+            INSERT INTO conversations (workspace_id, agent_id, provider_key, model_id, inference_config)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (workspace_id, agent_id, provider_key, model_id, json.dumps(inference_config or {})),
         )
         row = await cur.fetchone()
         if not row:
             raise RuntimeError("Failed to create conversation")
-        conv_id = row[0]
-        return conv_id
+        return row[0]
 
 
-async def get_conversation_project(conn: AsyncConnection, conv_id: int) -> tuple[Optional[int], Optional[str]]:
-    """Return the conversation's project id and internal name, if any."""
+async def get_conversation_config(conn: AsyncConnection, conv_id: int) -> Optional[dict[str, Any]]:
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT c.project_id, p.internal_name
-            FROM conversations c
-            LEFT JOIN projects p ON p.id = c.project_id
-            WHERE c.id = %s
+            SELECT workspace_id, agent_id, provider_key, model_id, inference_config
+            FROM conversations WHERE id = %s
             """,
             (conv_id,),
         )
         row = await cur.fetchone()
-        return (row[0], row[1]) if row else (None, None)
+        if not row:
+            return None
+        return {
+            'workspace_id': row[0],
+            'agent_id': row[1],
+            'provider_key': row[2],
+            'model_id': row[3],
+            'inference_config': row[4] if row[4] else {},
+        }
+
+
+async def update_conversation_model(
+    conn: AsyncConnection,
+    conv_id: int,
+    provider_key: str,
+    model_id: str,
+    inference_config: dict[str, Any],
+) -> None:
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            UPDATE conversations
+            SET provider_key = %s, model_id = %s, inference_config = %s
+            WHERE id = %s
+            """,
+            (provider_key, model_id, json.dumps(inference_config), conv_id),
+        )
 
 
 async def get_latest_sequence_id(conn: AsyncConnection, conv_id: int) -> Optional[int]:
@@ -390,27 +417,14 @@ async def get_blocking_message_id(conn: AsyncConnection, conv_id: int) -> Option
         return row[0] if row and row[0] is not None else None
 
 
-async def _resolve_agent(
-    agent_id: Optional[str],
-    fallback_provider: Optional[str],
-    fallback_model: Optional[str],
-    req_scopes: list[UserScopeChoice],
-    inference_config: dict[str, Any] = {},
-    resolved_scopes: Optional[list[ScopeSpec]] = None,
-) -> tuple:
-    """Resolve provider, model, scopes, instructions and the agent config."""
-    if agent_id:
-        agent = await get_agent_by_name(agent_id)
-        if agent is None:
-            raise ValueError(f"Agent '{agent_id}' not found")
-        scopes = resolved_scopes if resolved_scopes is not None else await scopes_for_agent(agent, req_scopes)
-        return agent.provider_key, agent.model_id, agent.inference_config, scopes, agent.instructions, agent
-    if not fallback_provider:
-        raise ValueError('provider_key required')
-    if not fallback_model:
-        raise ValueError('model_id required')
-    scopes = resolved_scopes if resolved_scopes is not None else await resolve_scopes(None, req_scopes)
-    return fallback_provider, fallback_model, inference_config, scopes, None, None
+def _validate_model_choice(provider_key: Optional[str], model_id: Optional[str]) -> tuple[str, str]:
+    if not provider_key or not model_id:
+        raise ValueError('provider_key and model_id are required')
+    try:
+        registry.get(provider_key)
+    except KeyError as exc:
+        raise ValueError(f"Provider '{provider_key}' is not available") from exc
+    return provider_key, model_id
 
 
 def tools_for_agent(agent: Optional[AgentConfig]) -> list[Tool]:
@@ -428,60 +442,42 @@ def tools_for_agent(agent: Optional[AgentConfig]) -> list[Tool]:
 
 async def prepare_and_start_generation(
     prompt: str,
-    conversation_id: Optional[int],
-    agent_id: Optional[str] = None,
-    project_id: Optional[str] = None,
-    provider_key: Optional[str] = None,
-    model_id: Optional[str] = None,
-    extra_scopes: list[UserScopeChoice] = [],
+    conversation_id: int,
+    provider_key: Optional[str],
+    model_id: Optional[str],
     inference_config: dict[str, Any] = {},
 ) -> tuple[int, StoredMessageRecord]:
-    if conversation_id is None:
-        numeric_project_id: Optional[int] = None
-        if project_id is not None:
-            numeric_project_id = await resolve_project_id(project_id)
-            if numeric_project_id is None:
-                raise ValueError(f"Project '{project_id}' not found")
+    provider_key, model_id = _validate_model_choice(provider_key, model_id)
+    async with mk_conn() as conn:
+        blocking_id = await get_blocking_message_id(conn, conversation_id)
+        if blocking_id is not None:
+            raise ConversationBlockedError(blocking_id)
+        config = await get_conversation_config(conn, conversation_id)
+        if config is None:
+            raise ValueError('conversation not found')
+        latest_sequence_id = await get_latest_sequence_id(conn, conversation_id)
+
+    # The state is registered before any write, so a concurrent prompt is
+    # rejected on the existing "running" state instead of starting a second run.
+    async with active_generations_lock:
+        existing = active_generations.get(conversation_id)
+        if existing is not None and existing.status == 'running':
+            raise ActiveGenerationExistsError()
+        state = ActiveGeneration(conversation_id, latest_sequence_id)
+        active_generations[conversation_id] = state
+
+    try:
+        # The model is stored only once the prompt is accepted, together with the message.
         async with mk_conn() as conn:
-            conversation_id = await create_conversation(conn, numeric_project_id)
+            await update_conversation_model(conn, conversation_id, provider_key, model_id, inference_config)
             user_record = await insert_message(conn, conversation_id, 'user', Message(author='user', content=prompt))
             await conn.commit()
+        state.task = asyncio.create_task(_run_generation_task(state))
+    except Exception:
         async with active_generations_lock:
-            state = ActiveGeneration(conversation_id, user_record.sequence_id)
-            active_generations[conversation_id] = state
-    else:
-        async with mk_conn() as conn:
-            blocking_id = await get_blocking_message_id(conn, conversation_id)
-            if blocking_id is not None:
-                raise ConversationBlockedError(blocking_id)
-            latest_sequence_id = await get_latest_sequence_id(conn, conversation_id)
-            _, stored_project_name = await get_conversation_project(conn, conversation_id)
-        if project_id is not None and project_id != stored_project_name:
-            raise ValueError('a conversation cannot change its project')
-        async with active_generations_lock:
-            existing = active_generations.get(conversation_id)
-            if existing is not None and existing.status == 'running':
-                raise ActiveGenerationExistsError()
-            state = ActiveGeneration(conversation_id, latest_sequence_id)
-            active_generations[conversation_id] = state
-        try:
-            async with mk_conn() as conn:
-                user_record = await insert_message(conn, conversation_id, 'user', Message(author='user', content=prompt))
-                await conn.commit()
-        except Exception:
-            async with active_generations_lock:
-                if active_generations.get(conversation_id) is state:
-                    active_generations.pop(conversation_id, None)
-            raise
-
-    state.task = asyncio.create_task(_run_generation_task(
-        state,
-        agent_id=agent_id,
-        provider_key=provider_key,
-        model_id=model_id,
-        extra_scopes=extra_scopes,
-        inference_config=inference_config,
-    ))
+            if active_generations.get(conversation_id) is state:
+                active_generations.pop(conversation_id, None)
+        raise
     return conversation_id, user_record
 
 async def get_messages_for_continuation(conv_id: int) -> list[tuple[int, ConversationElement]]:
@@ -530,22 +526,25 @@ async def _insert_blocking_tool_call(
 
 async def prompt_conversation(
         conv_id: int,
-        agent_id: Optional[str] = None, provider_key: Optional[str] = None, model_id: Optional[str] = None,
-        extra_scopes: list[UserScopeChoice] = [],
-        inference_config: dict[str, Any] = {},
-        resolved_scopes: Optional[list[ScopeSpec]] = None,
         spawn_depth: int = 0,
     ) -> AsyncGenerator[StreamEvent, None]:
-    provider_key, model_id, inference_config, scopes, agent_prompt, agent = await _resolve_agent(
-        agent_id, provider_key, model_id, extra_scopes, inference_config, resolved_scopes
-    )
     async with mk_conn() as conn:
-        _, project_name = await get_conversation_project(conn, conv_id)
-    project = await get_project_by_name(project_name) if project_name else None
+        config = await get_conversation_config(conn, conv_id)
+    if config is None:
+        raise ValueError('conversation not found')
+    provider_key, model_id = _validate_model_choice(config['provider_key'], config['model_id'])
+    inference_config = config['inference_config'] or {}
+    workspace_id = config['workspace_id']
+    if workspace_id is None:
+        raise ValueError('conversation has no workspace')
+    agent_id = config['agent_id']
+    agent = await get_agent_by_name(agent_id) if agent_id else None
+    scopes = await resolve_workspace_scopes(workspace_id)
     functions = tools_for_agent(agent)
     messages = await get_messages_for_continuation(conv_id)
     tool_context = ToolContext(
         conversation_id=conv_id,
+        workspace_id=workspace_id,
         scopes=scopes,
         agent=agent,
         spawn_depth=spawn_depth,
@@ -563,8 +562,7 @@ async def prompt_conversation(
             messages=messages,
             scopes=scopes,
             tools=functions,
-            instructions=agent_prompt,
-            project_instructions=project.instructions if project else None,
+            instructions=agent.instructions if agent else None,
         )
         chat_gen_inner = provider.run_chat_completion_stream(model_id, inference_config, chat_context)
         run_next_loop = False
@@ -586,7 +584,6 @@ async def prompt_conversation(
                                 name=name,
                                 parameters=parameters,
                                 result=tool_result.result,
-                                scopes=scopes
                             )
                             if tool_result.is_blocking:
                                 record, approval_record = await _insert_blocking_tool_call(conv_id, result_element)
@@ -646,21 +643,9 @@ async def get_active_generation(conv_id: int) -> Optional[ActiveGeneration]:
 
 async def _run_generation_task(
     state: ActiveGeneration,
-    agent_id: Optional[str] = None,
-    provider_key: Optional[str] = None,
-    model_id: Optional[str] = None,
-    extra_scopes: list[UserScopeChoice] = [],
-    inference_config: dict[str, Any] = {},
 ) -> None:
     try:
-        async for event in prompt_conversation(
-            state.conversation_id,
-            agent_id=agent_id,
-            provider_key=provider_key,
-            model_id=model_id,
-            extra_scopes=extra_scopes,
-            inference_config=inference_config,
-        ):
+        async for event in prompt_conversation(state.conversation_id):
             await state.apply_event(event)
         await state.finish()
     except asyncio.CancelledError:
@@ -674,15 +659,12 @@ async def _run_generation_task(
             if active_generations.get(state.conversation_id) is state:
                 active_generations.pop(state.conversation_id, None)
 
-async def start_generation(
-    conv_id: int,
-    agent_id: Optional[str] = None,
-    provider_key: Optional[str] = None,
-    model_id: Optional[str] = None,
-    extra_scopes: list[UserScopeChoice] = [],
-    inference_config: dict[str, Any] = {},
-) -> ActiveGeneration:
+async def start_generation(conv_id: int) -> ActiveGeneration:
     async with mk_conn() as conn:
+        config = await get_conversation_config(conn, conv_id)
+        if config is None:
+            raise ValueError('conversation not found')
+        _validate_model_choice(config['provider_key'], config['model_id'])
         latest_sequence_id = await get_latest_sequence_id(conn, conv_id)
     async with active_generations_lock:
         existing = active_generations.get(conv_id)
@@ -690,14 +672,7 @@ async def start_generation(
             raise ActiveGenerationExistsError()
         state = ActiveGeneration(conv_id, latest_sequence_id)
         active_generations[conv_id] = state
-        state.task = asyncio.create_task(_run_generation_task(
-            state,
-            agent_id=agent_id,
-            provider_key=provider_key,
-            model_id=model_id,
-            extra_scopes=extra_scopes,
-            inference_config=inference_config,
-        ))
+        state.task = asyncio.create_task(_run_generation_task(state))
         return state
 
 async def stream_conversation_events(
@@ -705,13 +680,21 @@ async def stream_conversation_events(
     after_sequence_id: Optional[int] = None,
 ) -> AsyncGenerator[StreamEvent, None]:
     state = await get_active_generation(conv_id)
+    seen_finalized: set[int] = set()
 
-    if state is None:
+    async def replay_latest() -> AsyncGenerator[StreamEvent, None]:
         async with mk_conn() as conn:
             records = await get_messages_after(conn, conv_id, after_sequence_id)
         for record in records:
+            if record.id in seen_finalized:
+                continue
+            seen_finalized.add(record.id)
             for event in stored_record_to_stream_events(record):
                 yield event
+
+    if state is None:
+        async for event in replay_latest():
+            yield event
         return
 
     boundary_sequence_id, snapshot_events, queue = await state.subscribe()
@@ -719,21 +702,50 @@ async def stream_conversation_events(
         async with mk_conn() as conn:
             records = await get_messages_after(conn, conv_id, after_sequence_id, boundary_sequence_id)
         for record in records:
+            if record.id in seen_finalized:
+                continue
+            seen_finalized.add(record.id)
             for event in stored_record_to_stream_events(record):
                 yield event
+        content_since_finalized = False
         for event in snapshot_events:
+            if event.type == 'finalized':
+                if content_since_finalized:
+                    seen_finalized.add(event.id)
+                content_since_finalized = False
+            elif event.type in ('message', 'thinking', 'tool_call', 'tool_call_result', 'tool_call_decision'):
+                content_since_finalized = True
             yield event
         while True:
             queued_event = await queue.get()
             if queued_event is None:
                 break
+            if queued_event.type == 'finalized':
+                if content_since_finalized:
+                    seen_finalized.add(queued_event.id)
+                content_since_finalized = False
+            elif queued_event.type in ('message', 'thinking', 'tool_call', 'tool_call_result', 'tool_call_decision'):
+                content_since_finalized = True
             yield queued_event
+        # A subscriber can join between a message chunk and its finalized event.
+        # Replay anything committed while we were attached that we did not see.
+        async for event in replay_latest():
+            yield event
     finally:
         await state.unsubscribe(queue)
 
-async def get_conversations(conn: AsyncConnection) -> list[dict[str, Any]]:
+async def get_conversations(
+    conn: AsyncConnection,
+    workspace_id: Optional[int] = None,
+) -> list[dict[str, Any]]:
     async with conn.cursor() as cur:
-        await cur.execute("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")
+        if workspace_id is None:
+            await cur.execute("SELECT id, title, created_at FROM conversations ORDER BY created_at DESC")
+        else:
+            await cur.execute(
+                "SELECT id, title, created_at FROM conversations WHERE workspace_id = %s ORDER BY created_at DESC",
+                (workspace_id,),
+            )
         rows = await cur.fetchall()
     return [{'id': r[0], 'title': r[1], 'created_at': r[2].isoformat()} for r in rows]
 
@@ -741,9 +753,10 @@ async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optio
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT c.id, c.title, c.created_at, c.blocking_message_id, p.internal_name
+            SELECT c.id, c.title, c.created_at, c.blocking_message_id, c.workspace_id,
+                   w.name, c.provider_key, c.model_id, c.agent_id, c.inference_config
             FROM conversations c
-            LEFT JOIN projects p ON p.id = c.project_id
+            LEFT JOIN workspaces w ON w.id = c.workspace_id
             WHERE c.id = %s
             """,
             (conv_id,),
@@ -762,7 +775,12 @@ async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optio
             'title': row[1],
             'created_at': row[2].isoformat(),
             'blocking_message_id': row[3],
-            'project_id': row[4],
+            'workspace_id': row[4],
+            'workspace_name': row[5],
+            'provider_key': row[6],
+            'model_id': row[7],
+            'agent_id': row[8],
+            'inference_config': row[9] if row[9] else {},
             'messages': messages
         }
 
@@ -814,6 +832,15 @@ async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve
         return None
 
     assert isinstance(elem, ToolCall)
+    async with mk_conn() as config_conn:
+        config = await get_conversation_config(config_conn, conv_id)
+    if config is None:
+        raise ValueError('conversation not found')
+    workspace_id = config['workspace_id']
+    if workspace_id is None:
+        raise ValueError('conversation has no workspace')
+    scopes = await resolve_workspace_scopes(workspace_id)
+    agent = await get_agent_by_name(config['agent_id']) if config['agent_id'] else None
     interrupted: BaseException | None = None
     try:
         result = await run_tool_call(
@@ -821,8 +848,10 @@ async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve
             elem.parameters,
             ToolContext(
                 conversation_id=conv_id,
+                workspace_id=workspace_id,
                 privileged=True,
-                scopes=elem.scopes,
+                scopes=scopes,
+                agent=agent,
             ),
         )
         result_text = result.result
@@ -874,20 +903,35 @@ async def delete_conversation(conv_id: int) -> bool:
             await cur.execute("DELETE FROM conversations WHERE id = %s RETURNING id", (conv_id,))
             if not await cur.fetchone():
                 return False
-    system.remove_workspace(conv_id)
+    system.remove_sandbox(conv_id)
     return True
 
-@router.post('/api/conversations/prompt')
-async def prompt_model(payload: PromptRequest):
+@router.post('/api/conversations')
+async def create_conversation_endpoint(payload: CreateConversationRequest):
+    from workspaces import get_workspace
+    workspace = await get_workspace(payload.workspace_id)
+    if workspace is None:
+        return JSONResponse(status_code=400, content={'error': 'workspace not found'})
+    if payload.agent_id is not None:
+        agent = await get_agent_by_name(payload.agent_id)
+        if agent is None:
+            return JSONResponse(status_code=400, content={'error': 'agent not found'})
+    async with mk_conn() as conn:
+        conv_id = await create_conversation(conn, payload.workspace_id, payload.agent_id)
+        await conn.commit()
+        details = await get_conversation_details(conn, conv_id)
+    assert details is not None
+    return JSONResponse(content=details, status_code=201)
+
+
+@router.post('/api/conversations/{conv_id}/prompt')
+async def prompt_model(conv_id: int, payload: PromptRequest):
     try:
-        conversation_id, user_record = await prepare_and_start_generation(
+        _, user_record = await prepare_and_start_generation(
             payload.prompt,
-            payload.conversation_id,
-            agent_id=payload.agent_id,
-            project_id=payload.project_id,
+            conv_id,
             provider_key=payload.provider_key,
             model_id=payload.model_id,
-            extra_scopes=payload.scopes,
             inference_config=payload.inference_config,
         )
     except ConversationBlockedError as e:
@@ -901,18 +945,19 @@ async def prompt_model(payload: PromptRequest):
         return JSONResponse(status_code=400, content={"error": str(e)})
 
     async def stream():
-        async for event in stream_conversation_events(conversation_id, user_record.sequence_id):
+        async for event in stream_conversation_events(conv_id, user_record.sequence_id):
             yield serialize_ndjson_event(event)
 
     return StreamingResponse(
         stream(),
-        media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
+        media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conv_id)}
     )
 
+
 @router.get('/api/conversations')
-async def list_conversations():
+async def list_conversations(workspace_id: Optional[int] = None):
     async with mk_conn() as conn:
-        conversations = await get_conversations(conn)
+        conversations = await get_conversations(conn, workspace_id=workspace_id)
     return JSONResponse(content=conversations)
 
 @router.get('/api/conversations/{conv_id}')
@@ -960,6 +1005,7 @@ async def delete_conversation_endpoint(conv_id: int):
     except Exception as e:
         return JSONResponse(status_code=500, content={'error': str(e)})
 
+
 @router.post('/api/conversations/{conv_id}/tool_calls/{msg_id}/decide')
 async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request):
     payload = await request.json()
@@ -969,17 +1015,18 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
         return JSONResponse(status_code=400, content={'error': 'invalid decision'})
 
     try:
-        result = await decide_tool_call(conv_id, msg_id, decision, comment=comment)
+        result = await decide_tool_call(conv_id, msg_id, decision, comment=comment or "")
         return JSONResponse(content={'status': 'success', 'executed': result is not None, 'result': result})
     except ValueError as e:
         return JSONResponse(status_code=400, content={'error': str(e)})
     except Exception as e:
         return JSONResponse(status_code=500, content={'error': str(e)})
 
-@router.post('/api/conversations/{conversation_id}/continue')
-async def continue_conversation_endpoint(conversation_id: int, payload: ContinueRequest):
+
+@router.post('/api/conversations/{conv_id}/continue')
+async def continue_conversation_endpoint(conv_id: int):
     async with mk_conn() as conn:
-        details = await get_conversation_details(conn, conversation_id)
+        details = await get_conversation_details(conn, conv_id)
         if not details:
             return JSONResponse(status_code=404, content={'error': 'conversation not found'})
         if details.get('blocking_message_id') is not None:
@@ -987,29 +1034,20 @@ async def continue_conversation_endpoint(conversation_id: int, payload: Continue
                 status_code=403,
                 content={"error": "Action required", "blocking_message_id": details.get('blocking_message_id')}
             )
-        after_sequence_id = await get_latest_sequence_id(conn, conversation_id)
-
-    project_id = details.get('project_id')
-    if payload.project_id is not None and payload.project_id != project_id:
-        return JSONResponse(status_code=400, content={"error": "a conversation cannot change its project"})
+        after_sequence_id = await get_latest_sequence_id(conn, conv_id)
 
     try:
-        await start_generation(
-            conversation_id,
-            agent_id=payload.agent_id,
-            provider_key=payload.provider_key,
-            model_id=payload.model_id,
-            extra_scopes=payload.scopes,
-            inference_config=payload.inference_config,
-        )
+        await start_generation(conv_id)
     except ActiveGenerationExistsError:
-        return JSONResponse(status_code=409, content={"error": "conversation is already generating"})
+        return JSONResponse(status_code=409, content={'error': 'conversation is already generating'})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={'error': str(e)})
 
     async def stream():
-        async for event in stream_conversation_events(conversation_id, after_sequence_id):
+        async for event in stream_conversation_events(conv_id, after_sequence_id):
             yield serialize_ndjson_event(event)
 
     return StreamingResponse(
         stream(),
-        media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conversation_id)}
+        media_type='application/x-ndjson', headers={'X-Conversation-ID': str(conv_id)}
     )

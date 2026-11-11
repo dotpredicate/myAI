@@ -1,8 +1,7 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, asError, renderParamFields, statusMessage as setStatus, validateKey, validateRequired, reportFieldErrors, messageOf, type FieldControl, type MountOptions, type ParamValue, type Route } from '../ui.js';
 import { api } from '../core/api.js';
-import type { AgentConfig, AgentList, CreateAgentRequest, DeleteResponse, InferenceParam, InferenceParamList, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, RepositoryConfig, RepositoryList, UpdateAgentRequest } from '../core/api.js';
+import type { AgentConfig, AgentList, CreateAgentRequest, DeleteResponse, InferenceParam, InferenceParamList, ProviderInfo, ProviderList, ProviderModel, ProviderModelList, UpdateAgentRequest } from '../core/api.js';
 import { Row, Stack, Grid, Page, Heading, Card, Hint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, ListItem, Form, Summary } from '../components.js';
-import { createRepositoryAccessEditor, type RepositoryAccessEntry } from './repositoryAccess.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {
   const root = Page({});
@@ -17,9 +16,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
   interface AgentsData {
     agents: AgentConfig[];
-    repositories: RepositoryConfig[];
     providers: ProviderInfo[];
-    repositoriesLoaded: boolean;
     providersLoaded: boolean;
   }
 
@@ -27,16 +24,12 @@ export function mount(route: Route, _options: MountOptions = {}) {
     key: string;
     onProvidersLoaded(providers: ProviderInfo[]): void;
     onProvidersError(error: Error, retry: () => void): void;
-    onRepositoriesLoaded(repositories: RepositoryConfig[]): void;
-    onRepositoriesError(error: Error, retry: () => void): void;
     onAgentsLoaded(agents: AgentConfig[]): void;
   }
 
   const data: AgentsData = {
     agents: [],
-    repositories: [],
     providers: [],
-    repositoriesLoaded: false,
     providersLoaded: false,
   };
 
@@ -109,20 +102,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
     }
   }
 
-  async function loadRepositories(): Promise<void> {
-    try {
-      const response = await api.get<RepositoryList>('/api/repositories');
-      if (destroyed) return;
-      data.repositories = Array.isArray(response.repositories) ? response.repositories : [];
-      data.repositoriesLoaded = true;
-      editor?.onRepositoriesLoaded(data.repositories);
-    } catch (error) {
-      if (destroyed) return;
-      data.repositoriesLoaded = false;
-      editor?.onRepositoriesError(asError(error), loadRepositories);
-    }
-  }
-
   async function loadProviders(): Promise<void> {
     try {
       const response = await api.get<ProviderList>('/api/providers');
@@ -146,26 +125,14 @@ export function mount(route: Route, _options: MountOptions = {}) {
     let models: ProviderModel[] = [];
     let params: InferenceParam[] = [];
     let config: Record<string, ParamValue> = { ...agent?.inference_config };
-    const initialAccess: RepositoryAccessEntry[] =
-      (agent?.repository_access || []).map((entry) => ({
-        repository_id: entry.repository_id,
-        repository_internal_name: entry.repository_internal_name,
-        security_policy_override: entry.security_policy_override || null,
-      }));
     let dirty = false;
     let saving = false;
     let requestToken = 0;
     let providers = data.providers;
-    let repositories = data.repositories;
 
     function markDirty(): void {
       dirty = true;
     }
-
-    const repoAccess = createRepositoryAccessEditor({
-      initial: initialAccess,
-      onChange: markDirty,
-    });
 
     const heading = Heading(2, isEdit ? `Edit ${agent?.display_name || originalKey}` : 'New agent');
     const formError = Notice({ level: 'error' });
@@ -242,7 +209,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
       ? Button('Delete', { variant: 'danger' })
       : null;
 
-    const form = Form({ novalidate: true }, Grid({ columns: 2 }, nameField.wrapper, keyField.wrapper), descriptionField.wrapper, instructionsField.wrapper, spawnableField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelField.wrapper), providerStatus, modelStatus, settingsDetails, repoAccess.section, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
+    const form = Form({ novalidate: true }, Grid({ columns: 2 }, nameField.wrapper, keyField.wrapper), descriptionField.wrapper, instructionsField.wrapper, spawnableField.wrapper, Grid({ columns: 2 }, providerField.wrapper, modelField.wrapper), providerStatus, modelStatus, settingsDetails, formError, Row(saveButton, cancelButton, Spacer(), deleteButton));
 
     editorContainer.appendChild(el('header', {}, heading));
     editorContainer.appendChild(form);
@@ -404,21 +371,15 @@ export function mount(route: Route, _options: MountOptions = {}) {
       const errors: FieldControl[] = [];
       validateRequired(nameField, displayName, 'Name is required.', errors);
       if (!isEdit) validateKey(keyField, internalName, errors);
-      validateRequired(providerField, selectedProvider, 'Provider is required.', errors);
-      validateRequired(modelField, selectedModel, 'Choose a model.', errors);
       if (reportFieldErrors(errors)) return;
       const payload: UpdateAgentRequest = {
         display_name: displayName,
         description: descriptionInput.value.trim(),
         instructions: instructionsInput.value.trim() || null,
         spawnable_agents: [...spawnable],
-        provider_key: selectedProvider,
-        model_id: selectedModel,
-        inference_config: config,
-        repository_access: repoAccess.entries.map((entry) => ({
-          repository_id: entry.repository_id,
-          security_policy_override: entry.security_policy_override,
-        })),
+        provider_key: selectedProvider || null,
+        model_id: selectedModel || null,
+        inference_config: selectedProvider && selectedModel ? config : {},
       };
       saving = true;
       saveButton.disabled = true;
@@ -431,8 +392,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
           const createPayload: CreateAgentRequest = {
             ...payload,
             display_name: displayName,
-            provider_key: selectedProvider,
-            model_id: selectedModel,
+            provider_key: selectedProvider || null,
+            model_id: selectedModel || null,
             internal_name: internalName,
           };
           saved = await api.post<AgentConfig>('/api/agents', createPayload);
@@ -493,7 +454,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
     });
 
     fillProviderSelect();
-    repoAccess.setRepositories(repositories, data.repositoriesLoaded);
     renderSpawnable(data.agents);
     renderSettings();
 
@@ -522,13 +482,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
       onProvidersError(error, retry) {
         setStatus(providerStatus, `Could not load providers: ${messageOf(error)}`, { error: true, retry });
       },
-      onRepositoriesLoaded(nextRepositories) {
-        repositories = nextRepositories;
-        repoAccess.setRepositories(repositories, true);
-      },
-      onRepositoriesError(error, retry) {
-        repoAccess.setError(error, retry);
-      },
       onAgentsLoaded(nextAgents) {
         renderSpawnable(nextAgents);
       },
@@ -537,7 +490,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
   if (currentMode === 'new') renderEditor(null);
   loadAgents();
-  loadRepositories();
   loadProviders();
 
   return {

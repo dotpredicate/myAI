@@ -270,7 +270,3 @@ class TestMessageConversion(unittest.TestCase):
 
         self.assertNotIn("reasoning_content", without[1])
         self.assertEqual(with_reasoning[1]["reasoning_content"], "internal reasoning")
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1,5 +1,4 @@
 import os
-import unittest
 from pathlib import Path
 
 import paths
@@ -12,43 +11,43 @@ from system import (
     get_repo_from_vpath,
     resolve_repo_vpath,
 )
-from domain import ScopeSpec, SecurityPolicy
+from domain import ScopeSpec
 
 
 class TestSystem(BaseTestCase):
     @property
     def workspace_dir(self) -> Path:
-        path = paths.WORKSPACES_ROOT / "1"
+        path = paths.SPACES_ROOT / "1"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     async def test_run_sandboxed_command_basic(self):
-        result = await run_sandboxed_command("echo hello", scopes=[], conversation_id=1)
+        result = await run_sandboxed_command("echo hello", scopes=[], workspace_id=1, conversation_id=1)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "hello")
 
     async def test_run_sandboxed_command_with_output(self):
-        result = await run_sandboxed_command("printf 'line1\\nline2\\n'", scopes=[], conversation_id=1)
+        result = await run_sandboxed_command("printf 'line1\\nline2\\n'", scopes=[], workspace_id=1, conversation_id=1)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "line1\nline2\n")
 
     async def test_run_sandboxed_command_with_scopes(self):
         repo = await self._helper_create_repo("test_repo", self._repo_dir.name)
         self.assertEqual(repo.status_code, 201)
-        scopes = [ScopeSpec(internal_name="test_repo", security_policy=SecurityPolicy.WRITE)]
-        result = await run_sandboxed_command("echo 'hello from scoped'", scopes=scopes, conversation_id=1)
+        scopes = [ScopeSpec(internal_name="test_repo")]
+        result = await run_sandboxed_command("echo 'hello from scoped'", scopes=scopes, workspace_id=1, conversation_id=1)
         self.assertEqual(result.returncode, 0)
 
     async def test_run_sandboxed_command_has_empty_repositories_without_scopes(self):
-        result = await run_sandboxed_command("ls -A /repositories", scopes=[], conversation_id=1)
+        result = await run_sandboxed_command("ls -A /repositories", scopes=[], workspace_id=1, conversation_id=1)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
 
     async def test_run_sandboxed_command_lists_scoped_repositories(self):
         repo = await self._helper_create_repo("test_repo", self._repo_dir.name)
         self.assertEqual(repo.status_code, 201)
-        scopes = [ScopeSpec(internal_name="test_repo", security_policy=SecurityPolicy.READ_ONLY)]
-        result = await run_sandboxed_command("ls /repositories", scopes=scopes, conversation_id=1)
+        scopes = [ScopeSpec(internal_name="test_repo")]
+        result = await run_sandboxed_command("ls /repositories", scopes=scopes, workspace_id=1, conversation_id=1)
         self.assertEqual(result.returncode, 0)
         self.assertIn("test_repo", result.stdout)
 
@@ -56,20 +55,20 @@ class TestSystem(BaseTestCase):
         (Path(self._repo_dir.name) / "note.txt").write_text("hello", encoding="utf-8")
         repo = await self._helper_create_repo("test_repo", self._repo_dir.name)
         self.assertEqual(repo.status_code, 201)
-        scopes = [ScopeSpec(internal_name="test_repo", security_policy=SecurityPolicy.READ_ONLY)]
-        result = await run_sandboxed_command("ls /repositories/test_repo/", scopes=scopes, conversation_id=1)
+        scopes = [ScopeSpec(internal_name="test_repo")]
+        result = await run_sandboxed_command("ls /repositories/test_repo/", scopes=scopes, workspace_id=1, conversation_id=1)
         self.assertEqual(result.returncode, 0)
         self.assertIn("note.txt", result.stdout)
 
     async def test_run_sandboxed_command_readonly_scope(self):
         repo = await self._helper_create_repo("test_repo", self._repo_dir.name)
         self.assertEqual(repo.status_code, 201)
-        scopes = [ScopeSpec(internal_name="test_repo", security_policy=SecurityPolicy.READ_ONLY)]
-        result = await run_sandboxed_command("echo 'hello from read-only'", scopes=scopes, conversation_id=1)
+        scopes = [ScopeSpec(internal_name="test_repo")]
+        result = await run_sandboxed_command("echo 'hello from read-only'", scopes=scopes, workspace_id=1, conversation_id=1)
         self.assertEqual(result.returncode, 0)
 
     async def test_run_sandboxed_command_error(self):
-        result = await run_sandboxed_command("invalid_command_that_does_not_exist", scopes=[], conversation_id=1)
+        result = await run_sandboxed_command("invalid_command_that_does_not_exist", scopes=[], workspace_id=1, conversation_id=1)
         self.assertIsNotNone(result.returncode)
         self.assertNotEqual(result.returncode, 0)
 
@@ -79,7 +78,7 @@ class TestSystem(BaseTestCase):
             result = await run_sandboxed_command(
                 "printf '%s' \"$MYAI_TEST_SECRET\"",
                 scopes=[],
-                conversation_id=1,
+                workspace_id=1, conversation_id=1,
             )
         finally:
             os.environ.pop("MYAI_TEST_SECRET", None)
@@ -91,14 +90,14 @@ class TestSystem(BaseTestCase):
         result = await run_sandboxed_command(
             "printf '%s\\n%s\\n' \"$HOME\" \"$TMPDIR\"; test -d /tmp && echo tmp-ok",
             scopes=[],
-            conversation_id=1,
+            workspace_id=1, conversation_id=1,
         )
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "/workspace\n/tmp\ntmp-ok\n")
 
     async def test_run_sandboxed_command_starts_in_workspace(self):
-        result = await run_sandboxed_command("pwd", scopes=[], conversation_id=1)
+        result = await run_sandboxed_command("pwd", scopes=[], workspace_id=1, conversation_id=1)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "/workspace")
 
@@ -106,7 +105,7 @@ class TestSystem(BaseTestCase):
         result = await run_sandboxed_command(
             "python3 -c \"print('x' * 200000)\"",
             scopes=[],
-            conversation_id=1,
+            workspace_id=1, conversation_id=1,
         )
         self.assertEqual(result.returncode, 0)
         self.assertLessEqual(len(result.stdout), MAX_OUTPUT_CHARS + 200)
@@ -116,7 +115,7 @@ class TestSystem(BaseTestCase):
         result = await run_sandboxed_command(
             "echo hello > /workspace/note.txt",
             scopes=[],
-            conversation_id=1,
+            workspace_id=1, conversation_id=1,
         )
 
         self.assertEqual(result.returncode, 0)
@@ -124,7 +123,7 @@ class TestSystem(BaseTestCase):
 
     def test_is_safe_vpath_requires_exact_scope_segment(self):
         vroot = Path("/repositories")
-        scopes = [ScopeSpec(internal_name="foo", security_policy=SecurityPolicy.READ_ONLY)]
+        scopes = [ScopeSpec(internal_name="foo")]
 
         allowed, _ = is_safe_vpath(Path("/repositories/foo/bar.txt"), vroot, scopes)
         self.assertTrue(allowed)
@@ -194,7 +193,3 @@ class TestSystem(BaseTestCase):
         vpath = Path("/repositories/nonexistent/foo.py")
         resolved = await resolve_repo_vpath(vpath)
         self.assertIsNone(resolved)
-
-
-if __name__ == "__main__":
-    unittest.main()

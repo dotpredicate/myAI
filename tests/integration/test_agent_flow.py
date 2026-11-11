@@ -1,4 +1,3 @@
-import unittest
 from tests.helpers import BaseTestCase
 
 class TestAgentFlow(BaseTestCase):
@@ -30,6 +29,3 @@ class TestAgentFlow(BaseTestCase):
         agent_in_list = next(a for a in agents if a["internal_name"] == "e2e_agent")
         self.assertEqual(agent_in_list["display_name"], "E2E Test Agent")
         self.assertEqual(agent_in_list["provider_key"], "mock_e2e")
-
-if __name__ == "__main__":
-    unittest.main()

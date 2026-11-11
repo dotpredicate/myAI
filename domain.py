@@ -1,26 +1,15 @@
-from enum import StrEnum
 from typing import Any, Literal, Optional, Union, List
 from pydantic import BaseModel, ConfigDict, TypeAdapter, field_validator
-
-class SecurityPolicy(StrEnum):
-    READ_ONLY = 'read-only'
-    PRIVILEGED_WRITE = 'privileged-write'
-    WRITE = 'write'
-
-def scope_policy_is_escalation(override: Optional[SecurityPolicy], base_policy: SecurityPolicy) -> bool:
-    if override is None:
-        return False
-    order: list[SecurityPolicy] = [SecurityPolicy.READ_ONLY, SecurityPolicy.PRIVILEGED_WRITE, SecurityPolicy.WRITE]
-    return order.index(override) > order.index(base_policy)
 
 
 def normalize_scope_name(name: str) -> str:
     """Strip accidental whitespace and surrounding slashes from a repository name."""
     return name.strip().strip('/')
 
+
 class ScopeSpec(BaseModel):
     internal_name: str
-    security_policy: SecurityPolicy
+
 
 class RepositoryConfig(BaseModel):
     id: int
@@ -28,18 +17,7 @@ class RepositoryConfig(BaseModel):
     internal_name: str
     repo_type: Literal['plain', 'git']
     path: str
-    security_policy: SecurityPolicy
 
-class RepositoryAccessEntry(BaseModel):
-    repository_id: int
-    security_policy_override: Optional[SecurityPolicy] = None
-
-class AgentRepositoryAccess(BaseModel):
-    id: int = 0
-    agent_id: int = 0
-    repository_id: int
-    repository_internal_name: str = ''
-    security_policy_override: Optional[SecurityPolicy] = None
 
 class AgentConfig(BaseModel):
     id: int
@@ -47,30 +25,25 @@ class AgentConfig(BaseModel):
     internal_name: str
     description: str
     instructions: Optional[str] = None
-    provider_key: str
-    model_id: str
-    inference_config: dict[str, Any]
-    repository_access: List[AgentRepositoryAccess]
-    spawnable_agents: List[str] = []
-
-class ProjectRepositoryAccess(BaseModel):
-    id: int = 0
-    project_id: int = 0
-    repository_id: int
-    repository_internal_name: str = ''
-    security_policy_override: Optional[SecurityPolicy] = None
-
-class ProjectConfig(BaseModel):
-    id: int
-    display_name: str
-    internal_name: str
-    description: str
-    instructions: Optional[str] = None
-    default_agent: Optional[int] = None
     provider_key: Optional[str] = None
     model_id: Optional[str] = None
     inference_config: dict[str, Any] = {}
-    repository_access: List[ProjectRepositoryAccess] = []
+    spawnable_agents: List[str] = []
+
+
+class WorkspaceSource(BaseModel):
+    repository_id: int
+    internal_name: str
+    display_name: str
+    repo_type: Literal['plain', 'git']
+    path: str
+
+
+class WorkspaceConfig(BaseModel):
+    id: int
+    name: str
+    created_at: str
+    sources: List[WorkspaceSource] = []
 
 
 class _InferenceProviderRules:
@@ -209,7 +182,6 @@ class ToolCall(BaseModel):
     name: str
     parameters: str
     result: str
-    scopes: List[ScopeSpec] = []
 
 class ApprovalRequest(BaseModel):
     type: Literal['approval_request'] = 'approval_request'

@@ -74,7 +74,6 @@ class ChatContext:
     scopes: list[ScopeSpec]
     tools: list[Tool]
     instructions: Optional[str]
-    project_instructions: Optional[str] = None
 
 
 @dataclass(frozen=True)

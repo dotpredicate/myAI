@@ -212,7 +212,7 @@ async def delete_provider(provider_key: str):
     if existing is None:
         return JSONResponse(status_code=404, content={'error': 'provider not found'})
     if await provider_in_use(provider_key):
-        return JSONResponse(status_code=409, content={'error': 'provider is used by one or more agents or projects'})
+        return JSONResponse(status_code=409, content={'error': 'provider is used by one or more agents or conversations'})
     await delete_provider_config(provider_key)
     await reload_providers()
     return JSONResponse(content={'status': 'deleted', 'key': provider_key})

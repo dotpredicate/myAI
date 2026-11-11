@@ -1,5 +1,6 @@
 import { clear, el, uid } from './dom.js';
-import { RowRight, Stack, Heading, Paragraph, InlineHint, FieldError, FieldGroup, FieldLabel, Notice, Button, Input, Select, Option, InlineLoading } from './components.js';
+import { api, type BrowseEntry, type BrowseResult } from './core/api.js';
+import { Row, RowRight, Stack, Heading, Paragraph, InlineHint, FieldError, FieldGroup, FieldLabel, Notice, Button, Input, Select, Option, InlineLoading, LineHint } from './components.js';
 
 export { el, clear, uid } from './dom.js';
 
@@ -311,6 +312,106 @@ export function asParamValueMap(value: Record<string, unknown>): Record<string, 
   return result;
 }
 
+export interface FolderBrowser {
+  element: HTMLDivElement;
+  open(path: string): void;
+  hide(): void;
+}
+
+/** A folder picker shared by the forms that need a path on disk. */
+export function createFolderBrowser(onSelect: (path: string) => void): FolderBrowser {
+  const element = el('div', { class: 'inset stack', hidden: true });
+  let entries: BrowseEntry[] = [];
+  let currentPath = '';
+  let token = 0;
+
+  function hide(): void {
+    element.hidden = true;
+  }
+
+  function select(path: string): void {
+    hide();
+    onSelect(path);
+  }
+
+  function renderBreadcrumbs(): void {
+    clear(element);
+    const crumbs = el('nav', { class: 'row' });
+    const rootButton = Button('/', { variant: 'quiet', small: true });
+    rootButton.addEventListener('click', () => {
+      void load('/');
+    });
+    crumbs.appendChild(rootButton);
+    const parts = currentPath.split('/').filter(Boolean);
+    let accumulated = '';
+    for (const part of parts) {
+      accumulated += `/${part}`;
+      const target = accumulated;
+      crumbs.appendChild(document.createTextNode(' / '));
+      const button = Button(part, { variant: 'quiet', small: true });
+      button.addEventListener('click', () => {
+        void load(target);
+      });
+      crumbs.appendChild(button);
+    }
+    element.appendChild(crumbs);
+
+    const selectButton = Button('Select this folder', { small: true });
+    selectButton.addEventListener('click', () => select(currentPath));
+    element.appendChild(Row(selectButton));
+
+    if (entries.length === 0) {
+      element.appendChild(LineHint('This folder has no subfolders.'));
+      return;
+    }
+    const list = el('ul', { class: 'browse-list' });
+    for (const entry of entries) {
+      const openButton = el('button', { type: 'button', class: 'browse-open' }, `${entry.name}/`);
+      const pickButton = el('button', { type: 'button', class: 'browse-select' }, 'Select');
+      openButton.addEventListener('click', () => {
+        void load(entry.path);
+      });
+      pickButton.addEventListener('click', () => select(entry.path));
+      list.appendChild(el('li', { class: 'browse-entry' }, openButton, pickButton));
+    }
+    element.appendChild(list);
+  }
+
+  async function load(path: string): Promise<void> {
+    const request = ++token;
+    element.hidden = false;
+    clear(element);
+    element.appendChild(loadingState('Reading folders…'));
+    try {
+      const data = await api.get<BrowseResult>(`/api/browse?path=${encodeURIComponent(path)}&include=folders`);
+      if (request !== token) return;
+      currentPath = data.path;
+      entries = Array.isArray(data.entries) ? data.entries : [];
+      renderBreadcrumbs();
+    } catch (error) {
+      if (request !== token) return;
+      clear(element);
+      element.appendChild(compactError(messageOf(error) || 'Could not read this folder.'));
+      const retry = Button('Retry', { small: true });
+      retry.addEventListener('click', () => {
+        void load(path);
+      });
+      element.appendChild(retry);
+      const close = Button('Close', { variant: 'quiet', small: true });
+      close.addEventListener('click', hide);
+      element.appendChild(close);
+    }
+  }
+
+  return {
+    element,
+    open(path: string) {
+      void load(path);
+    },
+    hide,
+  };
+}
+
 export interface ConversationRef {
   id?: number | string | null;
   title?: string | null;
@@ -397,7 +498,7 @@ export function encodeKey(value: string | number): string {
   return encodeURIComponent(String(value));
 }
 
-export type ScreenName = 'chat' | 'images' | 'inference' | 'agents' | 'projects' | 'repositories';
+export type ScreenName = 'chat' | 'images' | 'inference' | 'agents' | 'workspaces' | 'repositories';
 
 export interface Route {
   name: ScreenName;
@@ -430,10 +531,8 @@ export function parseRoute(hash = window.location.hash): Route {
     if (segments[1] === 'new') return { name: 'agents', mode: 'new' };
     return { name: 'agents', mode: 'edit', key: segments[1] };
   }
-  if (screen === 'projects') {
-    if (!segments[1]) return { name: 'projects', mode: 'list' };
-    if (segments[1] === 'new') return { name: 'projects', mode: 'new' };
-    return { name: 'projects', mode: 'edit', key: segments[1] };
+  if (screen === 'workspaces') {
+    return { name: 'workspaces', key: segments[1] || null };
   }
   if (screen === 'repositories') {
     if (!segments[1]) return { name: 'repositories', key: null };
@@ -450,35 +549,6 @@ export function navigate(hash: string, { replace = false }: { replace?: boolean 
 
 export function onRoute(handler: (route: Route) => void): void {
   window.addEventListener('hashchange', () => handler(parseRoute()));
-}
-
-export type PolicyValue = 'read-only' | 'privileged-write' | 'write';
-
-export interface Policy {
-  value: PolicyValue;
-  label: string;
-}
-
-export const POLICIES: Policy[] = [
-  { value: 'read-only', label: 'Read only' },
-  { value: 'privileged-write', label: 'Privileged write' },
-  { value: 'write', label: 'Write' },
-];
-
-const ORDER: string[] = POLICIES.map((policy) => policy.value);
-
-export function asPolicy(value: string): PolicyValue | null {
-  return value === 'read-only' || value === 'privileged-write' || value === 'write' ? value : null;
-}
-
-export function policyLabel(value?: string | null): string {
-  return POLICIES.find((policy) => policy.value === value)?.label || value || '—';
-}
-
-export function allowedPolicies(basePolicy?: string | null): Policy[] {
-  const baseIndex = ORDER.indexOf(basePolicy || '');
-  if (baseIndex < 0) return POLICIES.slice();
-  return POLICIES.filter((policy) => ORDER.indexOf(policy.value) <= baseIndex);
 }
 
 export interface ParamSpec {

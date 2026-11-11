@@ -1,4 +1,3 @@
-import unittest
 from tests.helpers import BaseTestCase
 
 class TestAgents(BaseTestCase):
@@ -180,7 +179,3 @@ class TestAgents(BaseTestCase):
         get_res = await self.client.get("/api/agents")
         self.assertEqual(get_res.status_code, 200)
         self.assertIn("agents", get_res.json())
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -18,7 +18,3 @@ class TestTokenizationResponse(unittest.TestCase):
     def test_rejects_malformed_token(self) -> None:
         with self.assertRaises(ValueError):
             module._parse_tokenization_response({"tokens": [{"id": 1, "piece": [256]}]})
-
-
-if __name__ == "__main__":
-    unittest.main()

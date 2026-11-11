@@ -9,7 +9,7 @@ from fastapi import APIRouter, Body, Query
 from fastapi.responses import JSONResponse
 import database
 from log_config import get_logger
-from domain import RepositoryAccessEntry, SecurityPolicy, RepositoryConfig, scope_policy_is_escalation
+from domain import RepositoryConfig
 
 logger = get_logger(__name__)
 
@@ -17,47 +17,27 @@ router = APIRouter()
 
 async def get_repositories() -> List[RepositoryConfig]:
     async with database.mk_conn() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories ORDER BY display_name")
+        await cur.execute("SELECT id, display_name, internal_name, repo_type, path FROM repositories ORDER BY display_name")
         rows = await cur.fetchall()
-        return [RepositoryConfig(id=r[0], display_name=r[1], internal_name=r[2], repo_type=r[3], path=r[4], security_policy=r[5]) for r in rows]
+        return [RepositoryConfig(id=r[0], display_name=r[1], internal_name=r[2], repo_type=r[3], path=r[4]) for r in rows]
 
 
 async def get_repo_by_name(name: str) -> Optional[RepositoryConfig]:
     async with database.mk_conn() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories WHERE internal_name = %s", (name,))
+        await cur.execute("SELECT id, display_name, internal_name, repo_type, path FROM repositories WHERE internal_name = %s", (name,))
         row = await cur.fetchone()
         if row:
-            return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4], security_policy=row[5])
+            return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4])
         return None
 
 
 async def get_repo_by_id(repo_id: int) -> Optional[RepositoryConfig]:
     async with database.mk_conn() as conn, conn.cursor() as cur:
-        await cur.execute("SELECT id, display_name, internal_name, repo_type, path, security_policy FROM repositories WHERE id = %s", (repo_id,))
+        await cur.execute("SELECT id, display_name, internal_name, repo_type, path FROM repositories WHERE id = %s", (repo_id,))
         row = await cur.fetchone()
         if row:
-            return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4], security_policy=row[5])
+            return RepositoryConfig(id=row[0], display_name=row[1], internal_name=row[2], repo_type=row[3], path=row[4])
         return None
-
-
-async def validate_repository_access(entries: list[RepositoryAccessEntry]) -> None:
-    """Reject unknown, duplicated or escalating repository access entries."""
-    seen: set[int] = set()
-    for entry in entries:
-        if not entry.repository_id:
-            continue
-        if entry.repository_id in seen:
-            raise ValueError(f"Repository {entry.repository_id} is listed more than once")
-        seen.add(entry.repository_id)
-        repo = await get_repo_by_id(entry.repository_id)
-        if repo is None:
-            raise ValueError(f"Repository {entry.repository_id} not found")
-        if entry.security_policy_override is not None:
-            if scope_policy_is_escalation(entry.security_policy_override, repo.security_policy):
-                raise ValueError(
-                    f"Security policy override '{entry.security_policy_override}' is not allowed "
-                    f"for repository '{repo.internal_name}' (base policy: {repo.security_policy.value})"
-                )
 
 
 async def _auto_detect_repo_type(path: str) -> Literal['plain', 'git']:
@@ -147,13 +127,17 @@ async def create_repository(payload: dict = Body(...)):
     if not re.match(r'^[a-zA-Z0-9_-]+$', internal_name):
         return JSONResponse(status_code=400, content={'error': 'internal_name must contain only letters, numbers, hyphens and underscores'})
 
-    path = os.path.abspath(os.path.expanduser(path))
+    path = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
     if not os.path.isdir(path):
         return JSONResponse(status_code=400, content={'error': f'path does not exist or is not a directory: {path}'})
 
     existing = await get_repo_by_name(internal_name)
     if existing:
         return JSONResponse(status_code=409, content={'error': f'repository with internal_name "{internal_name}" already exists'})
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT internal_name FROM repositories WHERE path = %s", (path,))
+        if await cur.fetchone():
+            return JSONResponse(status_code=409, content={'error': f'a repository for this path already exists: {path}'})
 
     repo_type = payload.get('type')
     if repo_type not in (None, 'plain', 'git'):
@@ -161,14 +145,10 @@ async def create_repository(payload: dict = Body(...)):
     if not repo_type:
         repo_type = await _auto_detect_repo_type(path)
 
-    security_policy = payload.get('security', 'read-only')
-    if security_policy not in list(SecurityPolicy):
-        return JSONResponse(status_code=400, content={'error': 'security must be "read-only", "privileged-write", or "write"'})
-
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await cur.execute(
-            "INSERT INTO repositories (display_name, internal_name, repo_type, path, security_policy) VALUES (%s, %s, %s, %s, %s)",
-            (display_name, internal_name, repo_type, path, security_policy)
+            "INSERT INTO repositories (display_name, internal_name, repo_type, path) VALUES (%s, %s, %s, %s)",
+            (display_name, internal_name, repo_type, path)
         )
 
     repo = await get_repo_by_name(internal_name)
@@ -182,16 +162,14 @@ async def update_repository(name: str, payload: dict = Body(...)):
     if not existing:
         return JSONResponse(status_code=404, content={'error': 'repository not found'})
 
-    display_name = payload.get('display_name', existing.display_name)
-    security_policy = payload.get('security', existing.security_policy)
-
-    if security_policy not in list(SecurityPolicy):
-        return JSONResponse(status_code=400, content={'error': 'security must be "read-only", "privileged-write", or "write"'})
+    display_name = payload.get('display_name', existing.display_name).strip()
+    if not display_name:
+        return JSONResponse(status_code=400, content={'error': 'display_name cannot be empty'})
 
     async with database.mk_conn() as conn, conn.cursor() as cur:
         await cur.execute(
-            "UPDATE repositories SET display_name = %s, security_policy = %s WHERE id = %s",
-            (display_name, security_policy, existing.id)
+            "UPDATE repositories SET display_name = %s WHERE id = %s",
+            (display_name, existing.id)
         )
 
     updated = await get_repo_by_name(name)

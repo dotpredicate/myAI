@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// myAI TUI: conversations, streaming, tool-call approvals.
+// myAI TUI: workspaces, conversations, streaming, tool-call approvals.
 //
 //   node src/main.ts                 # interactive
 //   node src/main.ts --dump [id]     # render one frame and exit (no TTY needed)
@@ -9,13 +9,16 @@ import {
   ApiError,
   api,
   openNdjson,
+  type AgentConfig,
   type ConversationDetails,
   type ConversationSummary,
+  type CreateConversationRequest,
   type ProviderModel,
-  type RepositoryConfig,
+  type ResolveWorkspaceResponse,
   type StreamEvent,
   type ToolCallDecisionResponse,
-  type UserScopeChoice,
+  type WorkspaceConfig,
+  type WorkspaceList,
 } from './wire.ts';
 import { Badge, Box, Heading, Hint, KeyHint, Line, Paragraph, Row, Spacer, Stack, Text } from './components.ts';
 import { applyStreamEvent, applyToolResult, findTool, transcriptFromMessages, truncate, type TranscriptItem } from './transcript.ts';
@@ -36,13 +39,14 @@ type View = 'list' | 'new' | 'chat';
 
 interface State {
   view: View;
+  workspace: WorkspaceConfig | null;
+
   conversations: ConversationSummary[];
   selectedConversation: number;
   scroll: number;
 
-  repositories: RepositoryConfig[];
-  scopes: Set<string>;
-  newSelected: number;
+  agents: AgentConfig[];
+  agentIndex: number;
 
   providers: string[];
   providerIndex: number;
@@ -63,12 +67,12 @@ interface State {
 
 const state: State = {
   view: 'list',
+  workspace: null,
   conversations: [],
   selectedConversation: 0,
   scroll: 0,
-  repositories: [],
-  scopes: new Set(),
-  newSelected: 0,
+  agents: [],
+  agentIndex: 0,
   providers: [],
   providerIndex: 0,
   models: [],
@@ -89,8 +93,6 @@ const screen = new Screen(process.stdout);
 let input: InputHandle | null = null;
 let streamToken = 0;
 let modelsRequest = 0;
-// A re-attached stream replays the in-flight message as one event; it must start
-// a new transcript item instead of extending the previous reply.
 let nextMessageStartsNew = false;
 const dumpMode = process.argv.includes('--dump');
 
@@ -159,9 +161,13 @@ function listScreen(): string[] {
   const width = columns();
   const height = rows();
   const body: VNode[] = [
-    Row(Heading('myAI'), Spacer(), Hint(BASE)),
+    Row(Heading('myAI'), Spacer(), Hint(state.workspace ? `workspace: ${state.workspace.name}` : 'no workspace'), Text('  '), Hint(BASE)),
     Line(),
   ];
+  if (state.workspace) {
+    body.push(Paragraph(Hint(`sources: ${state.workspace.sources.map((source) => source.internal_name).join(', ') || '(none)'}`)));
+    body.push(Line());
+  }
   if (state.conversations.length === 0) body.push(Paragraph(Hint('no conversations yet — press n')));
   state.conversations.forEach((conversation, index) => {
     const selected = index === state.selectedConversation;
@@ -195,36 +201,32 @@ function listScreen(): string[] {
   return paint(layout(Stack(...body), width), width, height);
 }
 
+function selectedAgent(): AgentConfig | null {
+  return state.agents[state.agentIndex - 1] ?? null;
+}
+
 function newScreen(): string[] {
   const width = columns();
   const height = rows();
   const provider = state.providers[state.providerIndex] ?? '—';
   const model = state.models[state.modelIndex]?.id ?? (state.modelsLoading ? 'loading…' : '—');
+  const agent = selectedAgent();
+  const agentLabel = agent ? `${agent.display_name}${agent.provider_key ? ` (${agent.model_id ?? 'model'})` : ' (model per chat)'}` : 'none';
   const body: VNode[] = [
-    Row(Heading('new conversation'), Spacer(), Hint(BASE)),
+    Row(Heading('new conversation'), Spacer(), Hint(state.workspace ? state.workspace.name : '')),
     Line(),
+    Row(Text('agent    ', { dim: true }), Text(agentLabel), Text('  '), KeyHint('a', 'cycle')),
     Row(Text('provider ', { dim: true }), Text(provider), Text('  '), KeyHint('p', 'cycle')),
     Row(Text('model    ', { dim: true }), Text(model), Text('  '), KeyHint('m', 'cycle')),
     Line(),
-    Paragraph(Hint('repositories (space toggles):')),
+    Paragraph(Hint('sources (fixed by workspace):')),
   ];
-  state.repositories.forEach((repo, index) => {
-    const selected = index === state.newSelected;
-    const on = state.scopes.has(repo.internal_name);
-    body.push(
-      Row(
-        Text(selected ? '❯ ' : '  ', { reverse: selected }),
-        Text(on ? '[x] ' : '[ ] ', { color: on ? 'green' : 'gray' }),
-        Text(repo.internal_name, { reverse: selected }),
-        Text(`  ${repo.security_policy}`, { dim: true }),
-        Spacer(),
-        Hint(repo.path),
-      ),
-    );
-  });
+  for (const source of state.workspace?.sources ?? []) {
+    body.push(Paragraph(Text(`${source.internal_name}  ${source.path}`, { dim: true })));
+  }
   body.push(
     Line(),
-    Row(KeyHint('↑↓', 'select'), Text('  '), KeyHint('space', 'toggle'), Text('  '), KeyHint('enter', 'start'), Text('  '), KeyHint('esc', 'back')),
+    Row(KeyHint('enter', 'start'), Text('  '), KeyHint('esc', 'back')),
   );
   if (state.error) body.push(Paragraph(Text(state.error, { color: 'red' })));
 
@@ -240,6 +242,7 @@ function chatScreen(): string[] {
     Row(
       Heading(state.title?.trim() || `conversation #${state.conversationId ?? 'new'}`),
       Spacer(),
+      state.workspace ? Hint(state.workspace.name) : null,
       state.blockingId === null ? null : Badge('approval needed'),
       state.busy ? Badge('generating') : null,
     ),
@@ -277,7 +280,7 @@ function chatScreen(): string[] {
 
   const hints: VNode[] = state.blockingId !== null
     ? [KeyHint('y/n', 'decide')]
-    : [KeyHint('enter', 'send'), Text('  '), KeyHint('↑↓', 'scroll'), Text('  '), KeyHint('ctrl-c', 'cancel'), Text('  '), KeyHint('esc', 'list')];
+    : [KeyHint('enter', 'send'), Text('  '), KeyHint('↑↓', 'scroll'), Text('  '), KeyHint('m', 'model'), Text('  '), KeyHint('ctrl-c', 'cancel'), Text('  '), KeyHint('esc', 'list')];
 
   const out = [
     ...paint(header, width, 1),
@@ -307,33 +310,37 @@ function render(): void {
 
 /* ------------------------------------------------------------------- data */
 
-async function loadConversations(): Promise<void> {
-  state.conversations = await api.get<ConversationSummary[]>(url('/api/conversations'));
+function rebuildList(): void {
   if (state.selectedConversation >= state.conversations.length) {
     state.selectedConversation = Math.max(0, state.conversations.length - 1);
   }
+}
+
+async function loadConversations(): Promise<void> {
+  if (!state.workspace) return;
+  state.conversations = await api.get<ConversationSummary[]>(
+    url(`/api/conversations?workspace_id=${state.workspace.id}`),
+  );
+  rebuildList();
   render();
 }
 
-async function loadRepositories(): Promise<void> {
-  const data = await api.get<{ repositories: RepositoryConfig[] }>(url('/api/repositories'));
-  state.repositories = data.repositories;
-  if (state.scopes.size === 0) {
-    for (const repo of data.repositories) {
-      if (repo.security_policy === 'read-only') state.scopes.add(repo.internal_name);
-    }
-  }
+async function loadAgents(): Promise<void> {
+  const data = await api.get<{ agents: AgentConfig[] }>(url('/api/agents'));
+  state.agents = data.agents;
+  state.agentIndex = Math.min(state.agentIndex, state.agents.length);
   render();
 }
 
 async function loadProviders(): Promise<void> {
   const data = await api.get<{ providers: Array<{ key: string }> }>(url('/api/providers'));
   state.providers = data.providers.map((provider) => provider.key);
-  state.providerIndex = Math.max(0, state.providers.indexOf(process.env.MYAI_PROVIDER ?? state.providers[0] ?? ''));
+  const preferred = process.env.MYAI_PROVIDER ?? state.providers[0] ?? '';
+  state.providerIndex = Math.max(0, state.providers.indexOf(preferred));
   await loadModels();
 }
 
-async function loadModels(): Promise<void> {
+async function loadModels(preferredModel?: string): Promise<void> {
   const request = ++modelsRequest;
   const provider = state.providers[state.providerIndex];
   state.models = [];
@@ -345,7 +352,7 @@ async function loadModels(): Promise<void> {
     const data = await api.get<{ models: ProviderModel[] }>(url(`/api/providers/${provider}/models`));
     if (request !== modelsRequest) return;
     state.models = data.models;
-    const preferred = process.env.MYAI_MODEL ?? '';
+    const preferred = preferredModel ?? process.env.MYAI_MODEL ?? '';
     const index = data.models.findIndex((model) => model.id === preferred);
     state.modelIndex = index >= 0 ? index : 0;
   } catch (error) {
@@ -358,19 +365,29 @@ async function loadModels(): Promise<void> {
   }
 }
 
-function selectedScopeNames(): string[] {
-  return state.repositories.filter((repo) => state.scopes.has(repo.internal_name)).map((repo) => repo.internal_name);
+async function resolveWorkspace(): Promise<void> {
+  try {
+    const result = await api.post<ResolveWorkspaceResponse>(url('/api/workspaces/resolve'), { path: process.cwd() });
+    state.workspace = result.workspace;
+    state.status = result.created ? `workspace ${result.workspace.name} utworzony` : '';
+  } catch {
+    const data = await api.get<WorkspaceList>(url('/api/workspaces'));
+    const workspace = data.workspaces[0];
+    if (!workspace) throw new Error('no workspace available');
+    state.workspace = workspace;
+    state.status = `workspace: ${workspace.name}`;
+  }
 }
 
-function generationRequest(): Record<string, unknown> {
-  const provider = state.providers[state.providerIndex];
-  const model = state.models[state.modelIndex]?.id;
-  const scopes: UserScopeChoice[] = selectedScopeNames().map((internal_name) => ({ internal_name }));
-  return {
-    provider_key: provider ?? null,
-    model_id: model ?? null,
-    scopes,
-  };
+async function selectAgent(agentIndex: number): Promise<void> {
+  state.agentIndex = agentIndex;
+  const agent = selectedAgent();
+  if (agent?.provider_key) {
+    const index = state.providers.indexOf(agent.provider_key);
+    if (index >= 0) state.providerIndex = index;
+    await loadModels(agent.model_id ?? undefined);
+  }
+  render();
 }
 
 /* ------------------------------------------------------------- transcript */
@@ -428,7 +445,6 @@ function applyDetails(details: ConversationDetails): void {
   state.lastSequence = details.messages.reduce((max, message) => Math.max(max, message.sequence_id), 0);
 }
 
-/** Attach to a conversation: the server replays stored events, then live ones. */
 async function follow(conversationId: number, token: number): Promise<void> {
   const stream = await openNdjson<StreamEvent>(
     url(`/api/conversations/${conversationId}/stream?after_sequence_id=${state.lastSequence}`),
@@ -438,7 +454,6 @@ async function follow(conversationId: number, token: number): Promise<void> {
   nextMessageStartsNew = false;
 }
 
-/** Reload the transcript, then re-attach; the reload avoids duplicating a partial reply. */
 async function resume(conversationId: number, token: number): Promise<void> {
   if (token !== streamToken) return;
   state.status = 'reconnecting…';
@@ -452,8 +467,29 @@ async function resume(conversationId: number, token: number): Promise<void> {
   state.status = approvalPending() ? 'approval required' : 'done';
 }
 
+async function ensureConversation(): Promise<number> {
+  if (state.conversationId !== null) return state.conversationId;
+  if (!state.workspace) throw new Error('no workspace');
+  const agent = selectedAgent();
+  const body: CreateConversationRequest = {
+    workspace_id: state.workspace.id,
+    agent_id: agent?.internal_name ?? null,
+  };
+  const details = await api.post<ConversationDetails>(url('/api/conversations'), body);
+  state.conversationId = details.id;
+  state.title = details.title;
+  return details.id;
+}
+
 async function sendPrompt(prompt: string): Promise<void> {
   if (!prompt.trim() || state.busy) return;
+  const provider = state.providers[state.providerIndex];
+  const model = state.models[state.modelIndex]?.id;
+  if (!provider || !model) {
+    state.error = 'wybierz provider i model (p/m)';
+    render();
+    return;
+  }
   const token = ++streamToken;
   nextMessageStartsNew = false;
   const optimistic: TranscriptItem = { kind: 'user', text: prompt };
@@ -466,16 +502,13 @@ async function sendPrompt(prompt: string): Promise<void> {
   state.status = 'sending…';
   render();
 
-  const body = {
-    prompt,
-    conversation_id: state.conversationId,
-    ...generationRequest(),
-  };
-
   try {
-    const stream = await openNdjson<StreamEvent>(url('/api/conversations/prompt'), { method: 'POST', body });
+    const conversationId = await ensureConversation();
+    const stream = await openNdjson<StreamEvent>(url(`/api/conversations/${conversationId}/prompt`), {
+      method: 'POST',
+      body: { prompt, provider_key: provider, model_id: model, inference_config: {} },
+    });
     if (token !== streamToken) return;
-    if (stream.conversationId !== null) state.conversationId = stream.conversationId;
     state.status = 'generating…';
     await consumeStream(stream, token);
     if (token !== streamToken) return;
@@ -484,7 +517,6 @@ async function sendPrompt(prompt: string): Promise<void> {
     if (token !== streamToken) return;
     const rejected = error instanceof ApiError && error.status >= 400 && error.status < 500;
     if (rejected) {
-      // The server rejected the prompt before storing it: undo the optimistic entry.
       if (state.items[state.items.length - 1] === optimistic) state.items.pop();
       state.buffer = prompt;
     }
@@ -495,7 +527,6 @@ async function sendPrompt(prompt: string): Promise<void> {
       state.error = describe(error);
       state.status = 'error';
     } else {
-      // The generation may still be running on the server: reload and re-attach.
       state.error = describe(error);
       try {
         await resume(state.conversationId, token);
@@ -534,14 +565,18 @@ async function decideAndContinue(decision: 'approve' | 'reject'): Promise<void> 
   } catch (error) {
     if (token !== streamToken) return;
     state.error = describe(error);
-    await openConversation(conversationId);
+    try {
+      await resume(conversationId, token);
+    } catch (resumeError) {
+      state.error = describe(resumeError);
+      state.status = 'error';
+    }
     return;
   }
 
   try {
     const stream = await openNdjson<StreamEvent>(url(`/api/conversations/${conversationId}/continue`), {
       method: 'POST',
-      body: generationRequest(),
     });
     await consumeStream(stream, token);
     if (token !== streamToken) return;
@@ -554,9 +589,7 @@ async function decideAndContinue(decision: 'approve' | 'reject'): Promise<void> 
     } catch (resumeError) {
       state.error = describe(resumeError);
       state.status = 'error';
-      await openConversation(conversationId);
     }
-    return;
   } finally {
     if (token === streamToken) {
       state.busy = false;
@@ -575,6 +608,17 @@ async function openConversation(id: number): Promise<void> {
     const details = await api.get<ConversationDetails>(url(`/api/conversations/${id}`));
     if (token !== streamToken) return;
     applyDetails(details);
+    if (details.provider_key) {
+      const providerIndex = state.providers.indexOf(details.provider_key);
+      if (providerIndex >= 0) {
+        state.providerIndex = providerIndex;
+        await loadModels(details.model_id ?? undefined);
+      }
+    }
+    if (details.agent_id) {
+      const agentIndex = state.agents.findIndex((agent) => agent.internal_name === details.agent_id) + 1;
+      if (agentIndex > 0) state.agentIndex = agentIndex;
+    }
     state.scroll = 0;
     state.view = 'chat';
     if (details.blocking_message_id === null) {
@@ -611,7 +655,6 @@ async function deleteSelected(): Promise<void> {
 
 async function cancelGeneration(): Promise<void> {
   if (state.conversationId === null) return;
-  // Stop consuming this stream: the server keeps generating until it sees /cancel.
   streamToken += 1;
   state.busy = false;
   try {
@@ -641,7 +684,8 @@ function onListKey(key: Key): void {
       if (key.char === 'n') {
         state.view = 'new';
         state.error = '';
-        fire(loadRepositories());
+        fire(loadProviders());
+        fire(loadAgents());
       }
       if (key.char === 'd') fire(deleteSelected());
       if (key.char === 'r') fire(loadConversations());
@@ -672,13 +716,13 @@ function onNewKey(key: Key): void {
       state.view = 'list';
       state.error = '';
       break;
-    case 'up':
-      state.newSelected = Math.max(0, state.newSelected - 1);
-      break;
-    case 'down':
-      state.newSelected = Math.min(state.repositories.length - 1, state.newSelected + 1);
-      break;
     case 'enter':
+      if (!state.workspace) return;
+      if (state.models.length === 0) {
+        state.error = 'wybierz model (m)';
+        render();
+        return;
+      }
       streamToken += 1;
       state.conversationId = null;
       state.title = null;
@@ -686,22 +730,19 @@ function onNewKey(key: Key): void {
       state.buffer = '';
       state.blockingId = null;
       state.view = 'chat';
-      state.status = state.models.length > 0 ? '' : 'pick a model first (m)';
+      state.status = '';
       break;
     case 'char':
-      if (key.char === ' ') {
-        const repo = state.repositories[state.newSelected];
-        if (repo) {
-          if (state.scopes.has(repo.internal_name)) state.scopes.delete(repo.internal_name);
-          else state.scopes.add(repo.internal_name);
-        }
-      }
       if (key.char === 'p' && state.providers.length > 0) {
         state.providerIndex = (state.providerIndex + 1) % state.providers.length;
         fire(loadModels());
       }
       if (key.char === 'm' && state.models.length > 0) {
         state.modelIndex = (state.modelIndex + 1) % state.models.length;
+      }
+      if (key.char === 'a') {
+        const next = state.agentIndex + 1 > state.agents.length ? 0 : state.agentIndex + 1;
+        fire(selectAgent(next));
       }
       break;
     default:
@@ -749,7 +790,12 @@ function onChatKey(key: Key): void {
       state.scroll = Math.max(0, state.scroll - 1);
       break;
     case 'char':
-      state.buffer += key.char;
+      if (key.char === 'm' && state.models.length > 0 && state.conversationId !== null) {
+        state.modelIndex = (state.modelIndex + 1) % state.models.length;
+        state.status = `model: ${state.models[state.modelIndex]?.id ?? ''}`;
+      } else {
+        state.buffer += key.char;
+      }
       break;
     default:
       return;
@@ -767,6 +813,7 @@ function shutdown(code = 0): void {
 
 async function main(): Promise<void> {
   BASE = await resolveServer();
+  await resolveWorkspace();
 
   if (dumpMode) {
     const idArgument = process.argv.find((argument) => /^\d+$/.test(argument));
@@ -784,7 +831,7 @@ async function main(): Promise<void> {
 
   input = startInput(onKey);
   try {
-    await Promise.all([loadConversations(), loadProviders()]);
+    await Promise.all([loadConversations(), loadProviders(), loadAgents()]);
   } catch (error) {
     state.error = describe(error);
   }

@@ -8,6 +8,7 @@ from typing import AsyncIterator, Optional, Any, List, Tuple
 
 import database
 import paths
+from domain import WorkspaceConfig
 from inference.engine import (
     EmbeddingInput,
     EmbeddingProvider,
@@ -146,18 +147,65 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
         internal_name: str,
         path: str,
         repo_type: str = "plain",
-        security: str = "read-only",
     ):
         payload = {
             "display_name": internal_name.replace("_", " ").title(),
             "internal_name": internal_name,
             "path": path,
             "type": repo_type,
-            "security": security,
         }
         return await self.client.post("/api/repositories", json=payload)
 
+    async def _helper_create_workspace(self, path: str | None = None) -> WorkspaceConfig:
+        response = await self.client.post(
+            "/api/workspaces/resolve",
+            json={"path": path or self._repo_dir.name},
+        )
+        if response.status_code != 200:
+            raise AssertionError(response.text)
+        return WorkspaceConfig.model_validate(response.json()["workspace"])
+
+    async def _helper_repo_source(self, path: str | None = None) -> str:
+        """Key of the repository that resolving a path registered as a source."""
+        workspace = await self._helper_create_workspace(path)
+        return workspace.sources[0].internal_name
+
+    async def _helper_prompt(
+        self,
+        prompt: str,
+        *,
+        provider_key: str = "mock_e2e",
+        model_id: str = "model-1",
+        agent_id: str | None = None,
+        path: str | None = None,
+    ):
+        workspace = await self._helper_create_workspace(path)
+        created = await self.client.post(
+            "/api/conversations",
+            json={"workspace_id": workspace.id, "agent_id": agent_id},
+        )
+        if created.status_code != 201:
+            raise AssertionError(created.text)
+        conversation_id = created.json()["id"]
+        return await self.client.post(
+            f"/api/conversations/{conversation_id}/prompt",
+            json={
+                "prompt": prompt,
+                "provider_key": provider_key,
+                "model_id": model_id,
+                "inference_config": {},
+            },
+        )
+
     async def asyncTearDown(self):
+        import search
+        task = getattr(search, '_sync_task', None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except BaseException:
+                pass
         await self.client.aclose()
         self._myai_dir.cleanup()
         self._repo_dir.cleanup()

@@ -1,4 +1,3 @@
-import unittest
 
 from tests.helpers import BaseTestCase
 
@@ -57,7 +56,3 @@ class TestSdCppApi(BaseTestCase):
         res = await self.client.get("/api/images/models")
 
         self.assertEqual(res.status_code, 404)
-
-
-if __name__ == "__main__":
-    unittest.main()

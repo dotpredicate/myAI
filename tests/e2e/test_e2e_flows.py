@@ -1,5 +1,4 @@
 import json
-import unittest
 from pathlib import Path
 
 from tests.helpers import BaseTestCase, Yield
@@ -13,27 +12,16 @@ class TestE2EFlows(BaseTestCase):
         f = Path(self._repo_dir.name, "data.txt")
         f.write_text("secret-data-42", encoding="utf-8")
 
-        await self.client.post("/api/repositories", json={
-            "display_name": "Reader Repo",
-            "internal_name": "reader_repo",
-            "path": self._repo_dir.name,
-            "security": "write",
-        })
-
+        source = await self._helper_repo_source()
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
                 name="bash",
-                parameters=json.dumps({"command": "cat /repositories/reader_repo/data.txt"}),
+                parameters=json.dumps({"command": f"cat /repositories/{source}/data.txt"}),
             )),
             Yield(finished=FinishedMessage(content="The file contains: secret-data-42")),
         )
 
-        resp = await self.client.post("/api/conversations/prompt", json={
-            "provider_key": "mock_e2e",
-            "model_id": "m",
-            "prompt": "read data.txt",
-            "scopes": [{"internal_name": "reader_repo"}],
-        })
+        resp = await self._helper_prompt("read data.txt", model_id="m")
         self.assertEqual(resp.status_code, 200)
 
         conv_id = int(resp.headers["x-conversation-id"])
@@ -50,13 +38,7 @@ class TestE2EFlows(BaseTestCase):
         f = Path(self._repo_dir.name, "hello.txt")
         f.write_text("Hello, World!", encoding="utf-8")
 
-        await self.client.post("/api/repositories", json={
-            "display_name": "Editor Repo",
-            "internal_name": "editor_repo",
-            "path": self._repo_dir.name,
-            "security": "write",
-        })
-
+        source = await self._helper_repo_source()
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
                 name="bash",
@@ -65,18 +47,13 @@ class TestE2EFlows(BaseTestCase):
             Yield(finished=FinishedToolCall(
                 name="replace_file",
                 parameters=json.dumps({
-                    "target": "/repositories/editor_repo/hello.txt",
+                    "target": f"/repositories/{source}/hello.txt",
                     "source": "/workspace/new.txt",
                 }),
             )),
         )
 
-        resp = await self.client.post("/api/conversations/prompt", json={
-            "provider_key": "mock_e2e",
-            "model_id": "m",
-            "prompt": "replace hello.txt",
-            "scopes": [{"internal_name": "editor_repo"}],
-        })
+        resp = await self._helper_prompt("replace hello.txt", model_id="m")
         self.assertEqual(resp.status_code, 200)
 
         conv_id = int(resp.headers["x-conversation-id"])
@@ -93,15 +70,24 @@ class TestE2EFlows(BaseTestCase):
     async def test_discovery_flow(self):
         """Create multiple repos, agent lists them -> response names all repos."""
         repo_names = ["alpha", "beta", "gamma"]
+        repo_ids = []
         for name in repo_names:
             p = Path(self._repo_dir.name, name)
             p.mkdir(exist_ok=True)
-            await self.client.post("/api/repositories", json={
+            response = await self.client.post("/api/repositories", json={
                 "display_name": name.title(),
                 "internal_name": name,
                 "path": str(p),
-                "security": "write",
             })
+            repo_ids.append(response.json()["id"])
+
+        workspace = await self._helper_create_workspace()
+        for repo_id in repo_ids:
+            added = await self.client.post(
+                f"/api/workspaces/{workspace.id}/sources",
+                json={"repository_id": repo_id},
+            )
+            self.assertEqual(added.status_code, 200, added.text)
 
         self.mock_provider.schedule_stream(
             Yield(finished=FinishedToolCall(
@@ -111,12 +97,7 @@ class TestE2EFlows(BaseTestCase):
             Yield(finished=FinishedMessage(content="Found repos: alpha, beta, gamma")),
         )
 
-        resp = await self.client.post("/api/conversations/prompt", json={
-            "provider_key": "mock_e2e",
-            "model_id": "m",
-            "prompt": "list my repositories",
-            "scopes": [{"internal_name": name} for name in repo_names],
-        })
+        resp = await self._helper_prompt("list my repositories", model_id="m")
         self.assertEqual(resp.status_code, 200)
 
         conv_id = int(resp.headers["x-conversation-id"])
@@ -128,7 +109,3 @@ class TestE2EFlows(BaseTestCase):
         self.assertEqual(result["returncode"], 0)
         for name in repo_names:
             self.assertIn(name, result["stdout"])
-
-
-if __name__ == "__main__":
-    unittest.main()

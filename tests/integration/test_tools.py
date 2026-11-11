@@ -1,10 +1,9 @@
 import json
-import unittest
 from pathlib import Path
 
 import paths
 from tests.helpers import BaseTestCase
-from domain import AgentConfig, ScopeSpec, SecurityPolicy
+from domain import AgentConfig, ScopeSpec
 from tools import (
     MAX_SPAWN_DEPTH,
     ToolContext,
@@ -17,16 +16,18 @@ from tools import (
 
 class TestTools(BaseTestCase):
     conversation_id = 1
+    workspace_id = 1
 
     @property
     def workspace_dir(self) -> Path:
-        path = paths.WORKSPACES_ROOT / str(self.conversation_id)
+        path = paths.SPACES_ROOT / str(self.workspace_id)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     def ctx(self, scopes=None, privileged=False) -> ToolContext:
         return ToolContext(
             conversation_id=self.conversation_id,
+            workspace_id=self.workspace_id,
             privileged=privileged,
             scopes=scopes or [],
         )
@@ -40,7 +41,6 @@ class TestTools(BaseTestCase):
             provider_key="mock_e2e",
             model_id="model-1",
             inference_config={},
-            repository_access=[],
             spawnable_agents=["child_agent"],
         )
         result = await run_spawn_agent(
@@ -48,6 +48,7 @@ class TestTools(BaseTestCase):
             json.dumps({"agent_symbol": "child_agent", "prompt": "do work"}),
             ToolContext(
                 conversation_id=1,
+                workspace_id=1,
                 agent=agent,
                 spawn_depth=MAX_SPAWN_DEPTH,
             ),
@@ -86,10 +87,9 @@ class TestTools(BaseTestCase):
             "display_name": "Test Replace Success",
             "internal_name": repo_name,
             "path": self._repo_dir.name,
-            "security": "write",
         })
         self.assertEqual(create_res.status_code, 201)
-        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
+        scope = ScopeSpec(internal_name=repo_name)
 
         # Create a source file in the workspace
         source_rel = "source.txt"
@@ -123,9 +123,8 @@ class TestTools(BaseTestCase):
             "display_name": "Test Replace Not Found",
             "internal_name": repo_name,
             "path": self._repo_dir.name,
-            "security": "write",
         })
-        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
+        scope = ScopeSpec(internal_name=repo_name)
 
         result = await run_propose_replace(
             "replace_file",
@@ -139,7 +138,7 @@ class TestTools(BaseTestCase):
         self.assertIn("Source file not found", parsed["error"])
 
     async def test_run_propose_replace_resolve_error(self):
-        scope = ScopeSpec(internal_name="nonexistent_repo", security_policy=SecurityPolicy.WRITE)
+        scope = ScopeSpec(internal_name="nonexistent_repo")
         result = await run_propose_replace(
             "replace_file",
             '{"target": "/repositories/nonexistent_repo/file.txt", "source": "/workspace/source.txt"}',
@@ -154,9 +153,8 @@ class TestTools(BaseTestCase):
             "display_name": "Test Replace Missing Source",
             "internal_name": repo_name,
             "path": self._repo_dir.name,
-            "security": "write",
         })
-        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
+        scope = ScopeSpec(internal_name=repo_name)
         (Path(self._repo_dir.name) / "target.txt").write_text("old content", encoding="utf-8")
 
         result = await run_propose_replace(
@@ -176,7 +174,6 @@ class TestTools(BaseTestCase):
             "display_name": "Test Replace Scope",
             "internal_name": repo_name,
             "path": self._repo_dir.name,
-            "security": "write",
         })
 
         result = await run_propose_replace(
@@ -197,7 +194,7 @@ class TestTools(BaseTestCase):
                 "target": "/repositories/foobar/target.txt",
                 "source": "/workspace/source.txt",
             }),
-            context=self.ctx(scopes=[ScopeSpec(internal_name="foo", security_policy=SecurityPolicy.WRITE)]),
+            context=self.ctx(scopes=[ScopeSpec(internal_name="foo")]),
         )
         parsed = json.loads(result.result)
         self.assertIn("Access denied", parsed["error"])
@@ -208,9 +205,8 @@ class TestTools(BaseTestCase):
             "display_name": "Test Replace Symlink",
             "internal_name": repo_name,
             "path": self._repo_dir.name,
-            "security": "write",
         })
-        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
+        scope = ScopeSpec(internal_name=repo_name)
 
         outside = Path(self._repo_dir.name) / "outside.txt"
         outside.write_text("secret", encoding="utf-8")
@@ -233,10 +229,9 @@ class TestTools(BaseTestCase):
             "display_name": "Test Diff Success",
             "internal_name": repo_name,
             "path": self._repo_dir.name,
-            "security": "write",
         })
         self.assertEqual(create_res.status_code, 201)
-        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
+        scope = ScopeSpec(internal_name=repo_name)
 
         # Create a target file in the repo
         target_rel = "greeting.txt"
@@ -278,9 +273,8 @@ class TestTools(BaseTestCase):
             "display_name": "Test Diff Not Found",
             "internal_name": repo_name,
             "path": self._repo_dir.name,
-            "security": "write",
         })
-        scope = ScopeSpec(internal_name=repo_name, security_policy=SecurityPolicy.WRITE)
+        scope = ScopeSpec(internal_name=repo_name)
 
         diff_rel = "patch.diff"
         diff_real = self.workspace_dir / diff_rel
@@ -298,7 +292,7 @@ class TestTools(BaseTestCase):
         self.assertIn("Target file not found", parsed["error"])
 
     async def test_run_propose_diff_resolve_error(self):
-        scope = ScopeSpec(internal_name="test", security_policy=SecurityPolicy.WRITE)
+        scope = ScopeSpec(internal_name="test")
         result = await run_propose_diff(
             "apply_patch",
             '{"target": "/repositories/test/file.txt", "diff_path": "/workspace/patch.diff"}',
@@ -306,7 +300,3 @@ class TestTools(BaseTestCase):
         )
         parsed = json.loads(result.result)
         self.assertEqual(parsed["error"], "Could not resolve target repository path")
-
-
-if __name__ == "__main__":
-    unittest.main()

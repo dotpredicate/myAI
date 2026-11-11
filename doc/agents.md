@@ -1,7 +1,7 @@
-
 # Agents
 
-Agents are how you configure AI to do specific tasks.
+Agents are reusable behaviour: a name, description, instructions and optional
+model preference. They never carry repository access or private data.
 
 ## Agent spec
 
@@ -9,25 +9,21 @@ Agents are how you configure AI to do specific tasks.
     - Display name
     - Internal name (key)
 - Description
-- Inference config:
+- Instructions
+- Optional model preference
     - Provider key
     - Model
-    - Model and inference-specific configs
-- Default repositories
-    - Override security policy (can only downgrade)
-- Default actions
+    - Inference config
 - Available sub-agents
+
+An agent is chosen when a conversation is created and stays with it.
 
 ## Sub-agents
 
-An agent can list the agents it may start. The `spawn_agent(agent_symbol, prompt)`
-tool is exposed only when that list is non-empty; `agent_symbol` is the target
-agent's internal name.
+An agent can list the agents it may start. The `spawn_agent(agent_symbol,
+prompt)` tool is exposed only when that list is non-empty.
 
-A spawn starts a new conversation with the target agent's provider, model and
-instructions. The child inherits the parent's resolved repository scopes, so it
-cannot gain access the parent does not have. The tool returns
-`{conversation_id, agent, response}`; if the child stops on an approval, the
-result also contains `blocked` and `blocking_message_id`. A conversation at
-depth 3 cannot spawn further, so the chain is the root plus up to three nested
-spawns.
+A spawn starts a new conversation in the parent's workspace with the target
+agent's instructions. The child inherits the parent's model configuration and
+its workspace, so it sees exactly the repositories the parent sees. Spawning is
+depth-limited so agents cannot recurse without bound.

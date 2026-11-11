@@ -144,7 +144,3 @@ class TestParseJobResult(unittest.TestCase):
     def test_rejects_incomplete_job(self) -> None:
         with self.assertRaises(RuntimeError):
             server.parse_job_result({"status": "failed", "result": {"images": []}})
-
-
-if __name__ == "__main__":
-    unittest.main()

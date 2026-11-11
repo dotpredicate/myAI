@@ -254,7 +254,7 @@ async def clear_index() -> None:
         pending = _sync_pending
         _sync_pending = False
     if pending:
-        _schedule_sync()
+        schedule_sync()
 
 
 async def _prune_repo_documents(repo: RepositoryConfig, files: list[tuple[str, Path]]) -> None:
@@ -297,9 +297,18 @@ async def _sync_repositories(provider: EmbeddingProvider) -> None:
         await _prune_repo_documents(repo, repo_docs)
 
 
-def _schedule_sync() -> None:
+def _log_sync_error(task: 'asyncio.Task[None]') -> None:
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error is not None:
+        logger.error("Index synchronization failed: %s", error, exc_info=error)
+
+
+def schedule_sync() -> None:
     global _sync_task
     _sync_task = asyncio.create_task(synchronize())
+    _sync_task.add_done_callback(_log_sync_error)
 
 
 async def synchronize(provider: Optional[EmbeddingProvider] = None) -> None:

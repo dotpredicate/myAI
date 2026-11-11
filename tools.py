@@ -6,8 +6,8 @@ import difflib
 from pathlib import Path
 from typing import Awaitable, Callable, TypedDict
 
-from system import REPOSITORIES_VROOT, get_repo_from_vpath, is_safe_realpath, is_safe_vpath, resolve_repo_vpath, resolve_workspace_vpath, run_sandboxed_command
-from domain import AgentConfig, Message, SecurityPolicy, ScopeSpec
+from system import REPOSITORIES_VROOT, get_repo_from_vpath, is_safe_realpath, is_safe_vpath, resolve_repo_vpath, resolve_space_vpath, run_sandboxed_command
+from domain import AgentConfig, Message, ScopeSpec
 from database import mk_conn
 
 class FunctionDefinition(TypedDict):
@@ -23,6 +23,7 @@ class ToolCallResult:
 @dataclass(frozen=True)
 class ToolContext:
     conversation_id: int
+    workspace_id: int
     privileged: bool = False
     scopes: list[ScopeSpec] = field(default_factory=list)
     agent: AgentConfig | None = None
@@ -44,7 +45,12 @@ async def run_shell_command(name: str, parameters: str, context: ToolContext) ->
     if not isinstance(command, str):
         raise ValueError('Cannot parse the command field. Double-check if input is valid JSON.')
 
-    shell = await run_sandboxed_command(command, scopes=context.scopes, conversation_id=context.conversation_id)
+    shell = await run_sandboxed_command(
+        command,
+        scopes=context.scopes,
+        workspace_id=context.workspace_id,
+        conversation_id=context.conversation_id,
+    )
 
     output_str = json.dumps({'returncode': shell.returncode, 'stdout': shell.stdout, 'stderr': shell.stderr})
     return ToolCallResult(output_str)
@@ -82,15 +88,11 @@ async def run_propose_replace(name: str, parameters: str, context: ToolContext) 
         if not target_safe:
             return ToolCallResult(json.dumps({"error": target_err}))
         
-        # Security policy check: read-only repos cannot be written to at all
         target_repo = await get_repo_from_vpath(target_vpath)
-        if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
-            return ToolCallResult(json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
-
         target_realpath = await resolve_repo_vpath(target_vpath)
         if not target_realpath:
             return ToolCallResult(json.dumps({"error": "Could not resolve target repository path"}))
-        source_realpath = resolve_workspace_vpath(source_vpath, context.conversation_id)
+        source_realpath = resolve_space_vpath(source_vpath, context.workspace_id)
         if source_realpath is None:
             return ToolCallResult(json.dumps({"error": f"Source path escapes the workspace: {source_vpath}"}))
 
@@ -155,15 +157,11 @@ async def run_propose_diff(name: str, parameters: str, context: ToolContext) -> 
         if not target_safe:
             return ToolCallResult(json.dumps({"error": target_err}))
         
-        # Security policy check: read-only repos cannot be written to at all
         target_repo = await get_repo_from_vpath(target_vpath)
-        if target_repo and target_repo.security_policy == SecurityPolicy.READ_ONLY:
-            return ToolCallResult(json.dumps({"error": f"Repository '{target_repo.internal_name}' is read-only, writes are not permitted"}))
-
         target_realpath = await resolve_repo_vpath(target_vpath)
         if not target_realpath:
             return ToolCallResult(json.dumps({"error": "Could not resolve target repository path"}))
-        diff_realpath = resolve_workspace_vpath(diff_vpath, context.conversation_id)
+        diff_realpath = resolve_space_vpath(diff_vpath, context.workspace_id)
         if diff_realpath is None:
             return ToolCallResult(json.dumps({"error": f"Diff path escapes the workspace: {diff_vpath}"}))
 
@@ -230,22 +228,31 @@ async def run_spawn_agent(name: str, parameters: str, context: ToolContext) -> T
         from conversation import (
             create_conversation,
             get_blocking_message_id,
-            get_conversation_project,
+            get_conversation_config,
             get_messages_for_continuation,
             insert_message,
             prompt_conversation,
         )
 
         async with mk_conn() as conn:
-            project_id, _ = await get_conversation_project(conn, context.conversation_id)
-            child_id = await create_conversation(conn, project_id)
+            parent = await get_conversation_config(conn, context.conversation_id)
+            if parent is None:
+                return ToolCallResult(json.dumps({"error": "parent conversation not found"}))
+            if not parent['provider_key'] or not parent['model_id']:
+                return ToolCallResult(json.dumps({"error": "parent conversation has no model"}))
+            child_id = await create_conversation(
+                conn,
+                parent['workspace_id'],
+                agent_id=symbol,
+                provider_key=parent['provider_key'],
+                model_id=parent['model_id'],
+                inference_config=parent['inference_config'],
+            )
             await insert_message(conn, child_id, 'user', Message(author='user', content=prompt))
             await conn.commit()
 
         async for _ in prompt_conversation(
             child_id,
-            agent_id=symbol,
-            resolved_scopes=context.scopes,
             spawn_depth=context.spawn_depth + 1,
         ):
             pass

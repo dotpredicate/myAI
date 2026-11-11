@@ -1,79 +1,26 @@
 from typing import Optional
 
-from pydantic import BaseModel
-
-from agents import get_agent_by_name
-from domain import (
-    AgentConfig,
-    RepositoryConfig,
-    ScopeSpec,
-    SecurityPolicy,
-    normalize_scope_name,
-    scope_policy_is_escalation,
-)
-from repositories import get_repo_by_id, get_repo_by_name
+from database import mk_conn
+from domain import ScopeSpec
 
 
-class UserScopeChoice(BaseModel):
-    internal_name: str
-    security_policy_override: Optional[SecurityPolicy] = None
+async def resolve_workspace_scopes(workspace_id: Optional[int]) -> list[ScopeSpec]:
+    """Return the repositories available to a workspace.
 
-
-def _scope(internal_name: str, policy: SecurityPolicy, repo: RepositoryConfig) -> ScopeSpec:
-    if scope_policy_is_escalation(policy, repo.security_policy):
-        raise ValueError(
-            f"Security policy '{policy}' is not allowed for repository "
-            f"'{repo.internal_name}' (base policy: {repo.security_policy.value})"
-        )
-    return ScopeSpec(internal_name=internal_name, security_policy=policy)
-
-
-async def resolve_scope(choice: UserScopeChoice, agent: Optional[AgentConfig] = None) -> ScopeSpec:
-    """Resolve one requested scope: user override > agent override > repo policy."""
-    internal_name = normalize_scope_name(choice.internal_name)
-    repo = await get_repo_by_name(internal_name)
-    if repo is None:
-        raise ValueError(f"Repository '{choice.internal_name}' not found")
-
-    policy = choice.security_policy_override
-    if policy is None and agent is not None:
-        for access in agent.repository_access:
-            if (
-                access.repository_internal_name == internal_name
-                and access.security_policy_override is not None
-            ):
-                policy = access.security_policy_override
-                break
-    return _scope(internal_name, policy or repo.security_policy, repo)
-
-
-async def scopes_for_agent(agent: AgentConfig, req_scopes: list[UserScopeChoice]) -> list[ScopeSpec]:
-    """Resolve explicit choices plus every repository the agent can access."""
-    scopes = [await resolve_scope(choice, agent=agent) for choice in req_scopes]
-    seen = {scope.internal_name for scope in scopes}
-    for access in agent.repository_access:
-        repo_key = access.repository_internal_name
-        if repo_key in seen:
-            continue
-        repo = await get_repo_by_id(access.repository_id)
-        if repo is None:
-            raise ValueError(f"Repository {access.repository_id} not found")
-        policy = access.security_policy_override or repo.security_policy
-        scopes.append(_scope(repo_key, policy, repo))
-        seen.add(repo_key)
-    return scopes
-
-
-async def resolve_scopes(agent_id: Optional[str], req_scopes: list[UserScopeChoice]) -> list[ScopeSpec]:
-    """Resolve effective scopes for an agent or a bare request.
-
-    With an agent, an empty ``req_scopes`` means all repositories the agent can
-    access. Without an agent, only explicit choices are available; an empty
-    list means no access.
+    The workspace is the only source of scopes. Agents never add or remove
+    repository access.
     """
-    if agent_id:
-        agent = await get_agent_by_name(agent_id)
-        if agent is None:
-            raise ValueError(f"Agent '{agent_id}' not found")
-        return await scopes_for_agent(agent, req_scopes)
-    return [await resolve_scope(choice) for choice in req_scopes]
+    if workspace_id is None:
+        return []
+    async with mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute(
+            """
+            SELECT r.internal_name
+            FROM workspace_sources ws
+            JOIN repositories r ON r.id = ws.repository_id
+            WHERE ws.workspace_id = %s
+            ORDER BY r.internal_name
+            """,
+            (workspace_id,),
+        )
+        return [ScopeSpec(internal_name=row[0]) for row in await cur.fetchall()]

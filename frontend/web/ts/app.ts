@@ -8,7 +8,7 @@ import { mount as mountChat } from './screens/chat.js';
 import { mount as mountImages } from './screens/images.js';
 import { mount as mountInference } from './screens/inference.js';
 import { mount as mountAgents } from './screens/agents.js';
-import { mount as mountProjects } from './screens/projects.js';
+import { mount as mountWorkspaces } from './screens/workspaces.js';
 import { mount as mountRepositories } from './screens/repositories.js';
 import { LineHint, IconButton } from './components.js';
 
@@ -36,7 +36,7 @@ const workspaces: Record<ScreenName, ScreenMount> = {
   images: mountImages,
   inference: mountInference,
   agents: mountAgents,
-  projects: mountProjects,
+  workspaces: mountWorkspaces,
   repositories: mountRepositories,
 };
 

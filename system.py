@@ -4,7 +4,7 @@ import os
 import shutil
 from pathlib import Path
 from typing import NamedTuple, Optional, List
-from domain import ScopeSpec, SecurityPolicy, RepositoryConfig
+from domain import ScopeSpec, RepositoryConfig
 from repositories import get_repo_by_name
 
 
@@ -23,14 +23,20 @@ def _truncate_output(text: str, label: str) -> str:
     return text[:MAX_OUTPUT_CHARS] + f"\n...[truncated {omitted} chars of {label}]"
 
 
-def _workspace_dir_for(conversation_id: int) -> Path:
-    path = paths.WORKSPACES_ROOT / str(conversation_id)
+def space_dir_for(workspace_id: int) -> Path:
+    path = paths.SPACES_ROOT / str(workspace_id)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def remove_workspace(conversation_id: int) -> None:
-    shutil.rmtree(paths.WORKSPACES_ROOT / str(conversation_id), ignore_errors=True)
+def sandbox_dir_for(conversation_id: int) -> Path:
+    path = paths.SANDBOXES_ROOT / str(conversation_id)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def remove_sandbox(conversation_id: int) -> None:
+    shutil.rmtree(paths.SANDBOXES_ROOT / str(conversation_id), ignore_errors=True)
 
 
 def is_safe_vpath(vpath: Path, expected_vroot: Path, allowed_scopes: Optional[List[ScopeSpec]] = None) -> tuple[bool, str]:
@@ -74,12 +80,12 @@ def vpath_to_realpath(vpath: Path, vroot: str, base_dir: str) -> Path:
     return Path(base_dir) / Path(*parts)
 
 
-def resolve_workspace_vpath(vpath: Path, conversation_id: int) -> Optional[Path]:
+def resolve_space_vpath(vpath: Path, workspace_id: int) -> Optional[Path]:
     safe, _ = is_safe_vpath(vpath, Path(WORKSPACE_VROOT))
     if not safe:
         return None
 
-    root = _workspace_dir_for(conversation_id)
+    root = space_dir_for(workspace_id)
     realpath = vpath_to_realpath(vpath, WORKSPACE_VROOT, str(root))
     if not is_safe_realpath(realpath, root):
         return None
@@ -120,8 +126,14 @@ class ShellResult(NamedTuple):
     stderr: str
 
 
-async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]], conversation_id: int) -> ShellResult:
-    workspace_path = os.path.abspath(str(_workspace_dir_for(conversation_id)))
+async def run_sandboxed_command(
+    command: str,
+    scopes: Optional[List[ScopeSpec]],
+    workspace_id: int,
+    conversation_id: int,
+) -> ShellResult:
+    workspace_path = os.path.abspath(str(space_dir_for(workspace_id)))
+    sandbox_path = os.path.abspath(str(sandbox_dir_for(conversation_id)))
 
     bwrap_args = [
         "bwrap",
@@ -138,6 +150,7 @@ async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]],
         "--setenv", "TMPDIR", "/tmp",
         "--unshare-all",
         "--bind", workspace_path, WORKSPACE_VROOT,
+        "--bind", sandbox_path, "/sandbox",
         "--chdir", WORKSPACE_VROOT,
         "--dir", REPOSITORIES_VROOT,
     ]
@@ -152,11 +165,7 @@ async def run_sandboxed_command(command: str, scopes: Optional[List[ScopeSpec]],
         scope_path = repo.path
         if not os.path.isdir(scope_path):
             continue
-        effective_policy = scope.security_policy if scope.security_policy is not None else repo.security_policy
-        if effective_policy == SecurityPolicy.WRITE:
-            bwrap_args.extend(["--bind", scope_path, f"{REPOSITORIES_VROOT}/{repo.internal_name}"])
-        else:
-            bwrap_args.extend(["--ro-bind", scope_path, f"{REPOSITORIES_VROOT}/{repo.internal_name}"])
+        bwrap_args.extend(["--ro-bind", scope_path, f"{REPOSITORIES_VROOT}/{repo.internal_name}"])
 
     bwrap_args.extend([
         "bash", "-c", command

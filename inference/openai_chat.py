@@ -41,11 +41,13 @@ logger = get_logger(__name__)
 ENVIRONMENT_PROMPT = """## Environment
 - You work in a Linux sandbox built with bubblewrap (bwrap). Shell commands
   run as `bash -c` and return stdout, stderr and the exit code.
-- /workspace is your writable scratch directory for this conversation.
+- /workspace is the workspace's persistent writable space. Files you keep
+  there survive across conversations in the same workspace.
+- /sandbox is writable scratch space for this conversation only.
 - /tmp is ephemeral; it is cleared between commands.
-- Repositories are mounted under /repositories according to their policies:
-  read-only cannot be changed, privileged-write only through an approved change,
-  write can be modified directly.
+- Repositories are mounted read-only under /repositories. To change a file,
+  write the new content or a patch under /workspace and call replace_file or
+  apply_patch; the user approves the change before it is applied.
 - Only these system paths are available: /usr, /lib, /lib64, /bin, /proc, /dev.
 - The host filesystem, including /home, is not visible.
 - There is no network access, no GPU, no audio and no access to other host devices.
@@ -57,13 +59,10 @@ def _build_system_prompt(context: ChatContext, today: Optional[datetime.date] = 
 
     if context.scopes:
         repositories = "\n".join(
-            f"- /repositories/{scope.internal_name} (policy: {scope.security_policy})"
+            f"- /repositories/{scope.internal_name}"
             for scope in context.scopes
         )
         sections.append(f"Available repositories:\n{repositories}")
-
-    if context.project_instructions and context.project_instructions.strip():
-        sections.append(f"Project instructions:\n{context.project_instructions.strip()}")
 
     if context.instructions and context.instructions.strip():
         sections.append(f"Agent instructions:\n{context.instructions.strip()}")
