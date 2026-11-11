@@ -29,6 +29,8 @@ Project structure:
 - `./database.py` - SQLite connection and utility functions
 - `./paths.py` - `MYAI_HOME`, database, model space and sandbox paths
 - `./system.py` - model spaces, sandboxed shell and sandbox path checks
+- `./system_metrics.py` - host CPU, memory and GPU usage sampling
+- `./gpu_metrics.py` - ROCm GPU data shared by system and per-process metrics
 - `./tools.py` - tool execution logic
 - `./log_config.py` - logging configuration
 - `./inference/` - AI protocol handling (stateless), split into submodules

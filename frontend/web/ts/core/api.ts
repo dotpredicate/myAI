@@ -354,9 +354,31 @@ export interface GenerateImageResponse {
 
 /* ------------------------------------------------------------ system */
 
-export interface GpuStats {
-  free: number;
-  total: number;
+export interface SystemCpuStats {
+  used_cores: number | null;
+  max_cores: number;
+}
+
+export interface SystemMemoryStats {
+  used_bytes: number | null;
+  total_bytes: number | null;
+}
+
+export interface SystemGpuStats {
+  vram_used_bytes: number | null;
+  vram_total_bytes: number | null;
+  utilization_percent: number | null;
+}
+
+export interface SystemStats {
+  cpu: SystemCpuStats;
+  ram: SystemMemoryStats;
+  gpu: SystemGpuStats;
+}
+
+export interface SystemSnapshot {
+  resources: SystemStats;
+  servers: ManagedServer[];
 }
 
 export interface ManagedServer {
@@ -367,10 +389,9 @@ export interface ManagedServer {
   status: string;
   active_requests: number;
   idle_seconds: number;
-}
-
-export interface ManagedProcessList {
-  servers: ManagedServer[];
+  cpu_cores: number | null;
+  rss_bytes: number | null;
+  vram_bytes: number | null;
 }
 
 export interface StopProcessResponse {

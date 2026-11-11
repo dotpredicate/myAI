@@ -252,11 +252,6 @@ export function formatBytes(bytes: number | null | undefined): string {
   return `${value.toFixed(digits)} ${units[index]}`;
 }
 
-export function formatGigabytes(bytes: number | null | undefined): string {
-  if (typeof bytes !== 'number' || !Number.isFinite(bytes)) return '—';
-  return (bytes / (1024 ** 3)).toFixed(2);
-}
-
 export function formatNumber(value: number | null | undefined, digits = 0): string {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
   return value.toLocaleString(undefined, {
@@ -684,7 +679,7 @@ export function parseRoute(hash = window.location.hash): Route {
   if (screen === 'images') return { name: 'images' };
   if (screen === 'inference') {
     const tab = segments[1];
-    if (tab === 'system' || tab === 'managed' || tab === 'providers' || tab === 'models') return { name: 'inference', tab };
+    if (tab === 'system' || tab === 'providers' || tab === 'models') return { name: 'inference', tab };
     return { name: 'inference', tab: 'system' };
   }
   if (screen === 'agents') {

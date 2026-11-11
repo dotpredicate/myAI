@@ -1,27 +1,36 @@
-import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, formatBytes, formatGigabytes, formatIdle, formatNumber, formatPercent, compactError, messageOf, statusMessage as setStatus, type MountOptions, type Route } from '../ui.js';
+import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, formatBytes, formatIdle, formatNumber, formatPercent, compactError, messageOf, statusMessage as setStatus, type MountOptions, type Route } from '../ui.js';
 import { api } from '../core/api.js';
-import type { BenchmarkResult, CachedModelList, GpuBenchmark, GpuStats, ManagedProcessList, ManagedServer, ModelInfo, ModelQuantInfo, ProviderCreateRequest, ProviderDetails, ProviderInfo, ProviderList, ProviderUpdateRequest, StopProcessResponse } from '../core/api.js';
+import type { BenchmarkResult, CachedModelList, GpuBenchmark, ManagedServer, ModelInfo, ModelQuantInfo, ProviderCreateRequest, ProviderDetails, ProviderInfo, ProviderList, ProviderUpdateRequest, StopProcessResponse, SystemSnapshot, SystemStats } from '../core/api.js';
 import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldError, Badge, Button, LinkButton, Input, Form, Select, Option, Table, TableHead, TableRow, TableHeaderCell, TableCell } from '../components.js';
 
 const TABS: { key: string; label: string }[] = [
   { key: 'system', label: 'System' },
-  { key: 'managed', label: 'Managed processes' },
   { key: 'providers', label: 'Providers' },
   { key: 'models', label: 'Models' },
 ];
 
-function metric(label: string, value: string | number, options: { progress?: number; percent?: number } = {}): HTMLElement {
+function metric(label: string, value: string | number, percent: number | null = null): HTMLElement {
   const box = el('div', { class: 'inset' },
     Hint(label),
     el('div', { class: 'metric-value' }, value),
   );
-  if (options.progress !== undefined) {
-    box.appendChild(Row(el('progress', { max: '100', value: String(options.progress) }), InlineHint(formatPercent(options.percent))));
+  if (percent !== null) {
+    box.appendChild(Row(el('progress', { max: '100', value: String(percent) }), InlineHint(formatPercent(percent))));
   }
   return box;
 }
 
-function benchmarkError(container: HTMLElement, message: string, retry?: (() => void) | null): void {
+function sharePercent(used: number | null | undefined, total: number | null | undefined): number | null {
+  if (typeof used !== 'number' || typeof total !== 'number' || !Number.isFinite(used) || !Number.isFinite(total) || total <= 0) return null;
+  return Math.min(100, Math.max(0, (used / total) * 100));
+}
+
+function usageText(used: number | null | undefined, total: number | null | undefined, format: (value: number) => string): string {
+  if (typeof used !== 'number' || typeof total !== 'number') return '—';
+  return `${format(used)} / ${format(total)}`;
+}
+
+function errorWithRetry(container: HTMLElement, message: string, retry: (() => void) | null = null): void {
   clear(container);
   container.appendChild(compactError(message));
   if (!retry) return;
@@ -39,7 +48,7 @@ function kindLabel(kind: string | undefined): string {
 
 export function mount(route: Route, _options: MountOptions = {}) {
   const root = Page({});
-  const tab = route.tab;
+  const tab = route.tab ?? 'system';
   const tabBar = el('nav', { class: 'tabs' },
     TABS.map((item) => el('a', {
       href: `#/inference/${item.key}`,
@@ -53,18 +62,23 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
   let destroyed = false;
   let pollTimer: number | null = null;
-  let gpuInFlight = false;
-  let managedInFlight = false;
+  let snapshotInFlight = false;
 
   // System tab
   function mountSystem() {
-    const gpuCard = Card();
-    const gpuHeader = CardHeader('GPU');
-    const gpuStatus = Hint();
-    const gpuBody = el('div', {});
-    gpuCard.appendChild(gpuHeader);
-    gpuCard.appendChild(gpuStatus);
-    gpuCard.appendChild(gpuBody);
+    const resourcesCard = Card();
+    const resourcesStatus = Hint();
+    const resourcesBody = el('div', {});
+    resourcesCard.appendChild(CardHeader('Resources'));
+    resourcesCard.appendChild(LineHint('Live usage of the whole machine. CPU is shown in cores (1.00 is one fully busy core).'));
+    resourcesCard.appendChild(resourcesStatus);
+    resourcesCard.appendChild(resourcesBody);
+
+    const managedCard = Card();
+    const managedContainer = el('div', {});
+    managedCard.appendChild(CardHeader('Managed processes'));
+    managedCard.appendChild(LineHint('Model servers run on demand. Idle instances are stopped automatically after five minutes. CPU is per process, in cores; VRAM comes from ROCm.'));
+    managedCard.appendChild(managedContainer);
 
     const benchmarkCard = Card();
     const tflopsInput = Input({ type: 'number', min: '1', step: '1', value: '4096', required: true });
@@ -80,49 +94,112 @@ export function mount(route: Route, _options: MountOptions = {}) {
     benchmarkCard.appendChild(benchmarkStatus);
     benchmarkCard.appendChild(benchmarkResults);
 
-    content.appendChild(gpuCard);
+    content.appendChild(resourcesCard);
+    content.appendChild(managedCard);
     content.appendChild(benchmarkCard);
 
-    let lastStats: GpuStats | null = null;
+    let lastSnapshot: SystemSnapshot | null = null;
 
-    function renderGpu(stats: GpuStats): void {
-      lastStats = stats;
-      clear(gpuBody);
-      const used = Math.max(0, stats.total - stats.free);
-      const percent = stats.total > 0 ? (used / stats.total) * 100 : 0;
-      gpuBody.appendChild(Grid({}, metric('Free', `${formatGigabytes(stats.free)} GB`), metric('Total', `${formatGigabytes(stats.total)} GB`), metric('Used', `${formatGigabytes(used)} GB`), metric('Usage', formatPercent(percent), { progress: percent, percent })));
+    function renderResources(stats: SystemStats): void {
+      clear(resourcesBody);
+      const cpuPercent = sharePercent(stats.cpu.used_cores, stats.cpu.max_cores);
+      const ramPercent = sharePercent(stats.ram.used_bytes, stats.ram.total_bytes);
+      const vramPercent = sharePercent(stats.gpu.vram_used_bytes, stats.gpu.vram_total_bytes);
+      const cpuText = typeof stats.cpu.used_cores === 'number'
+        ? `${formatNumber(stats.cpu.used_cores, 2)} / ${formatNumber(stats.cpu.max_cores)} cores`
+        : '—';
+      resourcesBody.appendChild(Grid({},
+        metric('CPU', cpuText, cpuPercent),
+        metric('RAM', usageText(stats.ram.used_bytes, stats.ram.total_bytes, formatBytes), ramPercent),
+        metric('VRAM', usageText(stats.gpu.vram_used_bytes, stats.gpu.vram_total_bytes, formatBytes), vramPercent),
+        metric('GPU load', formatPercent(stats.gpu.utilization_percent)),
+      ));
     }
 
-    async function loadGpu(initial = false): Promise<void> {
-      if (gpuInFlight) return;
-      gpuInFlight = true;
-      if (initial && !lastStats) {
-        clear(gpuBody);
-        gpuBody.appendChild(loadingState('Reading GPU memory…'));
+    function renderServers(servers: ManagedServer[]): void {
+      clear(managedContainer);
+      if (!servers.length) {
+        managedContainer.appendChild(emptyState(
+          'No model servers are running',
+          'One will start automatically the next time you send a prompt that needs it.',
+        ));
+        return;
+      }
+      const table = Table(TableHead(TableRow(TableHeaderCell('Model'), TableHeaderCell('Provider'), TableHeaderCell('Port'), TableHeaderCell('PID'), TableHeaderCell('Status'), TableHeaderCell('CPU'), TableHeaderCell('RAM'), TableHeaderCell('VRAM'), TableHeaderCell('Active'), TableHeaderCell('Idle'), TableHeaderCell('Actions'))));
+      const body = el('tbody');
+      for (const server of servers) {
+        const kill = Button('Kill', { variant: 'danger', small: true });
+        kill.addEventListener('click', async () => {
+          const confirmed = await confirmAction({
+            title: 'Stop model server?',
+            message: `The ${server.provider} server for “${server.model}” on port ${server.port} will be stopped.`,
+            confirmLabel: 'Kill process',
+          });
+          if (!confirmed) return;
+          kill.disabled = true;
+          try {
+            await api.post<StopProcessResponse>(`/api/managed-processes/${encodeURIComponent(server.port)}/stop`);
+            notify('Model server stopped.', { level: 'success' });
+            await loadSnapshot();
+          } catch (error) {
+            kill.disabled = false;
+            notify(messageOf(error) || 'Could not stop the process.', { level: 'error' });
+          }
+        });
+        body.appendChild(TableRow(
+          TableCell(server.model || '—'),
+          TableCell(server.provider || '—'),
+          TableCell(server.port),
+          TableCell(server.pid === null ? '—' : String(server.pid)),
+          TableCell(Badge(server.status || 'unknown')),
+          TableCell(formatNumber(server.cpu_cores, 2)),
+          TableCell(formatBytes(server.rss_bytes)),
+          TableCell(formatBytes(server.vram_bytes)),
+          TableCell(String(server.active_requests)),
+          TableCell(formatIdle(server.idle_seconds)),
+          TableCell(kill),
+        ));
+      }
+      table.appendChild(body);
+      managedContainer.appendChild(el('div', { class: 'table-wrap' }, table));
+    }
+
+    function renderSnapshot(snapshot: SystemSnapshot): void {
+      renderResources(snapshot.resources);
+      renderServers(snapshot.servers);
+      lastSnapshot = snapshot;
+    }
+
+    async function loadSnapshot(initial = false): Promise<void> {
+      if (snapshotInFlight) return;
+      snapshotInFlight = true;
+      if (initial && !lastSnapshot) {
+        clear(resourcesBody);
+        resourcesBody.appendChild(loadingState('Reading system resources…'));
+        clear(managedContainer);
+        managedContainer.appendChild(loadingState('Loading managed processes…'));
       }
       try {
-        const stats = await api.get<GpuStats>('/api/gpu-stats');
+        const data = await api.get<SystemSnapshot>('/api/system-stats');
         if (destroyed) return;
-        if (typeof stats.free !== 'number' || typeof stats.total !== 'number') {
-          throw new Error('The GPU returned an unexpected response.');
-        }
-        renderGpu({ free: stats.free, total: stats.total });
-        clear(gpuStatus);
+        renderSnapshot(data);
+        clear(resourcesStatus);
       } catch (error) {
         if (destroyed) return;
-        if (lastStats) {
-          renderGpu(lastStats);
-          setStatus(gpuStatus, `Could not refresh GPU memory: ${messageOf(error)}`, {
+        if (lastSnapshot) {
+          renderSnapshot(lastSnapshot);
+          setStatus(resourcesStatus, `Could not refresh system overview: ${messageOf(error)}`, {
             error: true,
-            retry: () => loadGpu(),
+            retry: () => loadSnapshot(),
           });
-          gpuStatus.appendChild(InlineHint('Showing the last known values.'));
+          resourcesStatus.appendChild(InlineHint('Showing the last known values.'));
         } else {
-          clear(gpuBody);
-          gpuBody.appendChild(errorState(messageOf(error) || 'Could not read GPU memory.', () => loadGpu(true)));
+          clear(resourcesBody);
+          resourcesBody.appendChild(errorState(messageOf(error) || 'Could not read system resources.', () => loadSnapshot(true)));
+          errorWithRetry(managedContainer, messageOf(error) || 'Could not load managed processes.', () => loadSnapshot(true));
         }
       } finally {
-        gpuInFlight = false;
+        snapshotInFlight = false;
       }
     }
 
@@ -155,8 +232,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         clear(benchmarkStatus);
       } catch (error) {
         if (destroyed) return;
-        benchmarkError(benchmarkStatus, messageOf(error) || 'The GPU benchmark failed.', () => form.requestSubmit());
-      } finally {
+        errorWithRetry(benchmarkStatus, messageOf(error) || 'The GPU benchmark failed.', () => form.requestSubmit());      } finally {
         if (!destroyed) {
           runButton.disabled = false;
           runButton.textContent = 'Run benchmark';
@@ -164,99 +240,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
       }
     });
 
-    loadGpu(true);
-    return { refresh: () => loadGpu() };
-  }
-
-  // Managed processes tab
-  function mountManaged() {
-    const card = Card();
-    const status = Hint();
-    const tableContainer = el('div', {});
-    card.appendChild(CardHeader('Managed processes'));
-    card.appendChild(LineHint('Model servers run on demand. Idle instances are stopped automatically after five minutes.'));
-    card.appendChild(status);
-    card.appendChild(tableContainer);
-    content.appendChild(card);
-
-    let lastServers: ManagedServer[] | null = null;
-
-    function renderTable(servers: ManagedServer[]): void {
-      clear(tableContainer);
-      if (!servers.length) {
-        tableContainer.appendChild(emptyState(
-          'No model servers are running',
-          'One will start automatically the next time you send a prompt that needs it.',
-        ));
-        return;
-      }
-      const table = Table(TableHead(TableRow(TableHeaderCell('Model'), TableHeaderCell('Provider'), TableHeaderCell('Port'), TableHeaderCell('PID'), TableHeaderCell('Status'), TableHeaderCell('Active'), TableHeaderCell('Idle'), TableHeaderCell('Actions'))));
-      const body = el('tbody');
-      for (const server of servers) {
-        const kill = Button('Kill', { variant: 'danger', small: true });
-        kill.addEventListener('click', async () => {
-          const confirmed = await confirmAction({
-            title: 'Stop model server?',
-            message: `The ${server.provider} server for “${server.model}” on port ${server.port} will be stopped.`,
-            confirmLabel: 'Kill process',
-          });
-          if (!confirmed) return;
-          kill.disabled = true;
-          try {
-            await api.post<StopProcessResponse>(`/api/managed-processes/${encodeURIComponent(server.port)}/stop`);
-            notify('Model server stopped.', { level: 'success' });
-            await loadManaged();
-          } catch (error) {
-            kill.disabled = false;
-            notify(messageOf(error) || 'Could not stop the process.', { level: 'error' });
-          }
-        });
-        body.appendChild(TableRow(
-          TableCell(server.model || '—'),
-          TableCell(server.provider || '—'),
-          TableCell(server.port),
-          TableCell(server.pid === null ? '—' : String(server.pid)),
-          TableCell(Badge(server.status || 'unknown')),
-          TableCell(String(server.active_requests)),
-          TableCell(formatIdle(server.idle_seconds)),
-          TableCell(kill),
-        ));
-      }
-      table.appendChild(body);
-      tableContainer.appendChild(el('div', { class: 'table-wrap' }, table));
-    }
-
-    async function loadManaged(): Promise<void> {
-      if (managedInFlight) return;
-      managedInFlight = true;
-      if (lastServers === null) {
-        clear(tableContainer);
-        tableContainer.appendChild(loadingState('Loading managed processes…'));
-      }
-      try {
-        const data = await api.get<ManagedProcessList>('/api/managed-processes/list');
-        if (destroyed) return;
-        lastServers = Array.isArray(data.servers) ? data.servers : [];
-        renderTable(lastServers);
-        clear(status);
-      } catch (error) {
-        if (destroyed) return;
-        if (lastServers) {
-          setStatus(status, `Could not refresh processes: ${messageOf(error)}`, {
-            error: true,
-            retry: () => loadManaged(),
-          });
-        } else {
-          clear(tableContainer);
-          tableContainer.appendChild(errorState(messageOf(error) || 'Could not load managed processes.', () => loadManaged()));
-        }
-      } finally {
-        managedInFlight = false;
-      }
-    }
-
-    loadManaged();
-    return { refresh: () => loadManaged() };
+    loadSnapshot(true);
+    return { refresh: () => loadSnapshot() };
   }
 
   // Providers tab
@@ -749,7 +734,6 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
   let activeTab: { refresh?: (() => void) | null } | null = null;
   if (tab === 'system') activeTab = mountSystem();
-  else if (tab === 'managed') activeTab = mountManaged();
   else if (tab === 'providers') activeTab = mountProviders();
   else activeTab = mountModels();
 

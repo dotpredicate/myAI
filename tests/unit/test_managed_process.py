@@ -11,6 +11,7 @@ from unittest import mock
 import httpx
 
 import inference.managed_processes as mp
+import inference.process_metrics as process_metrics
 
 
 class FakeProcess:
@@ -137,8 +138,8 @@ class TestManagedProcessLifecycle(unittest.IsolatedAsyncioTestCase):
             active_requests=2,
         )
 
-        status = mp.get_server_status()[0]
-
+        with mock.patch.object(process_metrics, "sample_usage", return_value={}):
+            status = mp.get_server_status()[0]
         self.assertEqual(status.port, "1234")
         self.assertEqual(status.provider, "test-provider")
         self.assertEqual(status.model, "test-model")
@@ -146,6 +147,28 @@ class TestManagedProcessLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status.status, mp.ServerStatus.RUNNING)
         self.assertEqual(status.active_requests, 2)
         self.assertGreaterEqual(status.idle_seconds, 4)
+        self.assertIsNone(status.cpu_cores)
+        self.assertIsNone(status.rss_bytes)
+        self.assertIsNone(status.vram_bytes)
+
+    async def test_server_status_reports_live_usage(self) -> None:
+        process = subprocess.Popen([sys.executable, "-c", "while True: pass"])
+        try:
+            managed = mp.init_port("1234", "test-provider", "busy")
+            managed.process = process
+
+            first = mp.get_server_status()[0]
+            await asyncio.sleep(0.2)
+            second = mp.get_server_status()[0]
+        finally:
+            process.kill()
+            process.wait()
+
+        self.assertIsNone(first.cpu_cores)
+        cpu_cores = second.cpu_cores
+        assert cpu_cores is not None
+        self.assertGreater(cpu_cores, 0.0)
+        self.assertGreater(second.rss_bytes or 0, 0)
 
     async def test_stop_one_server_removes_and_terminates_it(self) -> None:
         process = FakeProcess()

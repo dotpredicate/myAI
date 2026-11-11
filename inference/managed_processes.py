@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from inference import process_metrics
 from log_config import get_logger
 
 logger = get_logger(__name__)
@@ -348,22 +349,42 @@ class ServerInfo:
     status: ServerStatus
     active_requests: int
     idle_seconds: int
+    cpu_cores: float | None
+    rss_bytes: int | None
+    vram_bytes: int | None
 
 
 def get_server_status() -> list[ServerInfo]:
-    now = time.monotonic()
-    return [
-        ServerInfo(
-            port=port,
-            provider=managed.provider,
-            model=managed.model,
-            pid=managed.process.pid if managed.process is not None else None,
-            status=_public_status(managed),
-            active_requests=managed.active_requests,
-            idle_seconds=max(0, int(now - managed.last_used)),
-        )
-        for port, managed in _managed_processes.items()
+    records = list(_managed_processes.items())
+    live_pids = [
+        managed.process.pid
+        for _, managed in records
+        if managed.process is not None and managed.process.poll() is None
     ]
+    usage = process_metrics.sample_usage(live_pids)
+    now = time.monotonic()
+    statuses: list[ServerInfo] = []
+    for port, managed in records:
+        pid = managed.process.pid if managed.process is not None else None
+        if pid is None:
+            measured = process_metrics.ProcessUsage()
+        else:
+            measured = usage.get(pid, process_metrics.ProcessUsage())
+        statuses.append(
+            ServerInfo(
+                port=port,
+                provider=managed.provider,
+                model=managed.model,
+                pid=pid,
+                status=_public_status(managed),
+                active_requests=managed.active_requests,
+                idle_seconds=max(0, int(now - managed.last_used)),
+                cpu_cores=measured.cpu_cores,
+                rss_bytes=measured.rss_bytes,
+                vram_bytes=measured.vram_bytes,
+            )
+        )
+    return statuses
 
 
 async def stop_servers() -> None:

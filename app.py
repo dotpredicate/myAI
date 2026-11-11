@@ -23,6 +23,7 @@ from inference import managed_processes
 from inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
 from inference.llama_cpp import benchmark
 from inference.llama_cpp.gguf import list_cached_models
+from system_metrics import sample_system_stats
 
 logger = get_logger(__name__)
 
@@ -121,15 +122,15 @@ async def benchmark_model_endpoint(
     ))
 
 
-@app.get('/api/gpu-stats')
-async def gpu_stats():
-    stats = await asyncio.to_thread(benchmark.get_gpu_stats)
-    return JSONResponse(content={"free": stats.free_bytes, "total": stats.total_bytes})
+@app.get('/api/system-stats')
+async def system_stats():
+    def snapshot() -> dict[str, object]:
+        return {
+            "resources": sample_system_stats(),
+            "servers": managed_processes.get_server_status(),
+        }
 
-
-@app.get('/api/managed-processes/list')
-async def managed_processes_list():
-    return {"servers": managed_processes.get_server_status()}
+    return await asyncio.to_thread(snapshot)
 
 
 @app.post('/api/managed-processes/{port}/stop')

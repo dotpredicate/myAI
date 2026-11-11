@@ -3,7 +3,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, NamedTuple, Optional, TypedDict
+from typing import Any, Optional, TypedDict
 
 import httpx
 from huggingface_hub import HfApi, RepoFile, hf_hub_url
@@ -321,16 +321,3 @@ def parse_llama_bench_output(data: list) -> dict:
         elif entry.get("n_prompt", 0) > 0:
             pp_tps = float(entry.get("avg_ts", 0.0))
     return {"tps": tps, "pp_tps": pp_tps, "size_bytes": size_bytes, "parameters": parameters}
-
-
-class GpuStats(NamedTuple):
-    free_bytes: int
-    total_bytes: int
-
-
-def get_gpu_stats() -> GpuStats:
-    result = subprocess.run(["rocm-smi", "--showmeminfo", "vram", "--json"], capture_output=True, text=True)
-    data = json.loads(result.stdout)
-    used = int(data.get("card0", {}).get("VRAM Total Used Memory (B)", 0))
-    total = int(data.get("card0", {}).get("VRAM Total Memory (B)", 0))
-    return GpuStats(free_bytes=total - used, total_bytes=total)
