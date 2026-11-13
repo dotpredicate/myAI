@@ -5,7 +5,7 @@
 // Screen writes only the rows that changed since the previous frame.
 
 import { type Style, type VNode, plain, sanitizeText, styleOf } from './h.ts';
-import { textWidth, truncateToWidth } from './text.ts';
+import { PRINTABLE_ASCII, textWidth, truncateToWidth } from './text.ts';
 
 export interface Segment {
   text: string;
@@ -117,45 +117,94 @@ function wrapSegments(segments: Segment[], max: number): Line[] {
       if (chunkIndex > 0) flush();
       let pos = 0;
       while (pos < chunk.length) {
-        const spaces = /^[ \t]+/.exec(chunk.slice(pos));
-        if (spaces) {
+        // Scan for the next run instead of slicing the rest of the chunk and
+        // matching a regex on it: a paragraph is walked once, not once per word.
+        const nextSpace = findSpace(chunk, pos);
+        if (nextSpace === pos) {
           // Keep real spaces so style boundaries never invent one (the old
           // word-splitting version turned `**bold**,` into `bold ,`).
+          const end = findWord(chunk, pos);
           if (used > 0) {
-            pushWord(line, seg.style, spaces[0]);
-            used += textWidth(spaces[0]);
+            const spaces = chunk.slice(pos, end);
+            pushWord(line, seg.style, spaces);
+            used += textWidth(spaces);
           }
-          pos += spaces[0].length;
+          pos = end;
           continue;
         }
 
-        const word = /^[^ \t]+/.exec(chunk.slice(pos))?.[0] ?? '';
-        if (word === '') break;
-        pos += word.length;
-        let rest = word;
-        while (rest !== '') {
-          const restWidth = textWidth(rest);
-          if (restWidth <= widthLimit - used) {
-            pushWord(line, seg.style, rest);
-            used += restWidth;
-            break;
-          }
-          if (used === 0) {
-            const head = truncateToWidth(rest, widthLimit);
-            // A single cluster wider than the line still has to make progress.
-            const first = head === '' ? (rest[Symbol.iterator]().next().value ?? '') : head;
-            pushWord(line, seg.style, first);
-            flush();
-            rest = rest.slice(first.length);
+        const word = chunk.slice(pos, nextSpace);
+        pos = nextSpace;
+        const wordWidth = textWidth(word);
+        if (wordWidth <= widthLimit - used) {
+          pushWord(line, seg.style, word);
+          used += wordWidth;
+          continue;
+        }
+        // The word does not fit the rest of the line. Flush, then keep it whole
+        // on the fresh line when it fits there.
+        if (used > 0) {
+          flush();
+          if (wordWidth <= widthLimit) {
+            pushWord(line, seg.style, word);
+            used = wordWidth;
             continue;
           }
+        }
+        if (PRINTABLE_ASCII.test(word)) {
+          // One cell per character, so filling the line is arithmetic.
+          for (let index = 0; index < word.length; ) {
+            if (used === widthLimit) flush();
+            const take = Math.min(widthLimit - used, word.length - index);
+            pushWord(line, seg.style, word.slice(index, index + take));
+            used += take;
+            index += take;
+          }
+          continue;
+        }
+        // Break the word across lines, measuring only the head of what is left.
+        // Re-measuring the whole tail for every line it spans is what made a
+        // long unbroken run quadratic: a 30 KB base64 or a minified JSON blob
+        // took seconds.
+        let rest = word;
+        while (rest !== '') {
+          const head = truncateToWidth(rest, widthLimit);
+          if (head === rest) {
+            pushWord(line, seg.style, rest);
+            used = textWidth(rest);
+            break;
+          }
+          // A single cluster wider than the line still has to make progress.
+          const first = head === '' ? (rest[Symbol.iterator]().next().value ?? '') : head;
+          pushWord(line, seg.style, first);
           flush();
+          rest = rest.slice(first.length);
         }
       }
     });
   }
   if (line.length > 0 || lines.length === 0) lines.push(trimTrailing(line));
   return lines;
+}
+
+function isSpace(code: number): boolean {
+  return code === 0x20 || code === 0x09;
+}
+
+/** Index of the first space at or after `from`. */
+function findSpace(text: string, from: number): number {
+  for (let index = from; index < text.length; index += 1) {
+    if (isSpace(text.charCodeAt(index))) return index;
+  }
+  return text.length;
+}
+
+/** Index of the first non-space at or after `from`. */
+function findWord(text: string, from: number): number {
+  for (let index = from; index < text.length; index += 1) {
+    if (!isSpace(text.charCodeAt(index))) return index;
+  }
+  return text.length;
 }
 
 /* ------------------------------------------------------------------ layout */
