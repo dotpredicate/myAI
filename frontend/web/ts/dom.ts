@@ -50,6 +50,7 @@ export interface TagProps {
     value?: string | number;
   };
   label: { for?: string };
+  ol: { start?: number; reversed?: boolean };
   option: { value?: string; disabled?: boolean; selected?: boolean };
   progress: { value?: string | number; max?: string | number };
   select: { name?: string; required?: boolean; disabled?: boolean; multiple?: boolean };

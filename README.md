@@ -38,7 +38,7 @@ Project structure:
 - `./myai-server` - server launcher
 - `./migrations/` - folder with migration scripts
 - `./frontend/` - front-end sources and scripts (one npm project)
-  - `./frontend/web/` - browser client, served by FastAPI; the HTTP transport and wire types shared with the TUI live in `web/ts/core/api.ts` (TUI imports it as `#core/api`)
+  - `./frontend/web/` - browser client, served by FastAPI; the HTTP transport and wire types shared with the TUI live in `web/ts/core/api.ts` (TUI imports it as `#core/api`), and the renderer-neutral Markdown parser shared by both clients lives in `web/ts/core/markdown.ts` (`#core/markdown`)
   - `./frontend/tui/` - terminal client (Node, runs from source)
 - `./build.sh` - build the front-end
 - `./install.sh` - install the terminal client as `myai` and the server as `myai-server`

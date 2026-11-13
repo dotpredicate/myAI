@@ -22,6 +22,7 @@ import {
 } from './wire.ts';
 import { Badge, Box, Heading, Hint, KeyHint, Line, Paragraph, Row, Spacer, Stack, Text } from './components.ts';
 import { applyStreamEvent, applyToolResult, findTool, transcriptFromMessages, truncate, type TranscriptItem } from './transcript.ts';
+import { markdownNodes } from './markdown.ts';
 import { Screen, layout, paint, type Line as RenderedLine } from './render.ts';
 import { startInput, type InputHandle, type Key } from './input.ts';
 import { handlePickerKey, openPicker, pickerFrame, type Picker } from './picker.ts';
@@ -135,7 +136,7 @@ function renderItems(items: TranscriptItem[]): VNode[] {
       case 'user':
         return Box({ title: 'you' }, Paragraph(Text(item.text)));
       case 'assistant':
-        return Paragraph(Text(item.text || ' '));
+        return Stack(...markdownNodes(item.text || ' '));
       case 'thinking':
         return Paragraph(Hint(item.text));
       case 'tool':

@@ -6,24 +6,47 @@ export type Color = 'red' | 'green' | 'yellow' | 'blue' | 'magenta' | 'cyan' | '
 
 export interface Style {
   bold: boolean;
+  italic: boolean;
   dim: boolean;
+  strike: boolean;
   reverse: boolean;
   color: Color | null;
 }
 
-export const plain: Style = { bold: false, dim: false, reverse: false, color: null };
+export const plain: Style = {
+  bold: false,
+  italic: false,
+  dim: false,
+  strike: false,
+  reverse: false,
+  color: null,
+};
 
 export interface Props {
   bold?: boolean;
+  italic?: boolean;
   dim?: boolean;
+  strike?: boolean;
   reverse?: boolean;
   color?: Color;
   width?: number;
   title?: string;
+  /** Left margin repeated on every laid-out line; used by quotes and lists. */
+  prefix?: string;
 }
 
 /** Tags the terminal layout knows how to place. */
-export type Tag = 'row' | 'stack' | 'p' | 'span' | 'text' | 'spacer' | 'line' | 'box';
+export type Tag =
+  | 'row'
+  | 'stack'
+  | 'p'
+  | 'span'
+  | 'text'
+  | 'spacer'
+  | 'line'
+  | 'box'
+  | 'indent'
+  | 'break';
 
 export interface VNode {
   tag: Tag;
@@ -75,7 +98,9 @@ export function h(tag: Tag, props: Props = {}, ...children: ChildList[]): VNode 
 export function styleOf(props: Props, parent: Style = plain): Style {
   return {
     bold: props.bold ?? parent.bold,
+    italic: props.italic ?? parent.italic,
     dim: props.dim ?? parent.dim,
+    strike: props.strike ?? parent.strike,
     reverse: props.reverse ?? parent.reverse,
     color: props.color ?? parent.color,
   };

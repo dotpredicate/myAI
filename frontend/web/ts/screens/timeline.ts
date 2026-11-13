@@ -1,14 +1,9 @@
 import { el, clear, prettyJson, parseJsonObject, createCopyButton, messageOf } from '../ui.js';
-import { default_renderer, parser, parser_end, parser_write } from '../../vendor/smd.js';
+import { createMarkdown, type MarkdownWriter } from '../markdown.js';
 import type { ConversationElement, StreamEvent, StoredMessageRecord } from '../core/api.js';
 import { Row, Stack, LineHint, FieldLabel, Notice, Button, TextArea, Summary } from '../components.js';
 
 type Role = 'user' | 'assistant';
-
-interface MarkdownWriter {
-  write(chunk: string): void;
-  end(): void;
-}
 
 interface BlockBase {
   node: HTMLElement;
@@ -59,22 +54,6 @@ export interface TimelineCallbacks {
   onReject?: (id: number, comment: string, block: ToolBlock) => void | Promise<void>;
 }
 
-
-export function createMarkdown(container: Element): MarkdownWriter {
-  const instance = parser(default_renderer(container));
-  let ended = false;
-  return {
-    write(chunk: string) {
-      if (ended || !chunk) return;
-      parser_write(instance, chunk);
-    },
-    end() {
-      if (ended) return;
-      ended = true;
-      parser_end(instance);
-    },
-  };
-}
 
 export function renderDiff(container: Element, diffText: string | null | undefined): void {
   const diff = el('div', { class: 'diff' });
@@ -144,7 +123,7 @@ function createMessageBlock(role: Role): MessageBlock {
     },
     setContent(content: string) {
       raw.text = content || '';
-      if (markdown) markdown.write(raw.text);
+      if (markdown) markdown.set(raw.text);
       else if (textNode) textNode.textContent = raw.text;
     },
     end() {

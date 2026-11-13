@@ -6,6 +6,7 @@
   "type": "module",
   "imports": {
     "#core/api": "./web/ts/core/api.ts",
+    "#core/markdown": "./web/ts/core/markdown.ts",
     "#core/models": "./web/ts/core/models.ts"
   },
   "scripts": {

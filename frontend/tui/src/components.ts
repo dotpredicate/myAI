@@ -41,6 +41,14 @@ export function Line(): VNode {
   return h('line', {});
 }
 
+export function Indent(prefix: string, ...children: Children): VNode {
+  return h('indent', { prefix }, ...children);
+}
+
+export function LineBreak(): VNode {
+  return h('break', {});
+}
+
 export function Box(props: Props = {}, ...children: Children): VNode {
   return h('box', props, ...children);
 }

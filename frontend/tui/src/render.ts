@@ -28,7 +28,9 @@ function sgr(style: Style): string {
   const codes: string[] = ['0'];
   if (style.bold) codes.push('1');
   if (style.dim) codes.push('2');
+  if (style.italic) codes.push('3');
   if (style.reverse) codes.push('7');
+  if (style.strike) codes.push('9');
   if (style.color) codes.push(String(COLORS.get(style.color)));
   return `\x1b[${codes.join(';')}m`;
 }
@@ -67,6 +69,7 @@ function truncateText(value: string, max: number): string {
 function inlineOf(node: VNode, parent: Style = plain): Segment[] {
   const style = styleOf(node.props, parent);
   if (node.tag === 'text') return [{ text: node.text ?? '', style }];
+  if (node.tag === 'break') return [{ text: '\n', style }];
   const out: Segment[] = [];
   for (const child of node.children) out.push(...inlineOf(child, style));
   return out;
@@ -112,18 +115,29 @@ function wrapSegments(segments: Segment[], max: number): Line[] {
     const chunks = seg.text.split('\n');
     chunks.forEach((chunk, chunkIndex) => {
       if (chunkIndex > 0) flush();
-      for (const word of chunk.split(' ')) {
-        if (word === '') continue;
+      let pos = 0;
+      while (pos < chunk.length) {
+        const spaces = /^[ \t]+/.exec(chunk.slice(pos));
+        if (spaces) {
+          // Keep real spaces so style boundaries never invent one (the old
+          // word-splitting version turned `**bold**,` into `bold ,`).
+          if (used > 0) {
+            pushWord(line, seg.style, spaces[0]);
+            used += textWidth(spaces[0]);
+          }
+          pos += spaces[0].length;
+          continue;
+        }
+
+        const word = /^[^ \t]+/.exec(chunk.slice(pos))?.[0] ?? '';
+        if (word === '') break;
+        pos += word.length;
         let rest = word;
-        for (;;) {
-          const gap = used > 0 ? 1 : 0;
-          if (used + gap + textWidth(rest) <= widthLimit) {
-            if (gap === 1) {
-              pushWord(line, seg.style, ' ');
-              used += 1;
-            }
+        while (rest !== '') {
+          const restWidth = textWidth(rest);
+          if (restWidth <= widthLimit - used) {
             pushWord(line, seg.style, rest);
-            used += textWidth(rest);
+            used += restWidth;
             break;
           }
           if (used === 0) {
@@ -133,7 +147,6 @@ function wrapSegments(segments: Segment[], max: number): Line[] {
             pushWord(line, seg.style, first);
             flush();
             rest = rest.slice(first.length);
-            if (rest === '') break;
             continue;
           }
           flush();
@@ -215,6 +228,17 @@ function layoutBox(node: VNode, maxWidth: number): Line[] {
   return lines;
 }
 
+function layoutIndent(node: VNode, maxWidth: number): Line[] {
+  const prefix = sanitizeText(node.props.prefix ?? '  ');
+  const prefixWidth = textWidth(prefix);
+  const inner = Math.max(1, maxWidth - prefixWidth);
+  const content: Line[] = [];
+  for (const child of node.children) content.push(...layoutNode(child, inner));
+  if (content.length === 0) content.push([]);
+  const style = styleOf({ dim: true });
+  return content.map((line) => [{ text: prefix, style }, ...line]);
+}
+
 function layoutNode(node: VNode, maxWidth: number): Line[] {
   switch (node.tag) {
     case 'row':
@@ -224,6 +248,10 @@ function layoutNode(node: VNode, maxWidth: number): Line[] {
       for (const child of node.children) lines.push(...layoutNode(child, maxWidth));
       return lines;
     }
+    case 'indent':
+      return layoutIndent(node, maxWidth);
+    case 'break':
+      return [[]];
     case 'p':
       return wrapSegments(inlineOf(node), maxWidth);
     case 'span':

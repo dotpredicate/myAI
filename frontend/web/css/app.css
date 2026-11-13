@@ -1006,6 +1006,19 @@ pre code {
   border-top: 1px solid var(--border);
 }
 
+.markdown li.task-item {
+  list-style: none;
+  margin-left: -1.15rem;
+}
+
+.markdown li.task-item input {
+  margin-right: 0.35rem;
+}
+
+.markdown .equation {
+  color: var(--warning);
+}
+
 details {
   border: 1px solid var(--border);
   border-radius: var(--radius);
