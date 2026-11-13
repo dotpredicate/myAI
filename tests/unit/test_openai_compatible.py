@@ -146,6 +146,13 @@ class TestDeltaProcessor(unittest.TestCase):
             [FinishedToolCall(name="bash", parameters='{"command":')],
         )
 
+    def test_drops_whitespace_only_message(self):
+        processor = DeltaProcessor()
+        processor.process(_chunk(content=""))
+        processor.process(_chunk(content="   "))
+
+        self.assertEqual(processor.flush(), [])
+
 
 class TestOpenAICompatibleProvider(unittest.IsolatedAsyncioTestCase):
     async def test_streams_text_and_sends_openai_options(self):
@@ -219,6 +226,70 @@ class TestOpenAICompatibleProvider(unittest.IsolatedAsyncioTestCase):
                     "model-a", {}, _context()
                 )
             ]
+
+    async def test_tool_call_then_empty_content_delta_is_not_an_empty_completion(self):
+        # Some providers end the stream with finish_reason=stop after sending an
+        # empty content delta next to the tool call. The tool call has already
+        # been executed, so the stream must not be reported as empty.
+        client = FakeClient([
+            _tool_chunk("bash", '{"command": "ls"}'),
+            _chunk(content=""),
+            _finish_chunk("stop"),
+        ])
+        provider = OpenAICompatibleProvider(_config(), client=cast(Any, client))
+
+        events = [
+            event
+            async for event in provider.run_chat_completion_stream(
+                "model-a", {}, _context()
+            )
+        ]
+
+        self.assertEqual(
+            [finished for _, finished in events if finished is not None],
+            [FinishedToolCall(name="bash", parameters='{"command": "ls"}')],
+        )
+
+    async def test_empty_content_in_tool_call_chunk_is_not_an_empty_completion(self):
+        client = FakeClient([
+            _chunk(content="", tool_calls=[
+                SimpleNamespace(function=SimpleNamespace(name="bash", arguments='{"command": "ls"}'))
+            ]),
+            _finish_chunk("stop"),
+        ])
+        provider = OpenAICompatibleProvider(_config(), client=cast(Any, client))
+
+        events = [
+            event
+            async for event in provider.run_chat_completion_stream(
+                "model-a", {}, _context()
+            )
+        ]
+
+        self.assertEqual(
+            [finished for _, finished in events if finished is not None],
+            [FinishedToolCall(name="bash", parameters='{"command": "ls"}')],
+        )
+
+    async def test_empty_content_delta_before_tool_call_is_not_persisted(self):
+        client = FakeClient([
+            _chunk(content=""),
+            _tool_chunk("bash", '{"command": "ls"}'),
+            _finish_chunk("stop"),
+        ])
+        provider = OpenAICompatibleProvider(_config(), client=cast(Any, client))
+
+        events = [
+            event
+            async for event in provider.run_chat_completion_stream(
+                "model-a", {}, _context()
+            )
+        ]
+
+        self.assertEqual(
+            [finished for _, finished in events if finished is not None],
+            [FinishedToolCall(name="bash", parameters='{"command": "ls"}')],
+        )
 
     async def test_flushes_text_before_rejecting_truncated_stream(self):
         client = FakeClient([_truncated_chunk("partial")])

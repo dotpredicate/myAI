@@ -170,6 +170,8 @@ class DeltaProcessor:
         self.tool_calls: dict[int, tuple[Optional[str], str]] = {}
         self.finish_reason: Optional[str] = None
         self.has_content = False
+        self.has_thinking = False
+        self.has_tool_call = False
 
     def _finalize_buffered(self) -> Optional[FinishedElement]:
         element = self.buffered_element
@@ -178,6 +180,11 @@ class DeltaProcessor:
             return None
         match element:
             case StreamingMessage(content=c):
+                # Providers commonly send an empty (or whitespace-only) content
+                # delta next to tool calls. Persisting it would store an empty
+                # assistant message in the middle of the conversation.
+                if not c.strip():
+                    return None
                 return FinishedMessage(content=c)
             case StreamingThinking(content=c):
                 return FinishedThinking(content=c)
@@ -196,6 +203,8 @@ class DeltaProcessor:
                 continue
             elements.append(FinishedToolCall(name=name, parameters=arguments))
         self.tool_calls.clear()
+        if elements:
+            self.has_tool_call = True
         return elements
 
     def process(self, chunk: ChatCompletionChunk) -> tuple[Optional[StreamingElement], list[FinishedElement]]:
@@ -233,6 +242,8 @@ class DeltaProcessor:
                 self.has_content = True
         elif reasoning is not None:
             new_elem = StreamingThinking(reasoning)
+            if reasoning:
+                self.has_thinking = True
 
         if new_elem is not None and self.tool_calls:
             finalized.extend(self._finalize_tool_calls())
@@ -279,12 +290,10 @@ async def stream_events(
     # Reject an empty stop before yielding a whitespace-only finalized message,
     # which would otherwise be persisted as an empty assistant message. A pure
     # empty stop has no finalized elements; the retry in conversation handles it.
-    has_tool_call = any(isinstance(element, FinishedToolCall) for element in finalized)
-    has_thinking = any(
-        isinstance(element, FinishedThinking) and element.content for element in finalized
-    )
-    if processor.finish_reason == 'stop' and not processor.has_content and not has_tool_call:
-        if not has_thinking:
+    # The processor tracks elements that were already finalized mid-stream, so a
+    # tool call that came before an empty final delta still counts as output.
+    if processor.finish_reason == 'stop' and not processor.has_content and not processor.has_tool_call:
+        if not processor.has_thinking:
             raise EmptyCompletionError("Provider returned an empty completion")
     for element in finalized:
         yield None, element
