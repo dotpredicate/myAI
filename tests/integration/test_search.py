@@ -96,6 +96,52 @@ class TestSearch(BaseTestCase):
         self.assertEqual(payload["results"][0]["file_path"], "first_repo/notes.txt")
         self.assertEqual(payload["results"][0]["text"], "content unique to first repository")
 
+    async def test_sync_skips_repository_with_indexing_disabled(self):
+        repo_dir = Path(self._repo_dir.name)
+        (repo_dir / "notes.txt").write_text("unindexed content", encoding="utf-8")
+        response = await self._helper_create_repo(
+            "unindexed_repo", str(repo_dir), index_enabled=False
+        )
+        self.assertEqual(response.status_code, 201)
+
+        await search.synchronize(provider=self.embedding_provider)
+        hits = await search.semantic_search(
+            "unindexed content", 10, scopes=["unindexed_repo"], provider=self.embedding_provider
+        )
+        self.assertEqual(hits, [])
+
+    async def test_disabling_indexing_drops_repository_from_search(self):
+        repo_dir = Path(self._repo_dir.name)
+        (repo_dir / "notes.txt").write_text("indexed content", encoding="utf-8")
+        response = await self._helper_create_repo(
+            "disabled_repo", str(repo_dir), index_enabled=True
+        )
+        self.assertEqual(response.status_code, 201)
+        repo_id = response.json()["id"]
+
+        await search.synchronize(provider=self.embedding_provider)
+        hits = await search.semantic_search(
+            "indexed content", 10, scopes=["disabled_repo"], provider=self.embedding_provider
+        )
+        self.assertEqual(len(hits), 1)
+
+        updated = await self.client.put(
+            "/api/repositories/disabled_repo", json={"index_enabled": False}
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertFalse(updated.json()["index_enabled"])
+
+        hits = await search.semantic_search(
+            "indexed content", 10, scopes=["disabled_repo"], provider=self.embedding_provider
+        )
+        self.assertEqual(hits, [])
+
+        async with database.mk_conn() as conn, conn.cursor() as cur:
+            await cur.execute(
+                "SELECT COUNT(*) FROM documents WHERE repository_id = %s", (repo_id,)
+            )
+            self.assertEqual((await cur.fetchone())[0], 0)
+
     async def test_semantic_search_empty_scopes_returns_no_results(self):
         _, _, provider = await self._make_two_repos()
         calls_before = provider.embed_calls

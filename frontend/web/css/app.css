@@ -348,6 +348,23 @@ textarea {
   color: var(--text);
 }
 
+input[type="checkbox"] {
+  width: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.field--checkbox .field-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
 textarea {
   resize: vertical;
 }

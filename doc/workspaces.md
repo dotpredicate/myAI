@@ -23,10 +23,11 @@ conversations. It is not a filesystem root: sources may live anywhere.
 
 - **Create** - a workspace is created from a path: the path is canonicalized,
   its git root found, the repository registered and the workspace containing it
-  found or created. Creating also prepares the model space and starts
-  indexing. An existing workspace that already holds the repository wins over
-  creating a new one, and the home directory, `/` and the myAI data directory
-  are refused.
+  found or created. Creating also prepares the model space and starts index
+  synchronization for repositories that have indexing enabled; a repository
+  registered this way starts with indexing off. An existing workspace that
+  already holds the repository wins over creating a new one, and the home
+  directory, `/` and the myAI data directory are refused.
 - **Rename** - changes the label only; the id and the model space stay.
 - **Sources** - added explicitly, one repository at a time; adding one does not
   remove the repository from other workspaces.

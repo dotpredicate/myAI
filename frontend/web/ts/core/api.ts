@@ -13,6 +13,7 @@ export interface RepositoryConfig {
   internal_name: string;
   repo_type: 'plain' | 'git';
   path: string;
+  index_enabled: boolean;
 }
 
 export interface AgentConfig {

@@ -147,12 +147,14 @@ class BaseTestCase(unittest.IsolatedAsyncioTestCase):
         internal_name: str,
         path: str,
         repo_type: str = "plain",
+        index_enabled: bool = True,
     ):
         payload = {
             "display_name": internal_name.replace("_", " ").title(),
             "internal_name": internal_name,
             "path": path,
             "type": repo_type,
+            "index_enabled": index_enabled,
         }
         return await self.client.post("/api/repositories", json=payload)
 

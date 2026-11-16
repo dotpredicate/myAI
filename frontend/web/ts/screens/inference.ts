@@ -1,7 +1,7 @@
-import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, formatBytes, formatIdle, formatNumber, formatPercent, compactError, messageOf, statusMessage as setStatus, type MountOptions, type Route } from '../ui.js';
+import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, checkboxField, notify, confirmAction, formatBytes, formatIdle, formatNumber, formatPercent, compactError, messageOf, statusMessage as setStatus, type MountOptions, type Route } from '../ui.js';
 import { api, openNdjson } from '../core/api.js';
 import type { BenchmarkResult, CachedModelList, GpuBenchmark, ManagedServer, ModelInfo, ModelQuantInfo, ProviderCreateRequest, ProviderDetails, ProviderInfo, ProviderList, ProviderUpdateRequest, StopProcessResponse, SystemSnapshot, SystemStats } from '../core/api.js';
-import { Row, RowEnd, Stack, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldError, Badge, Button, LinkButton, Input, Form, Select, Option, Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell, TableWrap, CollectionRow, List } from '../components.js';
+import { Row, RowEnd, Stack, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldError, FieldGroup, Badge, Button, LinkButton, Input, Form, Select, Option, Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell, TableWrap, CollectionRow, List } from '../components.js';
 
 const TABS: { key: string; label: string }[] = [
   { key: 'system', label: 'System' },
@@ -323,7 +323,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
     const descriptionField = labeledField('Description', descriptionInput);
     const baseUrlField = labeledField('Base URL', baseUrlInput);
     const apiKeyField = labeledField('API key', apiKeyInput, { hint: 'Leave blank to keep the current key.' });
-    const clearKeyField = labeledField('Clear API key', clearKeyInput);
+    const clearKeyField = checkboxField('Clear API key', clearKeyInput);
+    const apiKeyGroup = FieldGroup(apiKeyField.wrapper, clearKeyField.wrapper);
     const modelsField = labeledField('Models', modelsInput, { hint: 'Comma-separated fallback list.' });
     const timeoutField = labeledField('Timeout (seconds)', timeoutInput);
     const reasoningField = labeledField('Send reasoning content', reasoningSelect);
@@ -337,8 +338,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         displayNameField.wrapper,
         descriptionField.wrapper,
         baseUrlField.wrapper,
-        apiKeyField.wrapper,
-        clearKeyField.wrapper,
+        apiKeyGroup,
         modelsField.wrapper,
         timeoutField.wrapper,
         reasoningField.wrapper,

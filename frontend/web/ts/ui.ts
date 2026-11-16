@@ -109,6 +109,37 @@ export function labeledField<T extends FieldControl>(
   return { wrapper, control, errorEl, setError, id };
 }
 
+export function checkboxField(
+  labelText: string,
+  control: HTMLInputElement,
+  options: FieldOptions = {},
+): Field<HTMLInputElement> {
+  const id = control.id || options.id || uid('field');
+  control.id = id;
+  const errorEl = FieldError(undefined, { hidden: true });
+  const hintEl = options.hint ? InlineHint(options.hint) : null;
+
+  const wrapper = el('div', { class: `field field--checkbox ${options.className || ''}`.trim() },
+    el('label', { class: 'field-label', for: id }, control, labelText),
+    hintEl,
+    errorEl,
+  );
+
+  function setError(message?: string | null): void {
+    if (message) {
+      errorEl.textContent = message;
+      errorEl.hidden = false;
+      control.dataset.invalid = 'true';
+    } else {
+      errorEl.textContent = '';
+      errorEl.hidden = true;
+      delete control.dataset.invalid;
+    }
+  }
+
+  return { wrapper, control, errorEl, setError, id };
+}
+
 const KEY_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 export function validateRequired(

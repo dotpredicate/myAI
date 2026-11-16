@@ -17,6 +17,7 @@ class RepositoryConfig(BaseModel):
     internal_name: str
     repo_type: Literal['plain', 'git']
     path: str
+    index_enabled: bool = False
 
 
 class AgentConfig(BaseModel):

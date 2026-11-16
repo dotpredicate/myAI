@@ -16,9 +16,35 @@ class TestRepositories(BaseTestCase):
         created_data = create_res.json()
         self.assertEqual(created_data["internal_name"], "test_repo")
         self.assertEqual(created_data["display_name"], "Test Repo")
+        self.assertFalse(created_data["index_enabled"])
 
         delete_res = await self.client.delete("/api/repositories/test_repo")
         self.assertEqual(delete_res.status_code, 200)
+
+    async def test_update_repository_toggles_indexing(self):
+        created = (await self.client.post("/api/repositories", json={
+            "display_name": "Toggle Repo",
+            "internal_name": "toggle_repo",
+            "path": self._repo_dir.name,
+            "index_enabled": True,
+        })).json()
+        self.assertTrue(created["index_enabled"])
+
+        updated = await self.client.put(
+            "/api/repositories/toggle_repo",
+            json={"index_enabled": False},
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertFalse(updated.json()["index_enabled"])
+
+        invalid = await self.client.put(
+            "/api/repositories/toggle_repo",
+            json={"index_enabled": "yes"},
+        )
+        self.assertEqual(invalid.status_code, 400)
+
+        repositories = (await self.client.get("/api/repositories")).json()["repositories"]
+        self.assertFalse(repositories[0]["index_enabled"])
 
     async def test_delete_repository_detaches_it_from_workspaces(self):
         workspace = await self._helper_create_workspace()

@@ -28,8 +28,9 @@ devices are not available.
 - `spawn_agent` - start a conversation with another agent; offered only to
   agents that list sub-agents.
 
-`search` is the only way to read indexed content without the shell. Model
-spaces are not indexed, so `/workspace` and `/sandbox` never appear in it.
+`search` is the only way to read indexed content without the shell. Only
+sources with indexing enabled are searched. Model spaces are not indexed, so
+`/workspace` and `/sandbox` never appear in it.
 
 ## Changes to repositories
 

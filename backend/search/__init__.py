@@ -131,6 +131,7 @@ async def semantic_search(
         JOIN documents d ON d.id = dc.document_id
         JOIN repositories r ON r.id = d.repository_id
         WHERE r.internal_name IN ({placeholders})
+          AND r.index_enabled = 1
         ORDER BY cosine_distance ASC LIMIT ?
     """
 
@@ -257,6 +258,15 @@ async def clear_index() -> None:
         schedule_sync()
 
 
+async def drop_repository_index(repository_id: int) -> None:
+    """Delete all indexed documents of one repository."""
+    async with database.mk_conn() as conn:
+        deleted = await documents.delete_documents_not_in(conn, repository_id, [])
+        await conn.commit()
+    if deleted:
+        logger.info("Repository %s - dropped %s indexed documents", repository_id, deleted)
+
+
 async def _prune_repo_documents(repo: RepositoryConfig, files: list[tuple[str, Path]]) -> None:
     """Delete indexed documents that no longer exist among the indexable files."""
     current_paths = [f"{repo.internal_name}/{relative_path}" for relative_path, _ in files]
@@ -271,6 +281,11 @@ async def _sync_repositories(provider: EmbeddingProvider) -> None:
     for repo in await get_repositories():
         if await get_repo_by_id(repo.id) is None:
             logger.info("Repository %s deleted before indexing; skipping", repo.internal_name)
+            continue
+
+        if not repo.index_enabled:
+            logger.info("Repository %s - indexing is disabled; dropping its index", repo.internal_name)
+            await drop_repository_index(repo.id)
             continue
 
         scan = await scan_repo_documents(repo)

@@ -1,4 +1,4 @@
-import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, slugifyKey, plural, validateKey, validateRequired, reportFieldErrors, messageOf, createFolderBrowser, type FieldControl, type MountOptions, type Route } from '../ui.js';
+import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, checkboxField, notify, confirmAction, navigate, encodeKey, slugifyKey, plural, validateKey, validateRequired, reportFieldErrors, messageOf, createFolderBrowser, type FieldControl, type MountOptions, type Route } from '../ui.js';
 import { api } from '../core/api.js';
 import type { DeleteResponse, RepositoryConfig, RepositoryFiles, RepositoryList, SearchResponse, SyncResponse } from '../core/api.js';
 import { Row, RowEnd, Stack, Grid, Page, Heading, Card, Hint, InlineHint, LineHint, FieldGroup, Badge, Notice, Button, LinkButton, Input, Select, Option, List, CollectionRow, Form, IconButton } from '../components.js';
@@ -27,6 +27,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     Option('plain', 'Plain folder'),
     Option('git', 'Git repository'),
   );
+  const indexCheckbox = Input({ type: 'checkbox' });
   const browseButton = Button('Browse');
   const browser = createFolderBrowser(selectFolder);
   const browsePanel = browser.element;
@@ -37,11 +38,15 @@ export function mount(route: Route, _options: MountOptions = {}) {
   const pathField = labeledField('Path', pathInput);
   const keyField = labeledField('Key', keyInput, { hint: 'Letters, numbers, hyphens and underscores only.' });
   const typeField = labeledField('Type', typeSelect);
+  const indexField = checkboxField('Index for search', indexCheckbox, {
+    hint: 'Embed this repository in the semantic search index. Off by default.',
+  });
   const addForm = Form({ novalidate: true, hidden: true, class: 'inset' },
     el('header', {}, Heading(3, 'New repository')),
     Grid({ columns: 2 }, nameField.wrapper, keyField.wrapper),
     FieldGroup(pathField.wrapper, Row(browseButton)),
-    FieldGroup(typeField.wrapper),
+    typeField.wrapper,
+    indexField.wrapper,
     browsePanel,
     formError,
     Row(addSave, addCancel),
@@ -81,6 +86,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     pathInput.value = '';
     keyInput.value = '';
     typeSelect.value = '';
+    indexCheckbox.checked = false;
     nameField.setError('');
     pathField.setError('');
     keyField.setError('');
@@ -125,10 +131,11 @@ export function mount(route: Route, _options: MountOptions = {}) {
     validateRequired(pathField, path, 'Path is required.', errors);
     validateKey(keyField, internalName, errors);
     if (reportFieldErrors(errors)) return;
-    const payload: { display_name: string; internal_name: string; path: string; type?: string } = {
+    const payload: { display_name: string; internal_name: string; path: string; type?: string; index_enabled: boolean } = {
       display_name: displayName,
       internal_name: internalName,
       path,
+      index_enabled: indexCheckbox.checked,
     };
     if (typeSelect.value) payload.type = typeSelect.value;
     state.actionsBusy = true;
@@ -136,7 +143,22 @@ export function mount(route: Route, _options: MountOptions = {}) {
     addSave.replaceChildren(spinnerLabel('Adding…'));
     try {
       const saved = await api.post<RepositoryConfig>('/api/repositories', payload);
-      notify('Repository added.', { level: 'success' });
+      let indexError = '';
+      if (payload.index_enabled) {
+        try {
+          await api.post<SyncResponse>('/api/sync');
+        } catch (error) {
+          indexError = messageOf(error) || 'Indexing could not start.';
+        }
+      }
+      notify(
+        indexError
+          ? `Repository added, but indexing could not start: ${indexError}`
+          : payload.index_enabled
+            ? 'Repository added. Indexing started in the background.'
+            : 'Repository added.',
+        { level: indexError ? 'error' : 'success' },
+      );
       resetAddForm();
       closeAddForm();
       navigate(`#/repositories/${encodeKey(saved.internal_name)}`);
@@ -160,8 +182,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
     indexStatus.textContent = '';
     try {
       await api.post<SyncResponse>('/api/sync');
-      indexStatus.textContent = 'Indexing started in the background. The server does not report progress.';
-      notify('Index update started.', { level: 'success' });
+      indexStatus.textContent = 'Indexing started in the background for checked repositories. The server does not report progress.';
+      notify('Index update started for checked repositories.', { level: 'success' });
     } catch (error) {
       indexStatus.textContent = `Could not start indexing: ${messageOf(error)}`;
       notify(messageOf(error) || 'Could not start indexing.', { level: 'error' });
@@ -297,16 +319,68 @@ export function mount(route: Route, _options: MountOptions = {}) {
     ));
     container.appendChild(LineHint(el('code', {}, repo.path)));
 
+    const indexToggle = Input({ type: 'checkbox', checked: repo.index_enabled });
+    const indexStateHint = LineHint();
+    const indexToggleField = checkboxField('Index for search', indexToggle, {
+      hint: 'Only checked repositories are embedded in the semantic search index.',
+    });
+    function renderIndexStatus(): void {
+      indexStateHint.textContent = repo.index_enabled
+        ? 'This repository is indexed for semantic search.'
+        : 'This repository is not indexed, so semantic search finds nothing.';
+    }
+    renderIndexStatus();
+    indexToggle.addEventListener('change', async () => {
+      const next = indexToggle.checked;
+      indexToggle.disabled = true;
+      try {
+        const saved = await api.put<RepositoryConfig>(`/api/repositories/${encodeKey(repo.internal_name)}`, {
+          index_enabled: next,
+        });
+        if (destroyed || token !== state.detailToken) return;
+        repo.index_enabled = saved.index_enabled;
+        indexToggle.checked = saved.index_enabled;
+        renderIndexStatus();
+        renderSearchIdle();
+        notify(
+          saved.index_enabled
+            ? 'Indexing enabled. The repository will be indexed in the background.'
+            : 'Indexing disabled. Its search entries will be removed.',
+          { level: 'success' },
+        );
+      } catch (error) {
+        if (destroyed || token !== state.detailToken) return;
+        indexToggle.checked = !next;
+        notify(messageOf(error) || 'Could not update indexing.', { level: 'error' });
+      } finally {
+        if (!destroyed) indexToggle.disabled = false;
+      }
+    });
+    container.appendChild(Stack(
+      el('header', {}, Heading(3, 'Indexing')),
+      indexToggleField.wrapper,
+      indexStateHint,
+    ));
+
     const searchInput = Input({ type: 'search', placeholder: 'Describe what you are looking for…' });
     const searchField = labeledField('Semantic search', searchInput);
     const searchButton = Button('Search', { variant: 'primary', submit: true });
     const searchResults = el('div', {});
     const searchForm = Form({}, RowEnd(searchField.wrapper, searchButton));
     const searchSection = Stack(el('header', {}, Heading(3, 'Search')), searchForm, searchResults);
-    searchResults.appendChild(emptyState(
-      'Search this repository',
-      'Results show the file, fragment number, distance and a short excerpt.',
-    ));
+    function renderSearchIdle(): void {
+      clear(searchResults);
+      searchResults.appendChild(repo.index_enabled
+        ? emptyState(
+          'Search this repository',
+          'Results show the file, fragment number, distance and a short excerpt.',
+        )
+        : emptyState(
+          'Indexing is off',
+          'Turn on “Index for search” above to make this repository searchable.',
+        ));
+    }
+    renderSearchIdle();
 
     searchForm.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -330,10 +404,15 @@ export function mount(route: Route, _options: MountOptions = {}) {
         clear(searchResults);
         const results = Array.isArray(data.results) ? data.results : [];
         if (results.length === 0) {
-          searchResults.appendChild(emptyState(
-            'No matches',
-            'Try different words, or update the index if this repository changed recently.',
-          ));
+          searchResults.appendChild(repo.index_enabled
+            ? emptyState(
+              'No matches',
+              'Try different words, or update the index if this repository changed recently.',
+            )
+            : emptyState(
+              'Indexing is off',
+              'Turn on “Index for search” above to make this repository searchable.',
+            ));
           return;
         }
         for (const result of results) {

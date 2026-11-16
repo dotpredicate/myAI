@@ -26,6 +26,12 @@ its index. Deleting never touches files on disk.
 
 ## Indexing
 
+Indexing is opt-in per repository. A repository is embedded into the document
+index only when **Index for search** is checked; unchecked repositories are
+skipped and any of their existing entries are removed. New and existing
+repositories start unchecked. Server startup and **Update index** synchronize
+checked repositories only.
+
 Readable text files are saved into a document index. In Git repositories only
 the files known to Git are indexed. Model spaces are not indexed.
 
