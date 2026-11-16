@@ -3,7 +3,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from backend.gpu_metrics import read_gpu_data
+from backend import gpu_metrics
 from backend.log_config import get_logger
 
 logger = get_logger(__name__)
@@ -92,25 +92,14 @@ def _unavailable_gpu_stats() -> GpuStats:
 
 
 def _read_gpu_stats() -> GpuStats:
-    data = read_gpu_data()
-    card = data.get("card0") if data is not None else None
-    if not isinstance(card, dict):
+    total = gpu_metrics.read_vram_total_bytes()
+    if total is None or total <= 0:
         return _unavailable_gpu_stats()
 
-    try:
-        used = int(card.get("VRAM Total Used Memory (B)", 0))
-        total = int(card.get("VRAM Total Memory (B)", 0))
-    except (TypeError, ValueError):
-        used = total = 0
-    try:
-        utilization: float | None = float(card["GPU use (%)"])
-    except (KeyError, TypeError, ValueError):
-        utilization = None
-
     return GpuStats(
-        vram_used_bytes=used if total > 0 else None,
-        vram_total_bytes=total if total > 0 else None,
-        utilization_percent=utilization,
+        vram_used_bytes=gpu_metrics.read_vram_used_bytes(),
+        vram_total_bytes=total,
+        utilization_percent=gpu_metrics.read_gpu_utilization_percent(),
     )
 
 

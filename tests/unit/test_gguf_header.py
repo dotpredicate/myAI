@@ -50,6 +50,23 @@ def _build_gguf() -> tuple[bytes, int]:
     return body, tensor_data_offset
 
 
+def _build_gguf_with_tensors(tensors: list[tuple[int, list[int]]]) -> tuple[bytes, int]:
+    body = b"GGUF" + struct.pack("<I", 3)
+    body += struct.pack("<Q", len(tensors))
+    body += struct.pack("<Q", 2)
+    body += _kv_string("general.architecture", "llama")
+    body += _kv_uint32("general.alignment", 32)
+    for index, (tensor_type, dimensions) in enumerate(tensors):
+        body += _string(f"blk.{index}.weight")
+        body += struct.pack("<I", len(dimensions))
+        for dimension in dimensions:
+            body += struct.pack("<Q", dimension)
+        body += struct.pack("<I", tensor_type)
+        body += struct.pack("<Q", 0)
+    tensor_data_offset = (len(body) + 31) // 32 * 32
+    return body, tensor_data_offset
+
+
 class TestGgufHeaderParser(unittest.TestCase):
     def test_parses_metadata_tensors_and_alignment(self) -> None:
         body, tensor_data_offset = _build_gguf()
@@ -62,6 +79,25 @@ class TestGgufHeaderParser(unittest.TestCase):
         self.assertEqual(header.context_length, 8192)
         self.assertEqual(header.parameters, 6)
         self.assertEqual(header.tensor_data_offset, tensor_data_offset)
+        self.assertEqual(header.bits_per_weight, 32.0)
+
+    def test_computes_exact_bits_per_weight(self) -> None:
+        body, tensor_data_offset = _build_gguf_with_tensors([(2, [256]), (1, [256])])
+        data = body + b"\0" * (tensor_data_offset - len(body))
+
+        header = parse_gguf_header(data)
+
+        self.assertEqual(header.parameters, 512)
+        assert header.bits_per_weight is not None
+        self.assertAlmostEqual(header.bits_per_weight, (256 * 4.5 + 256 * 16) / 512)
+
+    def test_unknown_tensor_type_leaves_bits_per_weight_unset(self) -> None:
+        body, tensor_data_offset = _build_gguf_with_tensors([(250, [256])])
+        data = body + b"\0" * (tensor_data_offset - len(body))
+
+        header = parse_gguf_header(data)
+
+        self.assertIsNone(header.bits_per_weight)
 
     def test_reads_header_from_file(self) -> None:
         body, tensor_data_offset = _build_gguf()

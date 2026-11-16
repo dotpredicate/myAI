@@ -1,39 +1,75 @@
-import json
-import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from backend import gpu_metrics
 
 
-def completed(stdout: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.CompletedProcess(gpu_metrics.ROCM_SMI_ARGS, 0, stdout=stdout, stderr="")
-
-
 class TestGpuMetrics(unittest.TestCase):
-    def test_read_gpu_data_returns_rocm_smi_json(self) -> None:
-        stdout = json.dumps({"card0": {"GPU use (%)": "12"}, "system": {"PID1": "x, 1, 1, 0, 0"}})
+    def _device(self, root: Path) -> Path:
+        device = root / "card0" / "device"
+        device.mkdir(parents=True)
+        (device / "mem_info_vram_total").write_text("1000\n")
+        (device / "mem_info_vram_used").write_text("250\n")
+        (device / "gpu_busy_percent").write_text("42\n")
+        return device
 
-        with mock.patch.object(gpu_metrics.subprocess, "run", return_value=completed(stdout)):
-            data = gpu_metrics.read_gpu_data()
+    def test_reads_vram_and_utilization_from_sysfs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            device = self._device(Path(tmp))
+            with mock.patch.object(gpu_metrics, "_GPU_DEVICE", device):
+                self.assertEqual(gpu_metrics.read_vram_total_bytes(), 1000)
+                self.assertEqual(gpu_metrics.read_vram_used_bytes(), 250)
+                self.assertEqual(gpu_metrics.read_gpu_utilization_percent(), 42.0)
 
-        self.assertEqual(data, {"card0": {"GPU use (%)": "12"}, "system": {"PID1": "x, 1, 1, 0, 0"}})
+    def test_handles_missing_gpu(self) -> None:
+        with mock.patch.object(gpu_metrics, "_GPU_DEVICE", None):
+            self.assertIsNone(gpu_metrics.read_vram_total_bytes())
+            self.assertIsNone(gpu_metrics.read_vram_used_bytes())
+            self.assertIsNone(gpu_metrics.read_gpu_utilization_percent())
 
-    def test_read_gpu_data_tolerates_missing_rocm_smi(self) -> None:
-        with mock.patch.object(
-            gpu_metrics.subprocess, "run", side_effect=FileNotFoundError("rocm-smi")
-        ):
-            self.assertIsNone(gpu_metrics.read_gpu_data())
+    def test_reads_process_vram_from_fdinfo(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fdinfo = Path(tmp) / "123" / "fdinfo"
+            fdinfo.mkdir(parents=True)
+            (fdinfo / "3").write_text(
+                "drm-pdev:\t0000:03:00.0\n"
+                "drm-client-id:\t43\n"
+                "drm-memory-vram:\t1000 KiB\n"
+                "drm-memory-gtt:\t4 KiB\n"
+            )
+            (fdinfo / "4").write_text(
+                "drm-pdev:\t0000:03:00.0\n"
+                "drm-client-id:\t43\n"
+                "drm-memory-vram:\t1000 KiB\n"
+            )
+            (fdinfo / "5").write_text(
+                "drm-pdev:\t0000:03:00.0\n"
+                "drm-client-id:\t44\n"
+                "drm-memory-vram:\t2 MiB\n"
+            )
+            with mock.patch.object(gpu_metrics, "_fdinfo_dir", return_value=fdinfo):
+                vram = gpu_metrics.read_process_vram_bytes(123)
 
-    def test_read_gpu_data_tolerates_failures_and_invalid_json(self) -> None:
-        with mock.patch.object(
-            gpu_metrics.subprocess, "run", return_value=completed("not json")
-        ):
-            self.assertIsNone(gpu_metrics.read_gpu_data())
+        self.assertEqual(vram, 1000 * 1024 + 2 * 1024**2)
 
-        failed = subprocess.CompletedProcess(gpu_metrics.ROCM_SMI_ARGS, 1, stdout="{}", stderr="")
-        with mock.patch.object(gpu_metrics.subprocess, "run", return_value=failed):
-            self.assertIsNone(gpu_metrics.read_gpu_data())
+    def test_process_vram_falls_back_to_fd_without_client_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fdinfo = Path(tmp)
+            (fdinfo / "3").write_text("drm-memory-vram:\t1000 KiB\n")
+            (fdinfo / "4").write_text("drm-memory-vram:\t1000 KiB\n")
+            with mock.patch.object(gpu_metrics, "_fdinfo_dir", return_value=fdinfo):
+                vram = gpu_metrics.read_process_vram_bytes(123)
 
-        with mock.patch.object(gpu_metrics.subprocess, "run", return_value=completed("[1, 2]")):
-            self.assertIsNone(gpu_metrics.read_gpu_data())
+        self.assertEqual(vram, 2000 * 1024)
+
+    def test_process_vram_is_none_without_drm_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            fdinfo = Path(tmp)
+            (fdinfo / "3").write_text("other: 1\n")
+            with mock.patch.object(gpu_metrics, "_fdinfo_dir", return_value=fdinfo):
+                self.assertIsNone(gpu_metrics.read_process_vram_bytes(123))
+
+    def test_process_vram_is_none_for_missing_process(self) -> None:
+        self.assertIsNone(gpu_metrics.read_process_vram_bytes(999999))

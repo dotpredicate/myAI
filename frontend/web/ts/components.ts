@@ -238,12 +238,58 @@ export function TableCell(...children: Children): HTMLTableCellElement {
   return el('td', {}, ...children);
 }
 
+export function TableBody(...children: Children): HTMLTableSectionElement {
+  return el('tbody', {}, ...children);
+}
+
+export function TableWrap(...children: Children): HTMLDivElement {
+  return el('div', { class: 'table-wrap' }, ...children);
+}
+
 /* ---------------------------------------------------------------- lists */
 
-export function List(...items: Children): HTMLUListElement {
-  return el('ul', { class: 'list' }, ...items);
+export interface ListProps {
+  scroll?: boolean;
+}
+
+function isListProps(value: ListProps | ChildList | undefined): value is ListProps {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Node);
+}
+
+export function List(...items: Children): HTMLUListElement;
+export function List(props: ListProps, ...items: Children): HTMLUListElement;
+export function List(first?: ListProps | ChildList, ...items: Children): HTMLUListElement {
+  const props = isListProps(first) ? first : {};
+  const children: Children = isListProps(first) ? items : [first, ...items];
+  return el('ul', { class: props.scroll ? 'list list--scroll' : 'list' }, ...children);
 }
 
 export function ListItem(...children: Children): HTMLLIElement {
   return el('li', { class: 'list-item' }, ...children);
+}
+
+export interface CollectionRowProps {
+  title: ChildList;
+  meta?: ChildList;
+  path?: ChildList;
+  onClick?: (event: MouseEvent) => void;
+  action?: ChildList;
+  selected?: boolean;
+}
+
+export function CollectionRow(props: CollectionRowProps): HTMLLIElement {
+  const title = el('span', { class: 'collection-row-title' }, props.title);
+  const meta = props.meta ? el('span', { class: 'collection-row-meta' }, props.meta) : null;
+  const path = props.path ? el('span', { class: 'collection-row-path' }, props.path) : null;
+  const content: Children = props.path
+    ? [title, meta, path]
+    : props.meta
+      ? [title, Spacer(), meta]
+      : [title];
+  const main = props.onClick
+    ? el('button', { type: 'button', class: 'collection-row-main', onClick: props.onClick }, ...content)
+    : el('div', { class: 'collection-row-main' }, ...content);
+  const row = ListItem(main, props.action ?? null);
+  if (props.selected) row.dataset.selected = 'true';
+  return row;
 }

@@ -2,7 +2,7 @@ import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledF
 import { api } from '../core/api.js';
 import { modelChoices } from '../core/models.js';
 import type { AgentConfig, AgentList, CreateAgentRequest, DeleteResponse, InferenceParam, InferenceParamList, ProviderInfo, ProviderList, ProviderModelList, UpdateAgentRequest } from '../core/api.js';
-import { Row, Stack, Grid, Page, Heading, Card, Hint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, ListItem, Form, Summary } from '../components.js';
+import { Row, Stack, Grid, Page, Heading, Card, Hint, Notice, Button, LinkButton, Input, TextArea, Select, Option, Spacer, List, CollectionRow, Form, Summary } from '../components.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {
   const root = Page({});
@@ -63,12 +63,12 @@ export function mount(route: Route, _options: MountOptions = {}) {
       const open = () => navigate(selected
         ? '#/agents'
         : `#/agents/${encodeKey(agent.internal_name)}`);
-      const row = ListItem(el('button', { type: 'button', class: 'collection-row-main', onClick: open },
-        el('span', { class: 'collection-row-title' }, agent.display_name || agent.internal_name),
-        el('span', { class: 'collection-row-path truncate' }, agent.internal_name),
-      ));
-      row.dataset.selected = selected ? 'true' : 'false';
-      list.appendChild(row);
+      list.appendChild(CollectionRow({
+        title: agent.display_name || agent.internal_name,
+        path: agent.internal_name,
+        onClick: open,
+        selected,
+      }));
       if (selected) {
         const detail = el('li', { class: 'list-detail' });
         detail.appendChild(editorContainer);

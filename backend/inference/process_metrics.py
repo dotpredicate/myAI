@@ -3,9 +3,8 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
-from backend.gpu_metrics import read_gpu_data
+from backend import gpu_metrics
 from backend.log_config import get_logger
 
 logger = get_logger(__name__)
@@ -55,33 +54,10 @@ def _read_rss_bytes(pid: int) -> int | None:
     return None
 
 
-def _parse_vram_by_pid(data: dict[str, Any]) -> dict[int, int]:
-    processes = data.get("system")
-    if not isinstance(processes, dict):
-        return {}
-    usage: dict[int, int] = {}
-    for key, value in processes.items():
-        if not key.startswith("PID"):
-            continue
-        try:
-            pid = int(key[3:])
-            usage[pid] = int(str(value).split(",")[-3])
-        except (ValueError, IndexError):
-            continue
-    return usage
-
-
-def _read_vram_by_pid() -> dict[int, int]:
-    data = read_gpu_data()
-    return _parse_vram_by_pid(data) if data is not None else {}
-
-
 def sample_usage(pids: list[int]) -> dict[int, ProcessUsage]:
     global _cpu_samples
     with _sample_lock:
         now = time.monotonic()
-        vram = _read_vram_by_pid() if pids else {}
-
         samples: dict[int, tuple[float, float]] = {}
         usage: dict[int, ProcessUsage] = {}
         for pid in pids:
@@ -97,7 +73,7 @@ def sample_usage(pids: list[int]) -> dict[int, ProcessUsage]:
             usage[pid] = ProcessUsage(
                 cpu_cores=cpu_cores,
                 rss_bytes=_read_rss_bytes(pid),
-                vram_bytes=vram.get(pid),
+                vram_bytes=gpu_metrics.read_process_vram_bytes(pid),
             )
 
         _cpu_samples = samples

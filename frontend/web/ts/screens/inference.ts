@@ -1,7 +1,7 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, formatBytes, formatIdle, formatNumber, formatPercent, compactError, messageOf, statusMessage as setStatus, type MountOptions, type Route } from '../ui.js';
-import { api } from '../core/api.js';
+import { api, openNdjson } from '../core/api.js';
 import type { BenchmarkResult, CachedModelList, GpuBenchmark, ManagedServer, ModelInfo, ModelQuantInfo, ProviderCreateRequest, ProviderDetails, ProviderInfo, ProviderList, ProviderUpdateRequest, StopProcessResponse, SystemSnapshot, SystemStats } from '../core/api.js';
-import { Row, Stack, Split, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldError, Badge, Button, LinkButton, Input, Form, Select, Option, Table, TableHead, TableRow, TableHeaderCell, TableCell } from '../components.js';
+import { Row, RowEnd, Stack, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldError, Badge, Button, LinkButton, Input, Form, Select, Option, Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell, TableWrap, CollectionRow, List } from '../components.js';
 
 const TABS: { key: string; label: string }[] = [
   { key: 'system', label: 'System' },
@@ -28,6 +28,57 @@ function sharePercent(used: number | null | undefined, total: number | null | un
 function usageText(used: number | null | undefined, total: number | null | undefined, format: (value: number) => string): string {
   if (typeof used !== 'number' || typeof total !== 'number') return '—';
   return `${format(used)} / ${format(total)}`;
+}
+
+function formatDepth(depth: number): string {
+  if (depth >= 1024 && depth % 1024 === 0) return `${depth / 1024}K`;
+  return formatNumber(depth);
+}
+
+function formatDuration(ms: number | null | undefined): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1000) return `${formatNumber(ms)} ms`;
+  if (ms < 120_000) return `${formatNumber(ms / 1000, ms < 10_000 ? 1 : 0)} s`;
+  return `${formatNumber(ms / 60_000, 1)} min`;
+}
+
+function resultSummary(result: BenchmarkResult): HTMLElement {
+  const points = result.points ?? [];
+  const first = points.find((point) => point.depth === 0) ?? points[0];
+  if (!first || (typeof first.tg_tps !== 'number' && typeof first.pp_tps !== 'number')) {
+    return FieldError('Error');
+  }
+
+  const parts: string[] = [];
+  if (typeof first.tg_tps === 'number') parts.push(`${formatNumber(first.tg_tps, 1)} tok/s`);
+  if (typeof first.pp_tps === 'number') parts.push(`${formatNumber(first.pp_tps, 0)} prefill`);
+  if (typeof first.vram_peak_bytes === 'number') parts.push(formatBytes(first.vram_peak_bytes));
+  return el('span', {}, parts.join(' · '));
+}
+
+function resultTable(result: BenchmarkResult): HTMLElement {
+  const table = Table(
+    TableHead(TableRow(
+      TableHeaderCell('Depth'),
+      TableHeaderCell('Generation tok/s'),
+      TableHeaderCell('Prefill tok/s'),
+      TableHeaderCell('VRAM peak'),
+      TableHeaderCell('Duration'),
+    )),
+    TableBody(
+      ...(result.points ?? []).map((point) => {
+        const failed = typeof point.tg_tps !== 'number' && typeof point.pp_tps !== 'number';
+        return TableRow(
+          TableCell(formatDepth(point.depth ?? 0)),
+          TableCell(failed ? FieldError('Error') : formatNumber(point.tg_tps, 1)),
+          TableCell(failed ? '—' : formatNumber(point.pp_tps, 0)),
+          TableCell(failed ? '—' : formatBytes(point.vram_peak_bytes)),
+          TableCell(formatDuration(point.duration_ms)),
+        );
+      }),
+    ),
+  );
+  return el('div', { class: 'table-mini' }, table);
 }
 
 function errorWithRetry(container: HTMLElement, message: string, retry: (() => void) | null = null): void {
@@ -87,7 +138,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
     const bwField = labeledField('Bandwidth size', bwInput);
     const runButton = Button('Run benchmark', { variant: 'primary', submit: true });
     const benchmarkStatus = Hint();
-    const benchmarkResults = el('div', { class: 'grid', hidden: true });
+    const benchmarkResults = Grid();
+    benchmarkResults.hidden = true;
     const form = Form({ class: 'row row--end' }, tflopsField.wrapper, bwField.wrapper, runButton);
     benchmarkCard.appendChild(CardHeader('GPU benchmark'));
     benchmarkCard.appendChild(form);
@@ -126,7 +178,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         return;
       }
       const table = Table(TableHead(TableRow(TableHeaderCell('Model'), TableHeaderCell('Provider'), TableHeaderCell('Port'), TableHeaderCell('PID'), TableHeaderCell('Status'), TableHeaderCell('CPU'), TableHeaderCell('RAM'), TableHeaderCell('VRAM'), TableHeaderCell('Active'), TableHeaderCell('Idle'), TableHeaderCell('Actions'))));
-      const body = el('tbody');
+      const body = TableBody();
       for (const server of servers) {
         const kill = Button('Kill', { variant: 'danger', small: true });
         kill.addEventListener('click', async () => {
@@ -161,7 +213,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         ));
       }
       table.appendChild(body);
-      managedContainer.appendChild(el('div', { class: 'table-wrap' }, table));
+      managedContainer.appendChild(TableWrap(table));
     }
 
     function renderSnapshot(snapshot: SystemSnapshot): void {
@@ -367,7 +419,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
           TableHeaderCell('Actions'),
         )),
       );
-      const body = el('tbody');
+      const body = TableBody();
       for (const provider of items) {
         const builtin = provider.kind === 'builtin';
         const edit = Button('Edit', { small: true, disabled: builtin });
@@ -383,7 +435,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         ));
       }
       table.appendChild(body);
-      listContainer.appendChild(el('div', { class: 'table-wrap' }, table));
+      listContainer.appendChild(TableWrap(table));
     }
 
     async function loadProviders(): Promise<void> {
@@ -507,36 +559,34 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
   // Models tab
   function mountModels() {
-    const layout = Split();
-    const left = Card();
-    const right = Card();
-
+    const searchCard = Card();
+    const cachedCard = Card();
     const modelInput = Input({
       type: 'text',
       placeholder: 'org/model or org/model:Q4_K_M',
       autocomplete: 'off',
       required: true,
     });
-    const modelField = labeledField('HuggingFace model', modelInput, {
-      hint: 'Enter a repository id, optionally with a quant tag.',
-    });
+    const modelField = labeledField('HuggingFace model', modelInput);
     const loadButton = Button('Load model', { variant: 'primary', submit: true });
     const cachedList = el('div', {});
 
-    const searchForm = Form({ novalidate: true }, modelField.wrapper, Row(loadButton));
-    left.appendChild(CardHeader('Models'));
-    left.appendChild(searchForm);
-    left.appendChild(el('header', {},
-      Heading(3, 'Cached models'),
+    const searchForm = Form({ novalidate: true }, RowEnd(modelField.wrapper, loadButton));
+    searchCard.appendChild(CardHeader('Models'));
+    searchCard.appendChild(LineHint('Load a HuggingFace GGUF repository, then benchmark its quantization variants across the context window.'));
+    searchCard.appendChild(searchForm);
+
+    cachedCard.appendChild(CardHeader('Cached models',
       LinkButton('Find GGUF ↗', 'https://huggingface.co/models?library=gguf', { variant: 'quiet', small: true, target: '_blank', rel: 'noopener noreferrer' }),
     ));
-    left.appendChild(cachedList);
+    cachedCard.appendChild(LineHint('Click a cached model to load its quantization variants.'));
+    cachedCard.appendChild(cachedList);
+
+    content.appendChild(searchCard);
+    content.appendChild(cachedCard);
 
     const details = Stack();
-    right.appendChild(details);
-    layout.appendChild(left);
-    layout.appendChild(right);
-    content.appendChild(layout);
+    content.appendChild(details);
 
     let selectedModel = '';
     let benchmarkRunning = false;
@@ -544,12 +594,16 @@ export function mount(route: Route, _options: MountOptions = {}) {
       result: HTMLTableCellElement;
       button: HTMLButtonElement;
       quant: ModelQuantInfo;
+      tableRow: HTMLTableRowElement;
+      benchmark?: BenchmarkResult;
+      detailRow?: HTMLTableRowElement;
+      detailCell?: HTMLTableCellElement;
+      expanded: boolean;
     }
 
     let quantRows = new Map<string, QuantRow>();
     let allButton: HTMLButtonElement | null = null;
-    let tableWrap: HTMLElement | null = null;
-    let busyLine: HTMLDivElement | null = null;
+    let statusSlot: HTMLElement | null = null;
 
     function showDetailsPlaceholder(): void {
       clear(details);
@@ -571,16 +625,19 @@ export function mount(route: Route, _options: MountOptions = {}) {
           cachedList.appendChild(LineHint('No cached GGUF models yet. Start one with Load model.'));
           return;
         }
-        const list = el('div', { class: 'list' });
+        const list = List({ scroll: true });
         for (const model of models) {
-          const item = el('button', { type: 'button', class: 'list-item' },
-            el('span', {}, model),
-          );
-          item.addEventListener('click', () => {
-            modelInput.value = model;
-            loadModelInfo(model);
-          });
-          list.appendChild(item);
+          const separator = model.lastIndexOf(':');
+          const repo = separator >= 0 ? model.slice(0, separator) : model;
+          const tag = separator >= 0 ? model.slice(separator + 1) : '';
+          list.appendChild(CollectionRow({
+            title: repo,
+            meta: tag ? Badge(tag) : null,
+            onClick: () => {
+              modelInput.value = repo;
+              loadModelInfo(repo);
+            },
+          }));
         }
         cachedList.appendChild(list);
       } catch (error) {
@@ -591,65 +648,120 @@ export function mount(route: Route, _options: MountOptions = {}) {
       }
     }
 
-    function setResult(row: QuantRow, result: BenchmarkResult | null): void {
+    function ensureDetailRow(row: QuantRow): HTMLTableRowElement {
+      if (row.detailRow) return row.detailRow;
+      const cell = TableCell();
+      cell.colSpan = 8;
+      const detailRow = TableRow(cell);
+      detailRow.className = 'detail-row';
+      detailRow.hidden = true;
+      row.detailRow = detailRow;
+      row.detailCell = cell;
+      return detailRow;
+    }
+
+    function renderRowResult(row: QuantRow): void {
       const cell = row.result;
       clear(cell);
+      const result = row.benchmark;
       if (!result) {
         cell.appendChild(InlineHint('—'));
+        if (row.detailRow) row.detailRow.hidden = true;
         return;
       }
-      if (result.error) {
-        cell.appendChild(FieldError(result.error));
+      if (!result.points?.length) {
+        cell.appendChild(FieldError('Error'));
+        if (row.detailRow) row.detailRow.hidden = true;
         return;
       }
-      cell.appendChild(Hint(`${formatNumber(result.tps, 1)} tok/s`));
-      cell.appendChild(Hint(`${formatNumber(result.pp_tps, 1)} prompt tok/s`));
+
+      const chevron = el('span', {
+        class: 'chevron',
+        dataset: { expanded: String(row.expanded) },
+      });
+      const toggle = Button([chevron, resultSummary(result)], {
+        variant: 'quiet',
+        class: 'result-toggle',
+        onClick: () => {
+          row.expanded = !row.expanded;
+          renderRowResult(row);
+        },
+      });
+      cell.appendChild(toggle);
+
+      if (!row.expanded) {
+        if (row.detailRow) row.detailRow.hidden = true;
+        return;
+      }
+
+      const detailRow = ensureDetailRow(row);
+      row.tableRow.after(detailRow);
+      detailRow.hidden = false;
+      if (row.detailCell) {
+        clear(row.detailCell);
+        row.detailCell.appendChild(resultTable(result));
+      }
+    }
+
+    function setResult(row: QuantRow, result: BenchmarkResult | null): void {
+      row.benchmark = result ?? undefined;
+      renderRowResult(row);
     }
 
     function renderInfo(data: ModelInfo): void {
       clear(details);
       quantRows = new Map();
       allButton = null;
-      tableWrap = null;
-      busyLine = null;
+      statusSlot = null;
       if (data.error) {
         details.appendChild(errorState(data.error, () => loadModelInfo(selectedModel)));
         return;
       }
+
       const quants = Array.isArray(data.quants) ? data.quants : [];
-      const header = el('header', {},
-        el('div', {},
-          Heading(2, data.model_id || selectedModel),
-          LineHint(`${quants.length} quantization${quants.length === 1 ? '' : 's'}`),
-        ),
-      );
+      const card = Card();
       allButton = Button('Benchmark all', { variant: 'primary', small: true });
       allButton.disabled = quants.length === 0;
       allButton.addEventListener('click', () => runBenchmarks([...quantRows.values()].map((row) => row.quant)));
-      header.appendChild(allButton);
-      details.appendChild(header);
+      card.appendChild(CardHeader(data.model_id || selectedModel, allButton));
+      card.appendChild(LineHint(`${quants.length} quantization${quants.length === 1 ? '' : 's'}`));
+      statusSlot = Hint();
+      card.appendChild(statusSlot);
 
       if (quants.length === 0) {
-        details.appendChild(emptyState('No quantization variants', 'This model did not return any GGUF variants.'));
+        card.appendChild(emptyState('No quantization variants', 'This model did not return any GGUF variants.'));
+        details.appendChild(card);
         return;
       }
 
-      const table = Table(TableHead(TableRow(TableHeaderCell('Quant'), TableHeaderCell('Size'), TableHeaderCell('Parameters'), TableHeaderCell('Context'), TableHeaderCell('Architecture'), TableHeaderCell('Benchmark'), TableHeaderCell('Result'))));
-      const body = el('tbody');
+      const table = Table(TableHead(TableRow(TableHeaderCell('Quant'), TableHeaderCell('Bits/weight'), TableHeaderCell('Size'), TableHeaderCell('Parameters'), TableHeaderCell('Context'), TableHeaderCell('Architecture'), TableHeaderCell('Benchmark'), TableHeaderCell('Result'))));
+      const body = TableBody();
       for (const quant of quants) {
         const resultCell = TableCell();
         const benchButton = Button('Benchmark', { small: true });
         benchButton.disabled = Boolean(quant.error);
         benchButton.addEventListener('click', () => runBenchmarks([quant]));
-        const row = { result: resultCell, button: benchButton, quant };
+        const tableRow = TableRow(TableCell(quant.quant || '—'), TableCell(formatNumber(quant.bits_per_weight, 2)), TableCell(quant.error ? FieldError(quant.error) : formatBytes(quant.size_bytes)), TableCell(quant.parameters ? formatNumber(quant.parameters) : '—'), TableCell(quant.context_length ? formatNumber(quant.context_length) : '—'), TableCell(quant.architecture || '—'), TableCell(benchButton), resultCell);
+        const row: QuantRow = {
+          result: resultCell,
+          button: benchButton,
+          quant,
+          tableRow,
+          expanded: false,
+        };
         quantRows.set(quant.quant ?? '', row);
-        setResult(row, null);
-        body.appendChild(TableRow(TableCell(quant.quant || '—'), TableCell(quant.error ? FieldError(quant.error) : formatBytes(quant.size_bytes)), TableCell(quant.parameters ? formatNumber(quant.parameters) : '—'), TableCell(quant.context_length ? formatNumber(quant.context_length) : '—'), TableCell(quant.architecture || '—'), TableCell(benchButton), resultCell));
+        body.appendChild(tableRow);
+        setResult(
+          row,
+          quant.points?.length
+            ? { quant: quant.quant, points: quant.points }
+            : null,
+        );
       }
       table.appendChild(body);
-      tableWrap = el('div', { class: 'table-wrap' }, table);
-      details.appendChild(tableWrap);
-      details.appendChild(LineHint('Results show generation speed and prompt prefill speed. Each variant is tested independently.'));
+      card.appendChild(TableWrap(table));
+      card.appendChild(LineHint('Results stream per depth. The Result column shows the depth-0 summary; expand it for generation, prefill, peak VRAM and benchmark duration per context depth. Full-context runs can take minutes and may hit VRAM limits.'));
+      details.appendChild(card);
     }
 
     async function loadModelInfo(model: string): Promise<void> {
@@ -673,43 +785,60 @@ export function mount(route: Route, _options: MountOptions = {}) {
         row.button.disabled = busy || Boolean(row.quant.error);
       }
       if (allButton) allButton.disabled = busy || quantRows.size === 0;
-      busyLine?.remove();
-      busyLine = null;
-      if (message) {
-        busyLine = Hint(spinnerLabel(message));
-        details.insertBefore(busyLine, tableWrap);
-      }
+      if (statusSlot) setStatus(statusSlot, message || null, { loading: Boolean(message) });
     }
 
     async function runBenchmarks(quants: ModelQuantInfo[]): Promise<void> {
       if (benchmarkRunning || !selectedModel) return;
+      const model = selectedModel;
       const targets = quants.filter((quant) => !quant.error);
       if (targets.length === 0) return;
       const query = targets.map((quant) => `quant=${encodeURIComponent(quant.quant ?? '')}`).join('&');
       const message = targets.length === 1
         ? `Benchmarking ${targets[0]?.quant ?? 'variant'}…`
         : `Benchmarking ${targets.length} variants…`;
+      const pending = new Set(targets.map((quant) => quant.quant ?? ''));
+      const failPending = (text: string): void => {
+        for (const key of pending) {
+          const row = quantRows.get(key);
+          if (!row) continue;
+          const result: BenchmarkResult = row.benchmark
+            ? { ...row.benchmark, error: text, done: true }
+            : { error: text, done: true };
+          setResult(row, result);
+        }
+        pending.clear();
+      };
+
       setBenchmarkBusy(true, message);
       for (const quant of targets) {
-        const row = quantRows.get(quant.quant ?? '');
+        const key = quant.quant ?? '';
+        const row = quantRows.get(key);
         if (!row) continue;
+        row.benchmark = undefined;
         clear(row.result);
         row.result.appendChild(spinnerLabel('Running…'));
       }
       try {
-        const data = await api.get<BenchmarkResult[]>(`/models/${encodeURIComponent(selectedModel)}/benchmark?${query}`);
-        if (destroyed) return;
-        const list = Array.isArray(data) ? data : [data];
-        for (const quant of targets) {
-          const row = quantRows.get(quant.quant ?? '');
-          if (row) setResult(row, list.find((item) => item.quant === quant.quant) || { error: 'No benchmark result returned.' });
+        const stream = await openNdjson<BenchmarkResult>(`/models/${encodeURIComponent(model)}/benchmark/stream?${query}`);
+        for await (const result of stream.events) {
+          if (destroyed || selectedModel !== model) return;
+          const key = result.quant ?? '';
+          if (!key) {
+            failPending(result.error || 'Benchmark failed.');
+            break;
+          }
+          const row = quantRows.get(key);
+          if (row) {
+            row.benchmark = result;
+            setResult(row, result);
+          }
+          if (result.done) pending.delete(key);
         }
+        if (pending.size > 0) failPending('Benchmark stream ended unexpectedly.');
       } catch (error) {
-        if (destroyed) return;
-        for (const quant of targets) {
-          const row = quantRows.get(quant.quant ?? '');
-          if (row) setResult(row, { error: messageOf(error) || 'Benchmark failed.' });
-        }
+        if (destroyed || selectedModel !== model) return;
+        failPending(messageOf(error) || 'Benchmark failed.');
       } finally {
         if (!destroyed) setBenchmarkBusy(false);
       }

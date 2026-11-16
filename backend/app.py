@@ -1,10 +1,11 @@
 import asyncio
+import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from backend.database import init_database
@@ -109,17 +110,25 @@ async def model_info_endpoint(model: str):
     return JSONResponse(content=await benchmark.model_info(model))
 
 
-@app.get('/models/{model:path}/benchmark')
-async def benchmark_model_endpoint(
+@app.get('/models/{model:path}/benchmark/stream')
+async def benchmark_model_stream_endpoint(
     model: str,
     quant: Optional[list[str]] = Query(default=None),
     n_gen: int = 128,
     n_prompt: int = 512,
     repetitions: int = 1,
 ):
-    return JSONResponse(content=await benchmark.benchmark_model(
-        model, n_gen=n_gen, n_prompt=n_prompt, repetitions=repetitions, quants=quant
-    ))
+    async def events():
+        async for result in benchmark.benchmark_model_stream(
+            model,
+            n_gen=n_gen,
+            n_prompt=n_prompt,
+            repetitions=repetitions,
+            quants=quant,
+        ):
+            yield json.dumps(result) + '\n'
+
+    return StreamingResponse(events(), media_type='application/x-ndjson')
 
 
 @app.get('/api/system-stats')

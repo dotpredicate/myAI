@@ -1,7 +1,7 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, writeValue, plural, messageOf, createFolderBrowser, type MountOptions, type Route } from '../ui.js';
 import { api } from '../core/api.js';
 import type { AddWorkspaceSourceRequest, DeleteResponse, RepositoryConfig, RepositoryList, ResolveWorkspaceResponse, UpdateWorkspaceRequest, WorkspaceConfig, WorkspaceList, WorkspaceSource } from '../core/api.js';
-import { Row, Stack, Page, Heading, Card, Hint, InlineHint, FieldGroup, Badge, Notice, Button, LinkButton, Input, Select, Option, List, ListItem, Form, IconButton } from '../components.js';
+import { Row, Stack, Page, Heading, Card, Hint, InlineHint, FieldGroup, Badge, Notice, Button, LinkButton, Input, Select, Option, List, CollectionRow, Form, IconButton } from '../components.js';
 
 function sourceLabel(source: WorkspaceSource): string {
   return source.display_name || source.internal_name;
@@ -132,18 +132,16 @@ export function mount(route: Route, options: MountOptions = {}) {
     const selected = workspace.id === state.selectedId;
     const open = () => navigate(selected ? '#/workspaces' : `#/workspaces/${workspace.id}`);
     const sources = workspace.sources.map(sourceLabel).join(', ');
-    const main = el('button', { type: 'button', class: 'collection-row-main', onClick: open },
-      el('span', { class: 'collection-row-title' }, workspace.name),
-      workspace.sources.length > 0
-        ? el('span', { class: 'collection-row-meta' }, Badge(plural(workspace.sources.length, 'source')))
-        : null,
-      el('span', { class: 'collection-row-path truncate' }, sources || 'No sources'),
-    );
     const deleteButton = IconButton('×', { title: 'Delete workspace' });
     deleteButton.addEventListener('click', () => deleteWorkspace(workspace));
-    const row = ListItem(main, deleteButton);
-    row.dataset.selected = selected ? 'true' : 'false';
-    return row;
+    return CollectionRow({
+      title: workspace.name,
+      meta: workspace.sources.length > 0 ? Badge(plural(workspace.sources.length, 'source')) : null,
+      path: sources || 'No sources',
+      onClick: open,
+      action: deleteButton,
+      selected,
+    });
   }
 
   function renderList(mode: 'ready' | 'loading' | 'error' = 'ready', message = ''): void {
@@ -239,14 +237,12 @@ export function mount(route: Route, options: MountOptions = {}) {
       for (const source of workspace.sources) {
         const removeButton = IconButton('×', { title: `Remove ${source.internal_name}` });
         removeButton.addEventListener('click', () => removeSource(workspace, source));
-        sourcesList.appendChild(ListItem(
-          el('div', { class: 'collection-row-main' },
-            el('span', { class: 'collection-row-title' }, sourceLabel(source)),
-            el('span', { class: 'collection-row-meta' }, Badge(source.repo_type)),
-            el('span', { class: 'collection-row-path truncate' }, source.path),
-          ),
-          removeButton,
-        ));
+        sourcesList.appendChild(CollectionRow({
+          title: sourceLabel(source),
+          meta: Badge(source.repo_type),
+          path: source.path,
+          action: removeButton,
+        }));
       }
       sourcesSection.appendChild(sourcesList);
     }

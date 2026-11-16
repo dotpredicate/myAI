@@ -5,25 +5,37 @@ from backend import system_metrics
 
 
 class TestGpuStats(unittest.TestCase):
-    def test_gpu_stats_are_parsed_from_gpu_data(self) -> None:
-        data = {
-            "card0": {
-                "GPU use (%)": "12",
-                "VRAM Total Memory (B)": "34208743424",
-                "VRAM Total Used Memory (B)": "1446617088",
-            },
-        }
-
-        with mock.patch.object(system_metrics, "read_gpu_data", return_value=data):
+    def test_gpu_stats_are_read_from_gpu_metrics(self) -> None:
+        with (
+            mock.patch.object(
+                system_metrics.gpu_metrics,
+                "read_vram_total_bytes",
+                return_value=34208743424,
+            ),
+            mock.patch.object(
+                system_metrics.gpu_metrics,
+                "read_vram_used_bytes",
+                return_value=1446617088,
+            ),
+            mock.patch.object(
+                system_metrics.gpu_metrics,
+                "read_gpu_utilization_percent",
+                return_value=12.0,
+            ),
+        ):
             stats = system_metrics._read_gpu_stats()
 
         self.assertEqual(stats.vram_used_bytes, 1446617088)
         self.assertEqual(stats.vram_total_bytes, 34208743424)
         self.assertEqual(stats.utilization_percent, 12.0)
 
-    def test_gpu_stats_are_unavailable_without_gpu_data(self) -> None:
-        for data in (None, {}, {"card0": "unexpected"}):
-            with mock.patch.object(system_metrics, "read_gpu_data", return_value=data):
+    def test_gpu_stats_are_unavailable_without_a_gpu(self) -> None:
+        for total in (None, 0):
+            with mock.patch.object(
+                system_metrics.gpu_metrics,
+                "read_vram_total_bytes",
+                return_value=total,
+            ):
                 stats = system_metrics._read_gpu_stats()
 
             self.assertIsNone(stats.vram_used_bytes)

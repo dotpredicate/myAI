@@ -221,9 +221,11 @@ export interface ModelQuantInfo {
   quant?: string;
   filename?: string;
   size_bytes?: number;
+  bits_per_weight?: number | null;
   parameters?: number;
   architecture?: string;
   context_length?: number;
+  points?: BenchmarkPoint[];
   error?: string;
 }
 
@@ -233,15 +235,23 @@ export interface ModelInfo {
   error?: string;
 }
 
+export interface BenchmarkPoint {
+  depth?: number;
+  tg_tps?: number | null;
+  pp_tps?: number | null;
+  vram_peak_bytes?: number | null;
+  duration_ms?: number | null;
+}
+
 export interface BenchmarkResult {
   quant?: string;
-  tps?: number;
-  pp_tps?: number;
+  points?: BenchmarkPoint[];
   size_bytes?: number;
   parameters?: number;
   architecture?: string;
   context_length?: number;
   error?: string;
+  done?: boolean;
 }
 
 /* ------------------------------------------------------- repositories */
@@ -538,6 +548,11 @@ async function* readNdjson<T>(response: Response): AsyncGenerator<T, void, unkno
     buffer += decoder.decode();
     for (const line of buffer.split('\n')) if (line.trim()) yield parseLine(line);
   } finally {
+    try {
+      await reader.cancel();
+    } catch {
+      // The stream is already closed or aborted.
+    }
     reader.releaseLock();
   }
 }

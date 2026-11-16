@@ -3,7 +3,9 @@ import mmap
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, cast
+from typing import Any, BinaryIO, Optional, cast
+
+from gguf import GGML_QUANT_SIZES, GGMLQuantizationType
 
 GGUF_MAGIC = b"GGUF"
 SUPPORTED_VERSIONS = (2, 3)
@@ -69,6 +71,7 @@ class GgufHeader:
     architecture: str
     context_length: int
     tensor_data_offset: int
+    bits_per_weight: Optional[float]
 
 
 class _Reader:
@@ -151,6 +154,15 @@ def _valid_alignment(value: Any) -> int:
     return DEFAULT_ALIGNMENT
 
 
+def _quant_bits_per_element(tensor_type: int) -> Optional[float]:
+    """Bits per weight for one GGML tensor type, or None when unknown."""
+    try:
+        block_size, type_size = GGML_QUANT_SIZES[GGMLQuantizationType(tensor_type)]
+    except (KeyError, ValueError):
+        return None
+    return type_size * 8 / block_size
+
+
 def _parse_header(reader: _Reader, file_size: int) -> GgufHeader:
     if reader.read(4) != GGUF_MAGIC:
         raise GgufParseError("Not a GGUF file")
@@ -185,23 +197,32 @@ def _parse_header(reader: _Reader, file_size: int) -> GgufHeader:
             reader.skip_value(value_type)
 
     parameters = 0
+    total_bits = 0.0
+    known_types = True
     for _ in range(tensor_count):
         reader.string()  # tensor name
         dimensions = reader.u32()
         elements = 1
         for _ in range(dimensions):
             elements *= reader.u64()
-        reader.u32()  # tensor type
+        tensor_type = reader.u32()
         reader.u64()  # tensor offset
         parameters += elements
+        bits_per_element = _quant_bits_per_element(tensor_type)
+        if bits_per_element is None:
+            known_types = False
+        else:
+            total_bits += elements * bits_per_element
 
     tensor_data_offset = _align_up(reader.tell(), alignment)
+    bits_per_weight = total_bits / parameters if known_types and parameters else None
     return GgufHeader(
         size=file_size,
         parameters=parameters,
         architecture=architecture,
         context_length=context_length,
         tensor_data_offset=tensor_data_offset,
+        bits_per_weight=bits_per_weight,
     )
 
 

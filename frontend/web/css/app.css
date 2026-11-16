@@ -719,6 +719,61 @@ tr:last-child td {
   border-bottom: 0;
 }
 
+.detail-row > td {
+  background: var(--surface-muted);
+}
+
+.result-toggle {
+  justify-content: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-weight: inherit;
+  text-align: left;
+}
+
+.result-toggle:hover {
+  color: var(--accent);
+}
+
+.chevron {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.chevron[data-expanded="true"] {
+  transform: rotate(45deg);
+}
+
+.result-toggle:hover .chevron {
+  border-color: var(--accent);
+}
+
+.table-mini {
+  overflow-x: auto;
+}
+
+.table-mini table {
+  width: 100%;
+  font-size: 1em;
+}
+
+.table-mini th,
+.table-mini td {
+  padding: 0.2rem 0.4rem;
+  white-space: nowrap;
+}
+
+.table-mini th {
+  background: var(--surface-muted);
+}
+
 /* Lists */
 .list,
 .browse-list,
@@ -736,6 +791,11 @@ tr:last-child td {
   gap: 0.5rem;
   padding: 0.5rem 0.55rem;
   border-radius: var(--radius);
+}
+
+.list--scroll {
+  max-height: 20rem;
+  overflow-y: auto;
 }
 
 .list-item + .list-item {
@@ -799,6 +859,8 @@ button.list-item {
 .collection-row-title {
   font-weight: 600;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .collection-row-meta {
@@ -811,9 +873,12 @@ button.list-item {
 .collection-row-path {
   flex: 1 1 12rem;
   min-width: 0;
+  overflow: hidden;
   color: var(--muted);
   font-family: var(--mono);
   font-size: 0.8em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .list-item[data-selected="true"] .collection-row-title {

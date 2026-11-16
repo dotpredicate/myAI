@@ -1,7 +1,7 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, notify, confirmAction, navigate, encodeKey, slugifyKey, plural, validateKey, validateRequired, reportFieldErrors, messageOf, createFolderBrowser, type FieldControl, type MountOptions, type Route } from '../ui.js';
 import { api } from '../core/api.js';
 import type { DeleteResponse, RepositoryConfig, RepositoryFiles, RepositoryList, SearchResponse, SyncResponse } from '../core/api.js';
-import { Row, RowEnd, Stack, Grid, Page, Heading, Card, Hint, InlineHint, LineHint, FieldGroup, Badge, Notice, Button, LinkButton, Input, Select, Option, List, ListItem, Form, IconButton } from '../components.js';
+import { Row, RowEnd, Stack, Grid, Page, Heading, Card, Hint, InlineHint, LineHint, FieldGroup, Badge, Notice, Button, LinkButton, Input, Select, Option, List, CollectionRow, Form, IconButton } from '../components.js';
 
 export function mount(route: Route, _options: MountOptions = {}) {
   const root = Page({});
@@ -200,18 +200,16 @@ export function mount(route: Route, _options: MountOptions = {}) {
     const open = () => navigate(selected
       ? '#/repositories'
       : `#/repositories/${encodeKey(repo.internal_name)}`);
-    const main = el('button', { type: 'button', class: 'collection-row-main', onClick: open },
-      el('span', { class: 'collection-row-title' }, repo.display_name || repo.internal_name),
-      el('span', { class: 'collection-row-meta' },
-        Badge(repo.repo_type),
-      ),
-      el('span', { class: 'collection-row-path truncate' }, repo.path),
-    );
     const deleteButton = IconButton('×', { title: 'Delete repository' });
     deleteButton.addEventListener('click', () => deleteRepository(repo));
-    const row = ListItem(main, deleteButton);
-    row.dataset.selected = selected ? 'true' : 'false';
-    return row;
+    return CollectionRow({
+      title: repo.display_name || repo.internal_name,
+      meta: Badge(repo.repo_type),
+      path: repo.path,
+      onClick: open,
+      action: deleteButton,
+      selected,
+    });
   }
 
   function renderRepoList(mode: 'ready' | 'loading' | 'error' = 'ready', message = ''): void {
