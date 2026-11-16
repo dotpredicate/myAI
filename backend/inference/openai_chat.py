@@ -172,6 +172,7 @@ class DeltaProcessor:
         self.has_content = False
         self.has_thinking = False
         self.has_tool_call = False
+        self.has_reasoning_details = False
 
     def _finalize_buffered(self) -> Optional[FinishedElement]:
         element = self.buffered_element
@@ -235,7 +236,16 @@ class DeltaProcessor:
 
         new_elem: Optional[StreamingElement] = None
         content = delta.content
+        # OpenRouter streams reasoning as `reasoning`; native DeepSeek/Kimi use
+        # `reasoning_content`, and some hosts use `reasoning_text`.
+        # Structured `reasoning_details` is not carried.
         reasoning = getattr(delta, 'reasoning_content', None)
+        if not reasoning:
+            reasoning = getattr(delta, 'reasoning', None)
+        if not reasoning:
+            reasoning = getattr(delta, 'reasoning_text', None)
+        if getattr(delta, 'reasoning_details', None):
+            self.has_reasoning_details = True
         if content is not None and (content != "" or reasoning is None):
             new_elem = StreamingMessage(content)
             if content.strip():
@@ -282,6 +292,11 @@ async def stream_events(
             yield None, element
         if streaming is not None:
             yield streaming, None
+
+    if processor.has_reasoning_details:
+        logger.debug(
+            "Ignoring reasoning_details from provider; only text reasoning is persisted"
+        )
 
     finalized = processor.flush()
     truncated = processor.finish_reason in ('length', 'content_filter')

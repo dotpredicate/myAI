@@ -130,6 +130,35 @@ class TestDeltaProcessor(unittest.TestCase):
 
         self.assertEqual(processor.flush(), [FinishedMessage(content="visible")])
 
+    def test_reads_reasoning_field(self):
+        processor = DeltaProcessor()
+        processor.process(_chunk(content="", reasoning="thinking"))
+
+        self.assertEqual(processor.flush(), [FinishedThinking(content="thinking")])
+
+    def test_reads_reasoning_text_field(self):
+        processor = DeltaProcessor()
+        processor.process(_chunk(content="", reasoning_text="thinking"))
+
+        self.assertEqual(processor.flush(), [FinishedThinking(content="thinking")])
+
+    def test_prefers_reasoning_content_over_reasoning(self):
+        processor = DeltaProcessor()
+        processor.process(_chunk(reasoning_content="native", reasoning="openrouter"))
+
+        self.assertEqual(processor.flush(), [FinishedThinking(content="native")])
+
+    def test_ignores_reasoning_details(self):
+        processor = DeltaProcessor()
+        processor.process(_chunk(
+            content="",
+            reasoning="thinking",
+            reasoning_details=[{"type": "reasoning.text", "text": "thinking"}],
+        ))
+
+        self.assertTrue(processor.has_reasoning_details)
+        self.assertEqual(processor.flush(), [FinishedThinking(content="thinking")])
+
     def test_drops_tool_call_without_name(self):
         processor = DeltaProcessor()
         processor.process(_tool_chunk(None, '{}'))
@@ -304,6 +333,16 @@ class TestOpenAICompatibleProvider(unittest.IsolatedAsyncioTestCase):
 
     async def test_reasoning_only_stop_is_not_an_empty_completion(self):
         client = FakeClient([_chunk(reasoning_content="thinking"), _finish_chunk("stop")])
+        provider = OpenAICompatibleProvider(_config(), client=cast(Any, client))
+        events = [
+            event
+            async for event in provider.run_chat_completion_stream("model-a", {}, _context())
+        ]
+
+        self.assertEqual(events[-1][1], FinishedThinking(content="thinking"))
+
+    async def test_openrouter_reasoning_only_stop_is_not_an_empty_completion(self):
+        client = FakeClient([_chunk(reasoning="thinking"), _finish_chunk("stop")])
         provider = OpenAICompatibleProvider(_config(), client=cast(Any, client))
         events = [
             event
