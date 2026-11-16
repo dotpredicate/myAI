@@ -14,7 +14,7 @@ from huggingface_hub import HfApi, RepoFile, hf_hub_url
 from backend.database import mk_conn
 from backend.gpu_metrics import read_process_vram_bytes
 from backend.log_config import get_logger
-from .gguf import (
+from .gguf_cache import (
     find_cached_gguf,
     get_gguf_split_info,
     list_cached_quants,
@@ -248,6 +248,23 @@ async def save_benchmark_points(
             """,
             rows,
         )
+
+
+async def delete_benchmark_points(model_id: str) -> None:
+    async with mk_conn() as conn, conn.cursor() as cur:
+        if ":" in model_id:
+            repo_id, quant = model_id.rsplit(":", 1)
+            await cur.execute(
+                """
+                DELETE FROM benchmark_results
+                WHERE model_id = %s AND upper(quant) = upper(%s)
+                """,
+                (repo_id, quant),
+            )
+        else:
+            await cur.execute(
+                "DELETE FROM benchmark_results WHERE model_id = %s", (model_id,)
+            )
 
 
 async def load_all_benchmark_points(

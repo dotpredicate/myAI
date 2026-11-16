@@ -1,29 +1,26 @@
 import asyncio
-import json
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, Query
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import BackgroundTasks, FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from backend.database import init_database
-from typing import Optional
 from backend.conversation import router as conversations_router
 from backend.scopes import resolve_workspace_scopes
 from backend.repositories import router as repositories_router, get_repo_by_id
 from backend.agents import router as agents_router
 from backend.workspaces import router as workspaces_router
 from backend.images import router as images_router
+from backend.inference.llama_cpp.router import router as llama_cpp_router
 from backend.inference.sd_cpp.router import router as sd_cpp_router
 from backend.inference.providers import reload_providers, router as providers_router
 from backend.log_config import get_logger, setup_logging
 from backend.search import schedule_sync, synchronize, semantic_search, clear_index
 from backend.inference import managed_processes
 from backend.inference.gpu_benchmark import benchmark_tflops, benchmark_bandwidth
-from backend.inference.llama_cpp import benchmark
-from backend.inference.llama_cpp.gguf import list_cached_models
 from backend.system_metrics import sample_system_stats
 
 logger = get_logger(__name__)
@@ -47,16 +44,6 @@ async def server_info():
     return JSONResponse(content={'pid': os.getpid()})
 
 
-@app.get('/api/cached-models')
-async def get_cached_models():
-    try:
-        models = list_cached_models()
-        return JSONResponse(content={"models": models})
-    except Exception as e:
-        logger.error("Error fetching cached models: %s", e)
-        return JSONResponse(content={"models": []})
-
-
 app.include_router(providers_router)
 app.include_router(repositories_router)
 app.include_router(agents_router)
@@ -64,6 +51,7 @@ app.include_router(workspaces_router)
 app.include_router(conversations_router)
 app.include_router(images_router)
 app.include_router(sd_cpp_router)
+app.include_router(llama_cpp_router)
 
 
 class SearchRequest(BaseModel):
@@ -103,32 +91,6 @@ async def search(payload: SearchRequest):
 async def clear_search_index():
     await clear_index()
     return JSONResponse(content={"status": "cleared"})
-
-
-@app.get('/models/{model:path}/info')
-async def model_info_endpoint(model: str):
-    return JSONResponse(content=await benchmark.model_info(model))
-
-
-@app.get('/models/{model:path}/benchmark/stream')
-async def benchmark_model_stream_endpoint(
-    model: str,
-    quant: Optional[list[str]] = Query(default=None),
-    n_gen: int = 128,
-    n_prompt: int = 512,
-    repetitions: int = 1,
-):
-    async def events():
-        async for result in benchmark.benchmark_model_stream(
-            model,
-            n_gen=n_gen,
-            n_prompt=n_prompt,
-            repetitions=repetitions,
-            quants=quant,
-        ):
-            yield json.dumps(result) + '\n'
-
-    return StreamingResponse(events(), media_type='application/x-ndjson')
 
 
 @app.get('/api/system-stats')
@@ -184,5 +146,4 @@ async def run_gpu_benchmark(
             content={"status": "error", "message": str(e)}
         )
 
-# Mount static files
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")

@@ -3,7 +3,7 @@ from typing import cast
 
 from huggingface_hub import HfApi
 
-from backend.inference.llama_cpp.gguf import (
+from backend.inference.llama_cpp.gguf_cache import (
     SplitInfo,
     get_gguf_split_info,
     list_gguf_quants,

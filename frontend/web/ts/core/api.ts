@@ -214,8 +214,21 @@ export interface InferenceParam {
 
 export type InferenceParamList = InferenceParam[];
 
+export interface CachedModelEntry {
+  id: string;
+  repo: string;
+  quant: string;
+  size_bytes: number;
+}
+
 export interface CachedModelList {
-  models: string[];
+  models: CachedModelEntry[];
+}
+
+export interface DeleteCachedModelResponse {
+  status: string;
+  model: string;
+  freed_bytes: number;
 }
 
 export interface ModelQuantInfo {

@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator, Optional
 import backend.inference.managed_processes as mp
 from backend.inference.engine import ChatContext, EmbeddingInput, EmbeddingProvider, InferenceProvider, Model, StreamingElement, FinishedElement, InferenceParam, InferenceParamType, TokenPiece
 from backend.inference.managed_processes import get_free_port
-from .gguf import list_cached_models
+from .gguf_cache import list_cached_models
 from backend.inference.openai_chat import stream_events, _to_oai_messages, _to_oai_tools
 from backend.log_config import get_logger
 

@@ -1,6 +1,6 @@
 import { el, clear, loadingState, errorState, emptyState, spinnerLabel, labeledField, checkboxField, notify, confirmAction, formatBytes, formatIdle, formatNumber, formatPercent, compactError, messageOf, statusMessage as setStatus, type MountOptions, type Route } from '../ui.js';
 import { api, openNdjson } from '../core/api.js';
-import type { BenchmarkResult, CachedModelList, GpuBenchmark, ManagedServer, ModelInfo, ModelQuantInfo, ProviderCreateRequest, ProviderDetails, ProviderInfo, ProviderList, ProviderUpdateRequest, StopProcessResponse, SystemSnapshot, SystemStats } from '../core/api.js';
+import type { BenchmarkResult, CachedModelEntry, CachedModelList, DeleteCachedModelResponse, GpuBenchmark, ManagedServer, ModelInfo, ModelQuantInfo, ProviderCreateRequest, ProviderDetails, ProviderInfo, ProviderList, ProviderUpdateRequest, StopProcessResponse, SystemSnapshot, SystemStats } from '../core/api.js';
 import { Row, RowEnd, Stack, Grid, Page, Heading, Card, CardHeader, Hint, InlineHint, LineHint, FieldError, FieldGroup, Badge, Button, LinkButton, Input, Form, Select, Option, Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell, TableWrap, CollectionRow, List } from '../components.js';
 
 const TABS: { key: string; label: string }[] = [
@@ -570,6 +570,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     const modelField = labeledField('HuggingFace model', modelInput);
     const loadButton = Button('Load model', { variant: 'primary', submit: true });
     const cachedList = el('div', {});
+    const cacheSummary = LineHint();
 
     const searchForm = Form({ novalidate: true }, RowEnd(modelField.wrapper, loadButton));
     searchCard.appendChild(CardHeader('Models'));
@@ -579,7 +580,8 @@ export function mount(route: Route, _options: MountOptions = {}) {
     cachedCard.appendChild(CardHeader('Cached models',
       LinkButton('Find GGUF ↗', 'https://huggingface.co/models?library=gguf', { variant: 'quiet', small: true, target: '_blank', rel: 'noopener noreferrer' }),
     ));
-    cachedCard.appendChild(LineHint('Click a cached model to load its quantization variants.'));
+    cachedCard.appendChild(LineHint('Click a cached model to load its quantization variants; delete the ones you no longer need to free disk space.'));
+    cachedCard.appendChild(cacheSummary);
     cachedCard.appendChild(cachedList);
 
     content.appendChild(searchCard);
@@ -613,11 +615,28 @@ export function mount(route: Route, _options: MountOptions = {}) {
       ));
     }
 
+    async function deleteCached(model: CachedModelEntry): Promise<void> {
+      const confirmed = await confirmAction({
+        title: 'Delete cached model?',
+        message: `“${model.id}” will be deleted from the model cache, freeing ${formatBytes(model.size_bytes)}. Using it again means downloading it from scratch.`,
+        confirmLabel: 'Delete model',
+      });
+      if (!confirmed) return;
+      try {
+        const result = await api.del<DeleteCachedModelResponse>(`/api/llama-cpp/cached-models/${encodeURIComponent(model.id)}`);
+        notify(`Deleted ${model.id}, freed ${formatBytes(result.freed_bytes)}.`, { level: 'success' });
+        await loadCached();
+      } catch (error) {
+        notify(messageOf(error) || 'Could not delete the cached model.', { level: 'error' });
+      }
+    }
+
     async function loadCached(): Promise<void> {
       clear(cachedList);
+      clear(cacheSummary);
       cachedList.appendChild(loadingState('Looking for cached models…'));
       try {
-        const data = await api.get<CachedModelList>('/api/cached-models');
+        const data = await api.get<CachedModelList>('/api/llama-cpp/cached-models');
         if (destroyed) return;
         const models = Array.isArray(data.models) ? data.models : [];
         clear(cachedList);
@@ -625,18 +644,25 @@ export function mount(route: Route, _options: MountOptions = {}) {
           cachedList.appendChild(LineHint('No cached GGUF models yet. Start one with Load model.'));
           return;
         }
+        const total = models.reduce((sum, model) => sum + (Number.isFinite(model.size_bytes) ? model.size_bytes : 0), 0);
+        cacheSummary.textContent = `${models.length} cached variant${models.length === 1 ? '' : 's'} · ${formatBytes(total)} on disk`;
         const list = List({ scroll: true });
         for (const model of models) {
-          const separator = model.lastIndexOf(':');
-          const repo = separator >= 0 ? model.slice(0, separator) : model;
-          const tag = separator >= 0 ? model.slice(separator + 1) : '';
+          const remove = Button('Delete', { variant: 'danger', small: true, title: `Delete ${model.id} from the cache` });
+          remove.addEventListener('click', () => {
+            remove.disabled = true;
+            void deleteCached(model).finally(() => {
+              remove.disabled = false;
+            });
+          });
           list.appendChild(CollectionRow({
-            title: repo,
-            meta: tag ? Badge(tag) : null,
+            title: model.repo,
+            meta: [model.quant ? Badge(model.quant) : null, InlineHint(formatBytes(model.size_bytes))],
             onClick: () => {
-              modelInput.value = repo;
-              loadModelInfo(repo);
+              modelInput.value = model.repo;
+              loadModelInfo(model.repo);
             },
+            action: remove,
           }));
         }
         cachedList.appendChild(list);
@@ -769,7 +795,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
       clear(details);
       details.appendChild(loadingState('Reading model metadata…'));
       try {
-        const data = await api.get<ModelInfo>(`/models/${encodeURIComponent(model)}/info`);
+        const data = await api.get<ModelInfo>(`/api/llama-cpp/models/${encodeURIComponent(model)}/info`);
         if (destroyed || selectedModel !== model) return;
         renderInfo(data);
       } catch (error) {
@@ -820,7 +846,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         row.result.appendChild(spinnerLabel('Running…'));
       }
       try {
-        const stream = await openNdjson<BenchmarkResult>(`/models/${encodeURIComponent(model)}/benchmark/stream?${query}`);
+        const stream = await openNdjson<BenchmarkResult>(`/api/llama-cpp/models/${encodeURIComponent(model)}/benchmark/stream?${query}`);
         for await (const result of stream.events) {
           if (destroyed || selectedModel !== model) return;
           const key = result.quant ?? '';
