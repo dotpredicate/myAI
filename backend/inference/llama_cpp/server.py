@@ -8,6 +8,7 @@ import backend.inference.managed_processes as mp
 from backend.inference.engine import ChatContext, EmbeddingInput, EmbeddingProvider, InferenceProvider, Model, StreamingElement, FinishedElement, InferenceParam, InferenceParamType, TokenPiece
 from backend.inference.managed_processes import get_free_port
 from .gguf_cache import list_cached_models
+from .launch import SERVER_ARGS
 from backend.inference.openai_chat import stream_events, _to_oai_messages, _to_oai_tools
 from backend.log_config import get_logger
 
@@ -74,10 +75,8 @@ class LlamaCppServerProvider(InferenceProvider):
                 server = ModelServer(port=port, client=client)
                 self._model_servers[key] = server
 
-        args = [
-            "--jinja",
-            "-hf", model_id
-        ]
+        # No --ctx-size: llama.cpp uses n_ctx_train; --fit off keeps it.
+        args = ["--jinja", "-hf", model_id, *SERVER_ARGS]
         if n_ctx is not None:
             args += ["--ctx-size", str(n_ctx)]
         cmd = ["llama-server", "--port", server.port] + args

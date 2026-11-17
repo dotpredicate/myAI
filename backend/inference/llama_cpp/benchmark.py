@@ -22,6 +22,7 @@ from .gguf_cache import (
     resolve_cached_alias,
     resolve_hf_alias,
 )
+from .launch import LAUNCH_ARGS
 from .gguf_header import (
     GgufHeader,
     GgufParseError,
@@ -729,8 +730,7 @@ def _bench_cmd(
 ) -> list[str]:
     return [
         "llama-bench", "-m", path,
-        "-ngl", "99",
-        "-fa", "on",
+        *LAUNCH_ARGS,
         "-n", str(n_gen),
         "-p", str(n_prompt),
         "-d", ",".join(str(depth) for depth in depths),

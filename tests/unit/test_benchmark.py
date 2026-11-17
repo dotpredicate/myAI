@@ -392,6 +392,13 @@ class TestBenchCommand(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("-n") + 1], "128")
         self.assertEqual(cmd[cmd.index("-o") + 1], "jsonl")
 
+    def test_uses_the_server_launch_flags(self) -> None:
+        cmd = _bench_cmd("model.gguf", 128, 512, [0], 1)
+
+        self.assertEqual(cmd[cmd.index("-ngl") + 1], "99")
+        self.assertEqual(cmd[cmd.index("-fa") + 1], "on")
+        self.assertNotIn("--fit", cmd)
+
 
 class TestExtractBenchError(unittest.TestCase):
     def test_prefers_model_load_reason(self) -> None:
