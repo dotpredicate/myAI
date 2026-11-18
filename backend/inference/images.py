@@ -12,7 +12,6 @@ logger = get_logger(__name__)
 
 router = APIRouter()
 
-
 class GenerateImageRequest(BaseModel):
     model: Optional[str] = None
     prompt: str

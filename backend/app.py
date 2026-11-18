@@ -13,7 +13,7 @@ from backend.scopes import resolve_workspace_scopes
 from backend.repositories import router as repositories_router, get_repo_by_id
 from backend.agents import router as agents_router
 from backend.workspaces import router as workspaces_router
-from backend.images import router as images_router
+from backend.inference.images import router as images_router
 from backend.inference.llama_cpp.router import router as llama_cpp_router
 from backend.inference.sd_cpp.router import router as sd_cpp_router
 from backend.inference.providers import reload_providers, router as providers_router
