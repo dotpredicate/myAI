@@ -12,8 +12,9 @@ Shell commands run as `bash` inside bubblewrap with a clean environment:
 - `/sandbox` - scratch space for this conversation; writable, discarded with it
 - `/repositories/<internal_name>` - every source of the conversation's
   workspace, mounted read-only
-- `/tmp` - ephemeral scratch space
-- host system directories - read-only
+- `/tmp` - ephemeral scratch space, cleared between commands
+- `/usr`, `/lib`, `/lib64`, `/bin` - read-only system paths
+- `/proc` and a minimal `/dev` - process and device filesystems
 
 The host filesystem (including home directories), the network, GPUs and audio
 devices are not available.
@@ -28,16 +29,13 @@ devices are not available.
 - `spawn_agent` - start a conversation with another agent; offered only to
   agents that list sub-agents.
 
-`search` is the only way to read indexed content without the shell. Only
-sources with indexing enabled are searched. Model spaces are not indexed, so
-`/workspace` and `/sandbox` never appear in it.
+`search` is the only way to read indexed content without the shell. The
+[indexing rules](repositories.md#indexing) define what is indexed.
 
 ## Changes to repositories
 
-Repositories are read-only. The model stages content under `/workspace` and
-then calls `replace_file` or `apply_patch`. Such a call blocks the conversation
-and runs only after the user approves it; `/sandbox` is for scratch work and
-cannot be the source of a change.
+See [repositories](repositories.md#access) for the access invariant and how a
+change is approved. The model stages content under `/workspace`; `/sandbox` is
+for scratch work and cannot be the source of a change.
 
-See [repositories](repositories.md) for what a repository is and
-[conversations](conversations.md) for how approvals fit the transcript.
+See [conversations](conversations.md) for how approvals fit the transcript.

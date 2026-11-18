@@ -7,8 +7,9 @@ conversations. It is not a filesystem root: sources may live anywhere.
 
 - Name - a label; names are not unique.
 - Sources - the repositories conversations may read.
-- Model space - the workspace's durable directory under `$MYAI_HOME/spaces/`,
-  mounted as `/workspace`.
+- Model space - the workspace's durable directory under
+  `$MYAI_HOME/spaces/<workspace_id>/`, mounted as `/workspace` (see
+  [data location](../README.md#data-location)).
 
 ## Semantics
 

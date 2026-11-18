@@ -75,7 +75,6 @@ class LlamaCppServerProvider(InferenceProvider):
                 server = ModelServer(port=port, client=client)
                 self._model_servers[key] = server
 
-        # No --ctx-size: llama.cpp uses n_ctx_train; --fit off keeps it.
         args = ["--jinja", "-hf", model_id, *SERVER_ARGS]
         if n_ctx is not None:
             args += ["--ctx-size", str(n_ctx)]

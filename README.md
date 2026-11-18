@@ -33,13 +33,11 @@ Project structure:
   - `gpu_metrics.py` - ROCm GPU data shared by system and per-process metrics
   - `tools.py` - tool execution logic
   - `log_config.py` - logging configuration
-  - `inference/` - AI protocol handling (stateless), split into submodules
-    - `images.py` - image generation routes
-    - `llama_cpp/` - embedded llama.cpp server, benchmarking and Huggingface cache handling 
+  - `inference/` - inference providers and supporting modules
 - `myai-server` - server launcher
 - `migrations/` - folder with migration scripts
 - `frontend/` - front-end sources and scripts (one npm project)
-  - `web/` - browser client, served by FastAPI; the HTTP transport and wire types shared with the TUI live in `web/ts/core/api.ts` (TUI imports it as `#core/api`), and the renderer-neutral Markdown parser shared by both clients lives in `web/ts/core/markdown.ts` (`#core/markdown`)
+  - `web/` - browser client, served by FastAPI; shared wire types and other common code lives in `web/ts/core/`
   - `tui/` - terminal client (Node, runs from source)
 - `build.sh` - build the front-end
 - `install.sh` - install the terminal client as `myai` and the server as `myai-server`
@@ -70,21 +68,23 @@ the port, and `myai-server stop` stops it. `GET /api/info` reports the process i
 clients use to recognize a running server.
 
 ### Front-end
-`frontend/web/` is served directly by FastAPI; `frontend/web/ts/` -> `tsc` -> `frontend/web/js/`. No bundler, one `tsc` project; the TUI is not compiled at all (Node runs its `.ts` sources).
+`frontend/web/` is served directly by FastAPI. `frontend/web/ts/` is compiled by
+`tsc` into `frontend/web/js/`, with no bundler and one `tsc` project.
 
 ### TUI
-`frontend/tui/` is a Node client; TypeScript runs from source (no build step, no runtime
-dependencies). It starts the server if needed and resolves the current directory
-into a workspace.
+`frontend/tui/` is a Node client; TypeScript runs from source (no build
+step, no runtime dependencies). 
+It starts the server if needed and resolves the current directory into a workspace.
 
 ```sh
 node frontend/tui/src/main.ts                 # interactive
 node frontend/tui/src/main.ts --dump [conv]   # render one frame without a TTY
 ```
 
-
 ### Migrations
-At startup, the module scans `migrations` for SQL files, sorts them in lexicographic order, executes those that have not yet been applied and records the execution in the `migrations` table.
+At startup, myAI scans `migrations` for SQL files and executes the ones it has
+not applied yet, in lexicographic order. Applied files are recorded in the
+`migrations` table.
 
 ### Data location
 `MYAI_HOME` defaults to `~/.myai`; relative `.env` paths resolve from the repo root.
@@ -105,11 +105,11 @@ $MYAI_HOME/
 - Test with `./test.sh`
 
 ### Simplifications for now
-- language model providers: the embedded llama.cpp server and user-configured OpenAI-compatible endpoints
-- image generation uses an embedded stable-diffusion.cpp server; models are user-registered presets in `sd_cpp_image_models` (recipe + file IDs from `MYAI_SD_MODEL_DIRS`)
+- language model providers: the embedded llama.cpp server and user-configured OpenAI-compatible endpoints (see [inference](doc/inference.md))
+- image generation uses an embedded stable-diffusion.cpp server with user-managed presets (see [image models](doc/inference.md#image-models))
 - web UI and a terminal client, no mobile, minimal styling
 - no accessibility work: no ARIA attributes or roles, no screen-reader tuning, no keyboard-only flows beyond what the browser gives for free
 - single user, no log-in
 - no built-in cloud sync; external model providers are opt-in
 - monolithic back-end, single server instance
-- no caching like Redis, prefer in-memory structures
+- minimal external dependencies, reject additional infrastructure like Redis

@@ -6,15 +6,15 @@ model preference. They never carry repository access or private data.
 ## Agent spec
 
 - Name
-    - Display name
-    - Internal name (key)
-- Description
-- Instructions
+    - Display name (`display_name`)
+    - Internal name (`internal_name`)
+- Description (`description`)
+- Instructions (`instructions`)
 - Optional model preference
-    - Provider key
-    - Model
-    - Inference config
-- Available sub-agents
+    - Provider key (`provider_key`)
+    - Model ID (`model_id`)
+    - Inference config (`inference_config`)
+- Available sub-agents (`spawnable_agents`)
 
 An agent is chosen when a conversation is created and stays with it.
 

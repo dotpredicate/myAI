@@ -18,11 +18,11 @@ There are no configurable security levels. The invariant is:
 - repositories are mounted read-only for `bash`,
 - `/workspace` is writable,
 - changes go through `replace_file` or `apply_patch`,
-- a change is applied only after the user approves it.
+- a change blocks the conversation until the user approves it; nothing is
+  written before that.
 
-A repository can be a source of several workspaces; the workspace decides what
-the model sees. Deleting a repository detaches it from every workspace and drops
-its index. Deleting never touches files on disk.
+Deleting a repository detaches it from every workspace and drops its index.
+Deleting never touches files on disk.
 
 ## Indexing
 
@@ -32,8 +32,10 @@ skipped and any of their existing entries are removed. New and existing
 repositories start unchecked. Server startup and **Update index** synchronize
 checked repositories only.
 
-Readable text files are saved into a document index. In Git repositories only
-the files known to Git are indexed. Model spaces are not indexed.
+Files with a known text extension are decoded and saved into a document index;
+binary files and unknown extensions are skipped. In Git repositories only the
+files known to Git are indexed. Model spaces are not indexed, so `/workspace`
+and `/sandbox` never appear in search.
 
 ## Search
 

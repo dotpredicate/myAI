@@ -6,13 +6,14 @@ agent.
 
 ## Record
 
-- Workspace - set when the conversation is created; deleting the workspace
-  moves it to another one.
-- Agent - optional, fixed when the conversation is created.
-- Model - the last prompt sets it, together with its inference parameters;
-  continuations and sub-agents reuse it.
+- Workspace (`workspace_id`) - set when the conversation is created; deleting
+  the workspace moves it to another one.
+- Agent (`agent_id`) - optional, fixed when the conversation is created.
+- Model ID (`model_id`) - the last prompt sets it, together with its inference
+  parameters (`inference_config`); continuations and sub-agents reuse it.
 - Transcript - the ordered elements below.
-- Blocking tool call - the message the conversation waits on, if any.
+- Blocking tool call (`blocking_message_id`) - the message the conversation
+  waits on, if any.
 
 ## Context
 
@@ -35,9 +36,10 @@ order that never changes:
 
 ## Lifecycle
 
-1. A prompt carries the model. It is accepted only when the conversation is
-   idle and unblocked; otherwise nothing is written.
-2. The accepted prompt stores the model and appends the user message.
+1. A prompt carries the model ID and inference parameters. It is accepted only
+   when the conversation is idle and unblocked; otherwise nothing is written.
+2. The accepted prompt stores the model ID and parameters and appends the user
+   message.
 3. Generation runs in the background: it calls the provider, persists finalized
    elements and continues after tool calls that need no approval.
 4. A tool call that needs approval blocks the conversation until the user
