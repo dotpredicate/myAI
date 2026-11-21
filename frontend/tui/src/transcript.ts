@@ -1,18 +1,24 @@
 // Conversation transcript for the terminal client: server elements and stream
 // events folded into the positions the TUI renders.
 
-import type { ConversationElement, StreamEvent, StoredMessageRecord } from '#core/api';
+import type {
+  ConversationElement,
+  StreamEvent,
+  StoredMessageRecord,
+  ToolArguments,
+  ToolOutcome,
+} from '#core/api';
 
 export interface ToolItem {
   kind: 'tool';
   /** Server message id; null only while the tool call is still streaming. */
   id: number | null;
   name: string;
-  parameters: string;
-  /** What the tool proposes to do (the pending call body). */
-  proposal: string | null;
-  /** What the server actually executed after a decision. */
-  result: string | null;
+  arguments: ToolArguments | null;
+  /** What the call produced; a proposal is what waits for a decision. */
+  outcome: ToolOutcome;
+  /** What the server executed after a decision. */
+  result: ToolOutcome | null;
 }
 
 export type TranscriptItem =
@@ -37,7 +43,7 @@ export function findTool(items: TranscriptItem[], id: number | null): ToolItem |
 }
 
 /** Attach an execution result to the tool call it belongs to. */
-export function applyToolResult(items: TranscriptItem[], messageId: number, result: string): boolean {
+export function applyToolResult(items: TranscriptItem[], messageId: number, result: ToolOutcome): boolean {
   const tool = findTool(items, messageId);
   if (tool === null) return false;
   tool.result = result;
@@ -46,10 +52,10 @@ export function applyToolResult(items: TranscriptItem[], messageId: number, resu
 
 function itemFromElement(element: ConversationElement, messageId: number): TranscriptItem | null {
   switch (element.type) {
+    case 'prompt':
+      return { kind: 'user', text: element.content };
     case 'message':
-      return element.author === 'user'
-        ? { kind: 'user', text: element.content }
-        : { kind: 'assistant', text: element.content };
+      return { kind: 'assistant', text: element.content };
     case 'thinking':
       return { kind: 'thinking', text: element.content };
     case 'tool_call':
@@ -57,8 +63,8 @@ function itemFromElement(element: ConversationElement, messageId: number): Trans
         kind: 'tool',
         id: messageId,
         name: element.name,
-        parameters: element.parameters,
-        proposal: element.result,
+        arguments: element.arguments,
+        outcome: element.outcome,
         result: null,
       };
     case 'approval_request':
@@ -75,7 +81,7 @@ export function transcriptFromMessages(messages: StoredMessageRecord[]): Transcr
   for (const message of messages) {
     const element = message.element;
     if (element.type === 'tool_call_result') {
-      applyToolResult(items, element.original_message_id, element.result);
+      applyToolResult(items, element.original_message_id, element.outcome);
       continue;
     }
     const item = itemFromElement(element, message.id);
@@ -92,11 +98,16 @@ function lastItem(items: TranscriptItem[]): TranscriptItem | undefined {
  * Fold one streamed event into the transcript. Mutates `items` in place so a
  * token stream does not clone the whole history per chunk.
  */
-export function applyStreamEvent(items: TranscriptItem[], event: StreamEvent): void {
+export function applyStreamEvent(
+  items: TranscriptItem[],
+  event: StreamEvent,
+): void {
   const last = lastItem(items);
   switch (event.type) {
+    case 'prompt':
+      // The client shows the prompt it sent; a replayed one is history.
+      return;
     case 'message': {
-      if (event.role !== 'assistant') return;
       if (last?.kind === 'assistant') last.text += event.content;
       else items.push({ kind: 'assistant', text: event.content });
       return;
@@ -111,8 +122,8 @@ export function applyStreamEvent(items: TranscriptItem[], event: StreamEvent): v
         kind: 'tool',
         id: null,
         name: event.name,
-        parameters: event.parameters,
-        proposal: event.result,
+        arguments: event.arguments,
+        outcome: event.outcome,
         result: null,
       });
       return;
@@ -124,8 +135,9 @@ export function applyStreamEvent(items: TranscriptItem[], event: StreamEvent): v
       items.push({ kind: 'notice', text: `decision: ${event.decision}` });
       return;
     case 'tool_call_result':
-      if (!applyToolResult(items, event.original_message_id, event.result)) {
-        items.push({ kind: 'notice', text: `tool result: ${truncate(event.result, 300)}` });
+      if (!applyToolResult(items, event.original_message_id, event.outcome)) {
+        const text = event.outcome.type === 'error' ? event.outcome.message : JSON.stringify(event.outcome);
+        items.push({ kind: 'notice', text: `tool result: ${truncate(text, 300)}` });
       }
       return;
     case 'generation_error':

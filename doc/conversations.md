@@ -27,9 +27,11 @@ Every provider call receives a `ChatContext`:
 ## Elements
 
 The transcript is a sequence of elements, each stored with a per-conversation
-order that never changes:
+order that never changes. The element itself says who spoke, so nothing next
+to it has to:
 
-- user and assistant messages,
+- the user's prompt,
+- the assistant's messages,
 - model thinking,
 - tool calls and their results,
 - approval requests and the user's decisions.
@@ -38,8 +40,8 @@ order that never changes:
 
 1. A prompt carries the model ID and inference parameters. It is accepted only
    when the conversation is idle and unblocked; otherwise nothing is written.
-2. The accepted prompt stores the model ID and parameters and appends the user
-   message.
+2. The accepted prompt stores the model ID and parameters and appends the
+   prompt element.
 3. Generation runs in the background: it calls the provider, persists finalized
    elements and continues after tool calls that need no approval.
 4. A tool call that needs approval blocks the conversation until the user
@@ -59,9 +61,9 @@ A client that attaches replays what it has not seen yet, then follows live
 events. Because it can attach in the middle of a message, anything committed
 while it was connecting is replayed before the stream ends.
 
-Clients receive streamed text and thinking, tool calls and results, approval
-requests and decisions, a finalization event per stored element, and generation
-errors.
+Clients receive each element as an event of its own - the prompt, a message,
+thinking, a tool call, an approval request or a decision - a finalization
+event per stored element, and generation errors.
 
 ## Rules
 

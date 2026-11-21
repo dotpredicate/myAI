@@ -10,7 +10,7 @@ from backend.inference import EmbeddingInput
 from backend.repositories import delete_repository, get_repo_documents, scan_repo_documents
 from tests.helpers import BaseTestCase, DeterministicEmbeddingProvider
 from backend import search
-from backend.tools import TOOL_REGISTRY, ToolContext, run_semantic_search
+from backend.tools import TOOL_REGISTRY, ToolContext, run_tool_call
 
 
 class _DeletingEmbeddingProvider(DeterministicEmbeddingProvider):
@@ -81,7 +81,7 @@ class TestSearch(BaseTestCase):
     async def test_semantic_search_is_scoped_to_repository(self):
         await self._make_two_repos()
 
-        result = await run_semantic_search(
+        execution = await run_tool_call(
             "search",
             json.dumps({"query": "repository notes", "top_k": 10}),
             ToolContext(
@@ -90,11 +90,13 @@ class TestSearch(BaseTestCase):
                 scopes=[ScopeSpec(internal_name="first_repo")],
             ),
         )
-        payload = json.loads(result.result)
+        outcome = execution.outcome.model_dump()
+        self.assertEqual(outcome["type"], "success")
+        results = outcome["results"]
 
-        self.assertEqual(len(payload["results"]), 1)
-        self.assertEqual(payload["results"][0]["file_path"], "first_repo/notes.txt")
-        self.assertEqual(payload["results"][0]["text"], "content unique to first repository")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["file_path"], "first_repo/notes.txt")
+        self.assertEqual(results[0]["text"], "content unique to first repository")
 
     async def test_sync_skips_repository_with_indexing_disabled(self):
         repo_dir = Path(self._repo_dir.name)
@@ -155,12 +157,13 @@ class TestSearch(BaseTestCase):
     async def test_run_semantic_search_empty_scopes_returns_no_results(self):
         await self._make_two_repos()
 
-        result = await run_semantic_search(
+        execution = await run_tool_call(
             "search",
             json.dumps({"query": "repository notes", "top_k": 10}),
             ToolContext(conversation_id=1, workspace_id=1, scopes=[]),
         )
-        self.assertEqual(json.loads(result.result)["results"], [])
+        outcome = execution.outcome.model_dump()
+        self.assertEqual(outcome["results"], [])
 
     async def test_api_search_uses_workspace_sources(self):
         first_repo, second_repo, _ = await self._make_two_repos()

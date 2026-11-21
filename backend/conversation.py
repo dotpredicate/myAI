@@ -8,11 +8,16 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from backend.domain import (
     AgentConfig,
     Message,
+    Prompt,
     Thinking,
     ToolCall,
     ApprovalRequest,
     ToolCallResult,
     ToolCallDecision,
+    ToolError,
+    ToolArguments,
+    ToolOutcome,
+    ToolProposal,
     ConversationElement,
     stored_element_adapter,
 )
@@ -29,7 +34,7 @@ from backend.inference import (
     ChatContext,
     registry
 )
-from backend.tools import FunctionDefinition, Tool, ToolContext, run_tool_call, TOOL_REGISTRY
+from backend.tools import FunctionDefinition, RegisteredTool, Tool, ToolContext, run_tool_call, TOOL_REGISTRY
 from backend import system
 
 from backend.log_config import get_logger
@@ -54,10 +59,13 @@ class PromptRequest(BaseModel):
     inference_config: dict[str, Any] = {}
 
 
+class PromptChunk(BaseModel):
+    type: Literal['prompt'] = 'prompt'
+    content: str
+
 class MessageChunk(BaseModel):
     type: Literal['message'] = 'message'
     content: str
-    role: Literal['user', 'assistant'] = 'assistant'
 
 class ThinkingChunk(BaseModel):
     type: Literal['thinking'] = 'thinking'
@@ -66,8 +74,8 @@ class ThinkingChunk(BaseModel):
 class ToolCallEvent(BaseModel):
     type: Literal['tool_call'] = 'tool_call'
     name: str
-    parameters: str
-    result: str
+    arguments: Optional[ToolArguments]
+    outcome: ToolOutcome
 
 class ApprovalRequestEvent(BaseModel):
     type: Literal['approval_request'] = 'approval_request'
@@ -82,7 +90,7 @@ class ToolCallDecisionEvent(BaseModel):
 class ToolCallResultEvent(BaseModel):
     type: Literal['tool_call_result'] = 'tool_call_result'
     original_message_id: int
-    result: str
+    outcome: ToolOutcome
 
 class ElementFinalized(BaseModel):
     type: Literal['finalized'] = 'finalized'
@@ -93,13 +101,12 @@ class GenerationErrorEvent(BaseModel):
     type: Literal['generation_error'] = 'generation_error'
     message: str
 
-StreamEvent = Union[MessageChunk, ThinkingChunk, ElementFinalized, ToolCallEvent, ApprovalRequestEvent, ToolCallDecisionEvent, ToolCallResultEvent, GenerationErrorEvent]
+StreamEvent = Union[PromptChunk, MessageChunk, ThinkingChunk, ElementFinalized, ToolCallEvent, ApprovalRequestEvent, ToolCallDecisionEvent, ToolCallResultEvent, GenerationErrorEvent]
 
 class StoredMessageRecord(BaseModel):
     id: int
     conversation_id: int
     sequence_id: int
-    role: str
     element: ConversationElement
     created_at: str
 
@@ -200,7 +207,7 @@ active_generations_lock = asyncio.Lock()
 def to_conv_elem(element: FinishedElement) -> ConversationElement:
     match element:
         case FinishedMessage(content=content):
-            return Message(author='assistant', content=content)
+            return Message(content=content)
         case FinishedThinking(content=content):
             return Thinking(content=content)
         case _:
@@ -219,51 +226,51 @@ def merge_streaming_element(current: Optional[StreamingElement], delta: Streamin
 
 def streaming_element_to_stream_event(element: Optional[StreamingElement]) -> Optional[StreamEvent]:
     if isinstance(element, StreamingMessage):
-        return MessageChunk(content=element.content, role='assistant')
+        return MessageChunk(content=element.content)
     if isinstance(element, StreamingThinking):
         return ThinkingChunk(content=element.content)
     return None
 
 def stored_record_to_stream_events(record: StoredMessageRecord) -> list[StreamEvent]:
     finalized = ElementFinalized(id=record.id, sequence_id=record.sequence_id)
+    events: list[StreamEvent]
     match record.element:
-        case Message(author=author, content=content):
-            return [MessageChunk(content=content, role=author), finalized]
+        case Prompt(content=content):
+            events = [PromptChunk(content=content)]
+        case Message(content=content):
+            events = [MessageChunk(content=content)]
         case Thinking(content=content):
-            return [ThinkingChunk(content=content), finalized]
-        case ToolCall(name=name, parameters=parameters, result=result):
-            return [
+            events = [ThinkingChunk(content=content)]
+        case ToolCall(name=name, arguments=arguments, outcome=outcome):
+            events = [
                 ToolCallEvent(
                     name=name,
-                    parameters=parameters,
-                    result=result,
+                    arguments=arguments,
+                    outcome=outcome,
                 ),
-                finalized,
             ]
         case ApprovalRequest(original_message_id=original_message_id):
-            return [
+            events = [
                 ApprovalRequestEvent(original_message_id=original_message_id),
-                finalized,
             ]
         case ToolCallDecision(original_message_id=original_message_id, decision=decision, comment=comment):
-            return [
+            events = [
                 ToolCallDecisionEvent(
                     original_message_id=original_message_id,
                     decision=decision,
                     comment=comment,
                 ),
-                finalized,
             ]
-        case ToolCallResult(original_message_id=original_message_id, result=result):
-            return [
+        case ToolCallResult(original_message_id=original_message_id, outcome=outcome):
+            events = [
                 ToolCallResultEvent(
                     original_message_id=original_message_id,
-                    result=result,
+                    outcome=outcome,
                 ),
-                finalized,
             ]
         case _:
-            return [finalized]
+            events = []
+    return [*events, finalized]
 
 def serialize_ndjson_event(event: StreamEvent) -> str:
     return event.model_dump_json() + '\n'
@@ -344,17 +351,17 @@ async def _allocate_next_sequence_id(conn: AsyncConnection, conv_id: int) -> int
     latest = await get_latest_sequence_id(conn, conv_id)
     return 1 if latest is None else latest + 1
 
-async def insert_message(conn: AsyncConnection, conv_id: int, role: str, element: ConversationElement) -> StoredMessageRecord:
+async def insert_message(conn: AsyncConnection, conv_id: int, element: ConversationElement) -> StoredMessageRecord:
     await conn.begin_immediate()
     sequence_id = await _allocate_next_sequence_id(conn, conv_id)
     async with conn.cursor() as cur:
         await cur.execute(
             """
-            INSERT INTO messages (conversation_id, sequence_id, role, elements, created_at)
-            VALUES (%s, %s, %s, %s, CURRENT_TIMESTAMP)
+            INSERT INTO messages (conversation_id, sequence_id, elements, created_at)
+            VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
             RETURNING id, created_at
             """,
-            (conv_id, sequence_id, role, json.dumps(element.model_dump()))
+            (conv_id, sequence_id, json.dumps(element.model_dump()))
         )
         row = await cur.fetchone()
         assert row is not None
@@ -362,7 +369,6 @@ async def insert_message(conn: AsyncConnection, conv_id: int, role: str, element
             id=row[0],
             conversation_id=conv_id,
             sequence_id=sequence_id,
-            role=role,
             element=element,
             created_at=row[1].isoformat(),
         )
@@ -385,7 +391,7 @@ async def get_messages_after(
     async with conn.cursor() as cur:
         await cur.execute(
             f"""
-            SELECT id, conversation_id, sequence_id, role, elements, created_at
+            SELECT id, conversation_id, sequence_id, elements, created_at
             FROM messages
             WHERE {' AND '.join(conditions)}
             ORDER BY sequence_id ASC
@@ -394,15 +400,14 @@ async def get_messages_after(
         )
         records: list[StoredMessageRecord] = []
         async for row in cur:
-            elem_dict = json.loads(row[4]) if isinstance(row[4], str) else row[4]
+            elem_dict = json.loads(row[3]) if isinstance(row[3], str) else row[3]
             parsed = stored_element_adapter.validate_python(elem_dict)
             records.append(StoredMessageRecord(
                 id=row[0],
                 conversation_id=row[1],
                 sequence_id=row[2],
-                role=row[3],
                 element=parsed,
-                created_at=row[5].isoformat(),
+                created_at=row[4].isoformat(),
             ))
         return records
 
@@ -427,7 +432,7 @@ def _validate_model_choice(provider_key: Optional[str], model_id: Optional[str])
     return provider_key, model_id
 
 
-def tools_for_agent(agent: Optional[AgentConfig]) -> list[Tool]:
+def tools_for_agent(agent: Optional[AgentConfig]) -> list[RegisteredTool]:
     """Expose spawn_agent only to agents with an allowlist, with that list in the description."""
     filtered = [tool for tool in TOOL_REGISTRY if tool["name"] != "spawn_agent"]
     if agent is None or not agent.spawnable_agents:
@@ -437,7 +442,12 @@ def tools_for_agent(agent: Optional[AgentConfig]) -> list[Tool]:
     schema["description"] = (
         f"{schema['description']} Allowed agents: {', '.join(agent.spawnable_agents)}."
     )
-    filtered.append(Tool(name=spawn["name"], schema=schema, executor=spawn["executor"]))
+    filtered.append(Tool(
+        name=spawn["name"],
+        schema=schema,
+        input=spawn["input"],
+        executor=spawn["executor"],
+    ))
     return filtered
 
 async def prepare_and_start_generation(
@@ -455,47 +465,39 @@ async def prepare_and_start_generation(
         config = await get_conversation_config(conn, conversation_id)
         if config is None:
             raise ValueError('conversation not found')
-        latest_sequence_id = await get_latest_sequence_id(conn, conversation_id)
 
-    # The state is registered before any write, so a concurrent prompt is
-    # rejected on the existing "running" state instead of starting a second run.
+    # The check, the prompt write and publishing the generation share the lock.
+    # The state's boundary is the prompt itself, so a client attaching with an
+    # older cursor replays the prompt before any part of the reply.
     async with active_generations_lock:
         existing = active_generations.get(conversation_id)
         if existing is not None and existing.status == 'running':
             raise ActiveGenerationExistsError()
-        state = ActiveGeneration(conversation_id, latest_sequence_id)
-        active_generations[conversation_id] = state
-
-    try:
-        # The model is stored only once the prompt is accepted, together with the message.
         async with mk_conn() as conn:
             await update_conversation_model(conn, conversation_id, provider_key, model_id, inference_config)
-            user_record = await insert_message(conn, conversation_id, 'user', Message(author='user', content=prompt))
+            user_record = await insert_message(conn, conversation_id, Prompt(content=prompt))
             await conn.commit()
+        state = ActiveGeneration(conversation_id, user_record.sequence_id)
+        active_generations[conversation_id] = state
         state.task = asyncio.create_task(_run_generation_task(state))
-    except Exception:
-        async with active_generations_lock:
-            if active_generations.get(conversation_id) is state:
-                active_generations.pop(conversation_id, None)
-        raise
     return conversation_id, user_record
 
 async def get_messages_for_continuation(conv_id: int) -> list[tuple[int, ConversationElement]]:
     ctx: list[tuple[int, ConversationElement]] = []
     async with mk_conn() as conn:
         async with conn.cursor() as cur:
-            await cur.execute("SELECT id, role, elements FROM messages WHERE conversation_id = %s ORDER BY sequence_id ASC", (conv_id,))
+            await cur.execute("SELECT id, elements FROM messages WHERE conversation_id = %s ORDER BY sequence_id ASC", (conv_id,))
             async for row in cur:
-                message_id, role, element = row
+                message_id, element = row
                 element_dict = json.loads(element) if isinstance(element, str) else element
                 parsed = stored_element_adapter.validate_python(element_dict)
                 ctx.append((message_id, parsed))
     return ctx
 
 
-async def _insert_message(conv_id: int, role: str, element: ConversationElement) -> StoredMessageRecord:
+async def _insert_message(conv_id: int, element: ConversationElement) -> StoredMessageRecord:
     async with mk_conn() as conn:
-        return await insert_message(conn, conv_id, role, element)
+        return await insert_message(conn, conv_id, element)
 
 
 async def _insert_blocking_tool_call(
@@ -504,16 +506,10 @@ async def _insert_blocking_tool_call(
 ) -> tuple[StoredMessageRecord, StoredMessageRecord]:
     """Persist the tool call, its approval request and the block atomically."""
     async with mk_conn() as conn:
-        tool_record = await insert_message(
-            conn,
-            conv_id,
-            'assistant',
-            element,
-        )
+        tool_record = await insert_message(conn, conv_id, element)
         approval_record = await insert_message(
             conn,
             conv_id,
-            'assistant',
             ApprovalRequest(original_message_id=tool_record.id),
         )
         async with conn.cursor() as cur:
@@ -568,30 +564,61 @@ async def prompt_conversation(
         run_next_loop = False
         emitted = False
         try:
+            # A provider may report only the finished element. The stream
+            # contract is content before finalized, so remember whether the
+            # text already went out as deltas and fill it in otherwise.
+            streamed_message = False
+            streamed_thinking = False
             async for delta, aggregated_element in chat_gen_inner:
+                if delta is not None:
+                    if isinstance(delta, StreamingMessage):
+                        emitted = True
+                        streamed_message = True
+                        yield MessageChunk(content=delta.content)
+                    elif isinstance(delta, StreamingThinking):
+                        emitted = True
+                        streamed_thinking = True
+                        yield ThinkingChunk(content=delta.content)
                 if aggregated_element is not None:
                     match aggregated_element:
-                        case FinishedMessage() | FinishedThinking():
+                        case FinishedMessage(content=content):
+                            if not streamed_message and content:
+                                emitted = True
+                                yield MessageChunk(content=content)
                             result = to_conv_elem(aggregated_element)
-                            record = await _insert_message(conv_id, 'assistant', result)
+                            record = await _insert_message(conv_id, result)
                             messages.append((record.id, result))
                             emitted = True
                             yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
+                            streamed_message = False
+                            streamed_thinking = False
+                        case FinishedThinking(content=content):
+                            if not streamed_thinking and content:
+                                emitted = True
+                                yield ThinkingChunk(content=content)
+                            result = to_conv_elem(aggregated_element)
+                            record = await _insert_message(conv_id, result)
+                            messages.append((record.id, result))
+                            emitted = True
+                            yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
+                            streamed_message = False
+                            streamed_thinking = False
                         case FinishedToolCall(name=name, parameters=parameters):
                             assert isinstance(aggregated_element, FinishedToolCall)
-                            tool_result = await run_tool_call(name, parameters, tool_context)
+                            execution = await run_tool_call(name, parameters, tool_context)
                             result_element = ToolCall(
                                 name=name,
-                                parameters=parameters,
-                                result=tool_result.result,
+                                arguments=execution.arguments,
+                                outcome=execution.outcome,
                             )
-                            if tool_result.is_blocking:
+                            # A proposal is what waits for the user; nothing else blocks.
+                            if isinstance(execution.outcome, ToolProposal):
                                 record, approval_record = await _insert_blocking_tool_call(conv_id, result_element)
                                 emitted = True
                                 yield ToolCallEvent(
                                     name=name,
-                                    parameters=parameters,
-                                    result=tool_result.result,
+                                    arguments=execution.arguments,
+                                    outcome=execution.outcome,
                                 )
                                 messages.append((record.id, result_element))
                                 yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
@@ -599,29 +626,24 @@ async def prompt_conversation(
                                 messages.append((approval_record.id, approval_element))
                                 yield ApprovalRequestEvent(original_message_id=record.id)
                                 yield ElementFinalized(id=approval_record.id, sequence_id=approval_record.sequence_id)
+                                streamed_message = False
+                                streamed_thinking = False
                                 run_next_loop = False
                                 aclose = getattr(chat_gen_inner, "aclose", None)
                                 if aclose is not None:
                                     await aclose()
                                 break
                             else:
-                                record = await _insert_message(conv_id, 'assistant', result_element)
+                                record = await _insert_message(conv_id, result_element)
                                 emitted = True
                                 yield ToolCallEvent(
                                     name=name,
-                                    parameters=parameters,
-                                    result=tool_result.result,
+                                    arguments=execution.arguments,
+                                    outcome=execution.outcome,
                                 )
                                 messages.append((record.id, result_element))
                                 yield ElementFinalized(id=record.id, sequence_id=record.sequence_id)
                                 run_next_loop = True
-                if delta is not None:
-                    if isinstance(delta, StreamingMessage):
-                        emitted = True
-                        yield MessageChunk(content=delta.content)
-                    elif isinstance(delta, StreamingThinking):
-                        emitted = True
-                        yield ThinkingChunk(content=delta.content)
         except EmptyCompletionError:
             # Some providers end a stream with finish_reason=stop and no content
             # or tool call. Retry once, but never repeat a stream that emitted
@@ -675,62 +697,42 @@ async def start_generation(conv_id: int) -> ActiveGeneration:
         state.task = asyncio.create_task(_run_generation_task(state))
         return state
 
+async def _replay_messages(
+    conv_id: int,
+    after_sequence_id: Optional[int],
+    until_sequence_id: Optional[int],
+) -> AsyncGenerator[StreamEvent, None]:
+    async with mk_conn() as conn:
+        records = await get_messages_after(conn, conv_id, after_sequence_id, until_sequence_id)
+    for record in records:
+        for event in stored_record_to_stream_events(record):
+            yield event
+
+
 async def stream_conversation_events(
     conv_id: int,
     after_sequence_id: Optional[int] = None,
 ) -> AsyncGenerator[StreamEvent, None]:
+    """Deliver the stored transcript, then what the generation still streams.
+
+    Subscribing before reading the database closes the gap: every record at or
+    before the boundary is read from the database, everything after it arrives
+    through the queue. The sets do not overlap, so there is nothing to dedupe.
+    """
     state = await get_active_generation(conv_id)
-    seen_finalized: set[int] = set()
-
-    async def replay_latest() -> AsyncGenerator[StreamEvent, None]:
-        async with mk_conn() as conn:
-            records = await get_messages_after(conn, conv_id, after_sequence_id)
-        for record in records:
-            if record.id in seen_finalized:
-                continue
-            seen_finalized.add(record.id)
-            for event in stored_record_to_stream_events(record):
-                yield event
-
     if state is None:
-        async for event in replay_latest():
+        async for event in _replay_messages(conv_id, after_sequence_id, None):
             yield event
         return
 
     boundary_sequence_id, snapshot_events, queue = await state.subscribe()
     try:
-        async with mk_conn() as conn:
-            records = await get_messages_after(conn, conv_id, after_sequence_id, boundary_sequence_id)
-        for record in records:
-            if record.id in seen_finalized:
-                continue
-            seen_finalized.add(record.id)
-            for event in stored_record_to_stream_events(record):
-                yield event
-        content_since_finalized = False
+        async for event in _replay_messages(conv_id, after_sequence_id, boundary_sequence_id):
+            yield event
         for event in snapshot_events:
-            if event.type == 'finalized':
-                if content_since_finalized:
-                    seen_finalized.add(event.id)
-                content_since_finalized = False
-            elif event.type in ('message', 'thinking', 'tool_call', 'tool_call_result', 'tool_call_decision'):
-                content_since_finalized = True
             yield event
-        while True:
-            queued_event = await queue.get()
-            if queued_event is None:
-                break
-            if queued_event.type == 'finalized':
-                if content_since_finalized:
-                    seen_finalized.add(queued_event.id)
-                content_since_finalized = False
-            elif queued_event.type in ('message', 'thinking', 'tool_call', 'tool_call_result', 'tool_call_decision'):
-                content_since_finalized = True
+        while (queued_event := await queue.get()) is not None:
             yield queued_event
-        # A subscriber can join between a message chunk and its finalized event.
-        # Replay anything committed while we were attached that we did not see.
-        async for event in replay_latest():
-            yield event
     finally:
         await state.unsubscribe(queue)
 
@@ -764,12 +766,17 @@ async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optio
         row = await cur.fetchone()
         if not row:
             return None
-        await cur.execute("SELECT id, sequence_id, role, elements, created_at FROM messages WHERE conversation_id = %s ORDER BY sequence_id ASC", (conv_id,))
+        await cur.execute("SELECT id, sequence_id, elements, created_at FROM messages WHERE conversation_id = %s ORDER BY sequence_id ASC", (conv_id,))
         messages = []
         async for r in cur:
-            elem_dict = json.loads(r[3]) if isinstance(r[3], str) else r[3]
+            elem_dict = json.loads(r[2]) if isinstance(r[2], str) else r[2]
             parsed = stored_element_adapter.validate_python(elem_dict)
-            messages.append({'id': r[0], 'sequence_id': r[1], 'role': r[2], 'element': parsed.model_dump(), 'created_at': r[4].isoformat()})
+            messages.append({
+                'id': r[0],
+                'sequence_id': r[1],
+                'element': parsed.model_dump(),
+                'created_at': r[3].isoformat(),
+            })
         return {
             'id': row[0],
             'title': row[1],
@@ -784,8 +791,8 @@ async def get_conversation_details(conn: AsyncConnection, conv_id: int) -> Optio
             'messages': messages
         }
 
-async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> Optional[str]:
-    """Returns the execution result on approve, None on reject."""
+async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve', 'reject'], comment: str = "") -> Optional[ToolOutcome]:
+    """Returns the outcome on approve, None on reject."""
     async with mk_conn() as conn:
         await conn.begin_immediate()
         async with conn.cursor() as cur:
@@ -826,7 +833,7 @@ async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve
                 original_message_id=msg_id,
                 comment=comment or "",
             )
-            await insert_message(conn, conv_id, 'assistant', decision_elem)
+            await insert_message(conn, conv_id, decision_elem)
 
     if decision == 'reject':
         return None
@@ -842,10 +849,11 @@ async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve
     scopes = await resolve_workspace_scopes(workspace_id)
     agent = await get_agent_by_name(config['agent_id']) if config['agent_id'] else None
     interrupted: BaseException | None = None
+    outcome: ToolOutcome
     try:
-        result = await run_tool_call(
+        execution = await run_tool_call(
             elem.name,
-            elem.parameters,
+            elem.arguments,
             ToolContext(
                 conversation_id=conv_id,
                 workspace_id=workspace_id,
@@ -854,9 +862,9 @@ async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve
                 agent=agent,
             ),
         )
-        result_text = result.result
+        outcome = execution.outcome
     except BaseException as exc:
-        result_text = json.dumps({"error": f"Tool execution failed: {exc}"})
+        outcome = ToolError(message=f"Tool execution failed: {exc}")
         if isinstance(exc, Exception):
             logger.exception("Tool execution failed for conversation %s", conv_id)
         else:
@@ -867,13 +875,12 @@ async def decide_tool_call(conv_id: int, msg_id: int, decision: Literal['approve
         await insert_message(
             conn,
             conv_id,
-            'system',
-            ToolCallResult(original_message_id=msg_id, result=result_text),
+            ToolCallResult(original_message_id=msg_id, outcome=outcome),
         )
-        
+
     if interrupted is not None:
         raise interrupted
-    return result_text
+    return outcome
 
 
 async def cancel_generation(conv_id: int) -> bool:
@@ -970,11 +977,7 @@ async def get_conversation(conv_id: int):
 
 @router.get('/api/conversations/{conv_id}/stream')
 async def stream_conversation_endpoint(conv_id: int, after_sequence_id: Optional[int] = None):
-    async with mk_conn() as conn:
-        details = await get_conversation_details(conn, conv_id)
-        if not details:
-            return JSONResponse(status_code=404, content={'error': 'conversation not found'})
-
+    # No existence check: an unknown conversation simply has nothing to replay.
     async def stream():
         async for event in stream_conversation_events(conv_id, after_sequence_id):
             yield serialize_ndjson_event(event)
@@ -986,10 +989,6 @@ async def stream_conversation_endpoint(conv_id: int, after_sequence_id: Optional
 
 @router.post('/api/conversations/{conv_id}/cancel')
 async def cancel_conversation_endpoint(conv_id: int):
-    async with mk_conn() as conn:
-        details = await get_conversation_details(conn, conv_id)
-        if not details:
-            return JSONResponse(status_code=404, content={'error': 'conversation not found'})
     if not await cancel_generation(conv_id):
         return JSONResponse(status_code=409, content={'error': 'conversation is not generating'})
     return JSONResponse(content={'status': 'cancelled', 'id': conv_id})
@@ -1015,8 +1014,12 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
         return JSONResponse(status_code=400, content={'error': 'invalid decision'})
 
     try:
-        result = await decide_tool_call(conv_id, msg_id, decision, comment=comment or "")
-        return JSONResponse(content={'status': 'success', 'executed': result is not None, 'result': result})
+        outcome = await decide_tool_call(conv_id, msg_id, decision, comment=comment or "")
+        return JSONResponse(content={
+            'status': 'success',
+            'executed': outcome is not None,
+            'result': outcome.model_dump() if outcome is not None else None,
+        })
     except ValueError as e:
         return JSONResponse(status_code=400, content={'error': str(e)})
     except Exception as e:
@@ -1026,13 +1029,11 @@ async def decide_tool_call_endpoint(conv_id: int, msg_id: int, request: Request)
 @router.post('/api/conversations/{conv_id}/continue')
 async def continue_conversation_endpoint(conv_id: int):
     async with mk_conn() as conn:
-        details = await get_conversation_details(conn, conv_id)
-        if not details:
-            return JSONResponse(status_code=404, content={'error': 'conversation not found'})
-        if details.get('blocking_message_id') is not None:
+        blocking_message_id = await get_blocking_message_id(conn, conv_id)
+        if blocking_message_id is not None:
             return JSONResponse(
                 status_code=403,
-                content={"error": "Action required", "blocking_message_id": details.get('blocking_message_id')}
+                content={"error": "Action required", "blocking_message_id": blocking_message_id}
             )
         after_sequence_id = await get_latest_sequence_id(conn, conv_id)
 

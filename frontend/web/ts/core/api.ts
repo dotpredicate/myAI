@@ -83,12 +83,103 @@ export interface ResolveWorkspaceResponse {
   sync_started: boolean;
 }
 
+/* A tool call is typed on both ends: `arguments` is the tool's input model and
+   `outcome` is this closed union. Both mirror backend/domain.py. */
+
+export interface BashInput {
+  command: string;
+}
+
+export interface SearchInput {
+  query: string;
+  top_k: number;
+}
+
+export interface SpawnAgentInput {
+  agent_symbol: string;
+  prompt: string;
+}
+
+export interface ReplaceFileInput {
+  target: string;
+  source: string;
+}
+
+export interface ApplyPatchInput {
+  target: string;
+  diff_path: string;
+}
+
+export type ToolArguments =
+  | BashInput
+  | SearchInput
+  | SpawnAgentInput
+  | ReplaceFileInput
+  | ApplyPatchInput;
+
+/** Arguments as text; null means the tool refused them (see the outcome). */
+export function argumentsText(args: ToolArguments | null): string {
+  return args === null ? '(no arguments)' : JSON.stringify(args, null, 2);
+}
+
+export interface SearchHit {
+  document_id: number;
+  file_path: string;
+  chunk_index: number;
+  cosine_distance: number;
+  text: string;
+}
+
+export type ToolOutcome =
+  | {
+      type: 'success';
+      tool: 'bash';
+      /** null when the command was killed or timed out instead of exiting. */
+      returncode: number | null;
+      stdout: string;
+      stderr: string;
+    }
+  | { type: 'success'; tool: 'search'; results: SearchHit[] }
+  | {
+      type: 'success';
+      tool: 'spawn_agent';
+      conversation_id: number;
+      agent: string;
+      response: string;
+      blocked: boolean;
+      blocking_message_id: number | null;
+    }
+  | { type: 'success'; tool: 'replace_file' }
+  | { type: 'success'; tool: 'apply_patch' }
+  | { type: 'error'; message: string }
+  | { type: 'proposal'; format: 'replace' | 'patch'; target: string; source: string; diff: string };
+
+/** Guards an exhaustive switch: a new union member breaks both clients' builds. */
+export function exhausted(value: never): never {
+  throw new Error(`unhandled contract member: ${JSON.stringify(value)}`);
+}
+
+/** What an outcome says, as text: the diff, the failure, or the payload. */
+export function outcomeText(outcome: ToolOutcome): string {
+  switch (outcome.type) {
+    case 'proposal':
+      return outcome.diff;
+    case 'error':
+      return outcome.message;
+    case 'success':
+      return JSON.stringify(outcome, null, 2);
+    default:
+      return exhausted(outcome);
+  }
+}
+
 export type ConversationElement =
-  | { type: 'message'; author: 'user' | 'assistant'; content: string }
+  | { type: 'prompt'; content: string }
+  | { type: 'message'; content: string }
   | { type: 'thinking'; content: string }
-  | { type: 'tool_call'; name: string; parameters: string; result: string }
+  | { type: 'tool_call'; name: string; arguments: ToolArguments | null; outcome: ToolOutcome }
   | { type: 'approval_request'; original_message_id: number }
-  | { type: 'tool_call_result'; original_message_id: number; result: string }
+  | { type: 'tool_call_result'; original_message_id: number; outcome: ToolOutcome }
   | {
       type: 'tool_call_decision';
       original_message_id: number;
@@ -100,7 +191,6 @@ export interface StoredMessageRecord {
   id: number;
   conversation_id: number;
   sequence_id: number;
-  role: string;
   element: ConversationElement;
   created_at: string;
 }
@@ -130,10 +220,11 @@ export interface CreateConversationRequest {
 }
 
 export type StreamEvent =
-  | { type: 'message'; content: string; role: 'user' | 'assistant' }
+  | { type: 'prompt'; content: string }
+  | { type: 'message'; content: string }
   | { type: 'thinking'; content: string }
   | { type: 'finalized'; id: number; sequence_id: number }
-  | { type: 'tool_call'; name: string; parameters: string; result: string }
+  | { type: 'tool_call'; name: string; arguments: ToolArguments | null; outcome: ToolOutcome }
   | { type: 'approval_request'; original_message_id: number }
   | {
       type: 'tool_call_decision';
@@ -141,7 +232,7 @@ export type StreamEvent =
       decision: 'approve' | 'reject';
       comment: string | null;
     }
-  | { type: 'tool_call_result'; original_message_id: number; result: string }
+  | { type: 'tool_call_result'; original_message_id: number; outcome: ToolOutcome }
   | { type: 'generation_error'; message: string };
 
 /* ---------------------------------------------------------- providers */
@@ -291,7 +382,7 @@ export interface DeleteResponse {
 export interface ToolCallDecisionResponse {
   status: string;
   executed: boolean;
-  result: string | null;
+  result: ToolOutcome | null;
 }
 
 export interface BrowseEntry {

@@ -111,9 +111,38 @@ ol {
   border-right: 1px solid var(--border);
 }
 
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 0.8rem;
+}
+
 .brand {
-  padding: 0.15rem 0.4rem 0.8rem;
+  padding: 0.15rem 0.4rem;
   font-size: 1.34rem;
+}
+
+.sidebar-toggle {
+  font-size: 1.35rem;
+}
+
+/* Collapsed: the rail shrinks to the toggle, everything else leaves the layout
+   but stays in the DOM. */
+.app-shell[data-sidebar="collapsed"] {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.app-shell[data-sidebar="collapsed"] .sidebar > :not(.sidebar-head) {
+  display: none;
+}
+
+/* The brand keeps its box, so the header keeps its height and the toggle does
+   not move; only its width goes away. */
+.app-shell[data-sidebar="collapsed"] .brand {
+  width: 0;
+  padding-inline: 0;
+  overflow: hidden;
 }
 
 .new-chat {
@@ -971,7 +1000,7 @@ pre code {
 /* Chat */
 .chat-screen {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   height: 100%;
   overflow: hidden;
 }
@@ -1006,11 +1035,24 @@ pre code {
   margin-bottom: 0.75rem;
 }
 
-.composer {
+.chat-prompt {
   display: flex;
   flex-direction: column;
   gap: 0.55rem;
   padding: 0.75rem var(--pad);
+}
+
+.chat-prompt > * {
+  width: 100%;
+  max-width: 56rem;
+  margin-inline: auto;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding: 0.6rem var(--pad);
   border-top: 1px solid var(--border);
   background: var(--surface);
 }
@@ -1019,6 +1061,35 @@ pre code {
   width: 100%;
   max-width: 56rem;
   margin-inline: auto;
+}
+
+.prompt-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.prompt-box:focus-within {
+  border-color: var(--accent);
+}
+
+.prompt-box textarea {
+  padding: 0;
+  border: 0;
+  background: none;
+  resize: none;
+}
+
+.prompt-box textarea:focus-visible {
+  outline: none;
+}
+
+.prompt-box textarea:disabled {
+  background: none;
 }
 
 .message {
@@ -1119,8 +1190,11 @@ details > :not(summary) {
 
 .reasoning-content {
   color: var(--text-soft);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.reasoning-content .markdown {
+  color: inherit;
 }
 
 .tool-call[data-highlight="true"] {

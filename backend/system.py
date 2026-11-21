@@ -149,6 +149,7 @@ async def run_sandboxed_command(
         "--setenv", "HOME", WORKSPACE_VROOT,
         "--setenv", "TMPDIR", "/tmp",
         "--unshare-all",
+        "--die-with-parent",
         "--bind", workspace_path, WORKSPACE_VROOT,
         "--bind", sandbox_path, "/sandbox",
         "--chdir", WORKSPACE_VROOT,
@@ -182,7 +183,8 @@ async def run_sandboxed_command(
         except TimeoutError:
             with suppress(ProcessLookupError):
                 process.kill()
-            await process.communicate()
+            with suppress(TimeoutError):
+                await asyncio.wait_for(process.communicate(), timeout=5)
             return ShellResult(
                 returncode=None,
                 stdout="",
@@ -191,7 +193,8 @@ async def run_sandboxed_command(
         except asyncio.CancelledError:
             with suppress(ProcessLookupError):
                 process.kill()
-            await process.communicate()
+            with suppress(TimeoutError):
+                await asyncio.wait_for(process.communicate(), timeout=5)
             raise
 
         return ShellResult(

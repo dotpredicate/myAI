@@ -6,6 +6,7 @@
   "type": "module",
   "imports": {
     "#core/api": "./web/ts/core/api.ts",
+    "#core/diff": "./web/ts/core/diff.ts",
     "#core/markdown": "./web/ts/core/markdown.ts",
     "#core/models": "./web/ts/core/models.ts"
   },
@@ -13,7 +14,7 @@
     "build": "rm -rf web/js && tsc -p web",
     "dev": "tsc -p web --watch",
     "check": "tsc -p web --noEmit && tsc -p tui --noEmit",
-    "lint": "oxlint --type-aware -W suspicious -W typescript/no-unnecessary-condition -A typescript/no-floating-promises web/ts tui/src"
+    "lint": "oxlint --type-aware -W suspicious -W typescript/no-unnecessary-condition -A typescript/no-floating-promises web/ts tui/src tui/test"
   },
   "devDependencies": {
     "@types/node": "26.0.0",

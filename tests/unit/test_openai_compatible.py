@@ -2,7 +2,7 @@ import unittest
 from types import SimpleNamespace
 from typing import Any, cast
 
-from backend.domain import InferenceProviderConfig, Message, Thinking
+from backend.domain import InferenceProviderConfig, Message, Prompt, Thinking
 from backend.inference.engine import ChatContext, FinishedMessage, FinishedThinking, FinishedToolCall, StreamingMessage
 from backend.inference.openai_chat import DeltaProcessor, OpenAICompatibleProvider, _to_oai_messages
 
@@ -372,7 +372,7 @@ class TestMessageConversion(unittest.TestCase):
     def test_reasoning_content_is_optional(self):
         context = _context([
             (1, Thinking(content="internal reasoning")),
-            (2, Message(author="assistant", content="visible answer")),
+            (2, Message(content="visible answer")),
         ])
 
         without = _to_oai_messages(context, include_reasoning_content=False)
@@ -380,3 +380,27 @@ class TestMessageConversion(unittest.TestCase):
 
         self.assertNotIn("reasoning_content", without[1])
         self.assertEqual(cast(dict[str, Any], with_reasoning[1])["reasoning_content"], "internal reasoning")
+
+    def test_a_prompt_is_the_user_turn(self):
+        context = _context([
+            (1, Prompt(content="what is this?")),
+            (2, Thinking(content="internal reasoning")),
+            (3, Message(content="visible answer")),
+        ])
+
+        converted = _to_oai_messages(context)
+
+        self.assertEqual([message["role"] for message in converted], ["system", "user", "assistant"])
+        self.assertEqual(cast(dict[str, Any], converted[2])["reasoning_content"], "internal reasoning")
+
+    def test_a_prompt_drops_thinking_with_nothing_after_it(self):
+        context = _context([
+            (1, Prompt(content="first question")),
+            (2, Thinking(content="internal reasoning")),
+            (3, Prompt(content="second question")),
+        ])
+
+        converted = _to_oai_messages(context)
+
+        self.assertNotIn("reasoning_content", converted[2])
+        self.assertEqual([message["role"] for message in converted], ["system", "user", "user"])

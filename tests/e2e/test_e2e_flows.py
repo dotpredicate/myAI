@@ -29,9 +29,9 @@ class TestE2EFlows(BaseTestCase):
 
         tool_calls = [m for m in conv["messages"] if m["element"]["type"] == "tool_call"]
         self.assertGreaterEqual(len(tool_calls), 1)
-        result = json.loads(tool_calls[-1]["element"]["result"])
-        self.assertEqual(result["returncode"], 0)
-        self.assertIn("secret-data-42", result["stdout"])
+        outcome = tool_calls[-1]["element"]["outcome"]
+        self.assertEqual(outcome["returncode"], 0)
+        self.assertIn("secret-data-42", outcome["stdout"])
 
     async def test_editor_flow(self):
         """Create file, agent proposes replace -> proposal has correct content."""
@@ -62,10 +62,10 @@ class TestE2EFlows(BaseTestCase):
         tool_calls = [m for m in conv["messages"] if m["element"]["type"] == "tool_call"]
         self.assertGreaterEqual(len(tool_calls), 1)
 
-        result = json.loads(tool_calls[-1]["element"]["result"])
-        self.assertEqual(result["type"], "replace_proposal")
-        self.assertEqual(result["status"], "pending")
-        self.assertIn("Hello, Agent!", result["diff"])
+        outcome = tool_calls[-1]["element"]["outcome"]
+        self.assertEqual(outcome["type"], "proposal")
+        self.assertEqual(outcome["format"], "replace")
+        self.assertIn("Hello, Agent!", outcome["diff"])
 
     async def test_discovery_flow(self):
         """Create multiple repos, agent lists them -> response names all repos."""
@@ -105,7 +105,7 @@ class TestE2EFlows(BaseTestCase):
 
         tool_calls = [m for m in conv["messages"] if m["element"]["type"] == "tool_call"]
         self.assertGreaterEqual(len(tool_calls), 1)
-        result = json.loads(tool_calls[-1]["element"]["result"])
-        self.assertEqual(result["returncode"], 0)
+        outcome = tool_calls[-1]["element"]["outcome"]
+        self.assertEqual(outcome["returncode"], 0)
         for name in repo_names:
-            self.assertIn(name, result["stdout"])
+            self.assertIn(name, outcome["stdout"])

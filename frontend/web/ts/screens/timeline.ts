@@ -1,6 +1,14 @@
-import { el, clear, prettyJson, parseJsonObject, createCopyButton, messageOf } from '../ui.js';
-import { createMarkdown, type MarkdownWriter } from '../markdown.js';
-import type { ConversationElement, StreamEvent, StoredMessageRecord } from '../core/api.js';
+import { el, clear, createCopyButton, messageOf } from '../ui.js';
+import { type DiffLineKind, parseDiff, proposalDiff } from '../core/diff.js';
+import { createMarkdown } from '../markdown.js';
+import { argumentsText, outcomeText } from '../core/api.js';
+import type {
+  ConversationElement,
+  StreamEvent,
+  StoredMessageRecord,
+  ToolArguments,
+  ToolOutcome,
+} from '../core/api.js';
 import { Row, Stack, LineHint, FieldLabel, Notice, Button, TextArea, Summary } from '../components.js';
 
 type Role = 'user' | 'assistant';
@@ -12,8 +20,22 @@ interface BlockBase {
 }
 
 interface MessageBlock extends BlockBase {
-  kind: 'message' | 'thinking';
-  role?: Role;
+  kind: 'message';
+  role: Role;
+  append(chunk: string): void;
+  setContent(value: string): void;
+  rawText(): string;
+}
+
+interface MessagePart extends BlockBase {
+  kind: 'message-part';
+  append(chunk: string): void;
+  setContent(value: string): void;
+  rawText(): string;
+}
+
+interface ThinkingPart extends BlockBase {
+  kind: 'thinking';
   append(chunk: string): void;
   setContent(value: string): void;
   rawText(): string;
@@ -31,7 +53,7 @@ export interface ToolBlock extends BlockBase {
   pending: boolean;
   setPending(pending: boolean, handlers?: ToolHandlers): void;
   setDecision(decision: 'approve' | 'reject', comment: string | null): void;
-  setResult(result: string | null | undefined): void;
+  setResult(outcome: ToolOutcome | null | undefined): void;
   hideActions(): void;
   focusAction(): HTMLElement | null;
 }
@@ -40,12 +62,20 @@ interface NoteBlock extends BlockBase {
   kind: 'note';
 }
 
-type Block = MessageBlock | ToolBlock | NoteBlock;
+type Block = MessageBlock | MessagePart | ThinkingPart | ToolBlock | NoteBlock;
 
-type ActiveState =
-  | { kind: 'message'; role: Role; block: MessageBlock }
-  | { kind: 'thinking'; block: MessageBlock }
-  | { kind: 'tool'; block: ToolBlock };
+type ActivePart = MessagePart | ThinkingPart | ToolBlock;
+
+/** One assistant turn: a single role header with all of its parts inside. */
+interface AssistantTurn {
+  node: HTMLElement;
+  addMessagePart(): MessagePart;
+  addThinkingPart(): ThinkingPart;
+  addBlock(block: ToolBlock | NoteBlock): void;
+  appendText(text: string): void;
+  markContent(): void;
+  hasContent(): boolean;
+}
 
 export interface TimelineCallbacks {
   onBlockingChange?: (id: number | null) => void;
@@ -55,62 +85,47 @@ export interface TimelineCallbacks {
 }
 
 
+/** Exhaustive on purpose: a new DiffLineKind in the core must break this. */
+const DIFF_CLASS: Record<DiffLineKind, string> = {
+  add: 'diff-line diff-line--add',
+  remove: 'diff-line diff-line--remove',
+  meta: 'diff-line diff-line--meta',
+  context: 'diff-line',
+};
+
 export function renderDiff(container: Element, diffText: string | null | undefined): void {
   const diff = el('div', { class: 'diff' });
-  const lines = (diffText ?? '').split('\n');
-  for (const line of lines) {
-    let modifier = '';
-    if (line.startsWith('+++') || line.startsWith('---')) modifier = 'diff-line--meta';
-    else if (line.startsWith('@@')) modifier = 'diff-line--meta';
-    else if (line.startsWith('+')) modifier = 'diff-line--add';
-    else if (line.startsWith('-')) modifier = 'diff-line--remove';
-    diff.appendChild(el('span', { class: `diff-line ${modifier}`.trim() }, line || ' '));
+  for (const line of parseDiff(diffText)) {
+    diff.appendChild(el('span', { class: DIFF_CLASS[line.kind] }, line.text || ' '));
   }
   container.appendChild(diff);
 }
 
-export function renderOutput(container: Element, text: string | null | undefined): void {
-  if (text === null || text === undefined || text === '') return;
-  const parsed = parseJsonObject(text);
-  if (parsed && (parsed.type === 'replace_proposal' || parsed.type === 'diff_proposal') && typeof parsed.diff === 'string') {
-    if (typeof parsed.target === 'string' && parsed.target) {
-      container.appendChild(LineHint('Target: ', el('code', {}, parsed.target)));
+export function renderOutput(container: Element, outcome: ToolOutcome | null | undefined): void {
+  if (!outcome) return;
+  const proposal = proposalDiff(outcome);
+  if (proposal !== null) {
+    if (proposal.target !== '') {
+      container.appendChild(LineHint('Target: ', el('code', {}, proposal.target)));
     }
-    renderDiff(container, parsed.diff);
+    renderDiff(container, proposal.diff);
     return;
   }
-  container.appendChild(el('pre', {}, prettyJson(text)));
+  container.appendChild(el('pre', {}, outcomeText(outcome)));
 }
 
-export function outputCopyText(text: string | null | undefined): string {
-  const parsed = parseJsonObject(text);
-  if (parsed && typeof parsed.diff === 'string') return parsed.diff;
-  return prettyJson(text);
-}
-
-function createMessageBlock(role: Role): MessageBlock {
+function createUserMessageBlock(): MessageBlock {
   const raw = { text: '' };
-  const author = el('strong', { class: 'message-author' }, `${role}:`);
-  const head = Row(author);
-  const body = el('div', { class: `message-body message-body--${role}` });
-  let markdown: MarkdownWriter | null = null;
-  let textNode: Text | null = null;
-
-  if (role === 'assistant') {
-    const content = el('div', { class: 'markdown' });
-    body.appendChild(content);
-    markdown = createMarkdown(content);
-    head.appendChild(createCopyButton(() => raw.text, 'Copy'));
-  } else {
-    textNode = document.createTextNode('');
-    body.appendChild(textNode);
-  }
-
-  const node = el('article', { class: 'message', dataset: { role } }, head, body);
+  const label = el('strong', { class: 'message-author' }, 'user:');
+  const head = Row(label);
+  const body = el('div', { class: 'message-body message-body--user' });
+  const textNode = document.createTextNode('');
+  body.appendChild(textNode);
+  const node = el('article', { class: 'message', dataset: { role: 'user' } }, head, body);
 
   return {
     kind: 'message',
-    role,
+    role: 'user',
     node,
     setId(id: number) {
       node.dataset.messageId = String(id);
@@ -118,50 +133,11 @@ function createMessageBlock(role: Role): MessageBlock {
     append(content: string) {
       if (!content) return;
       raw.text += content;
-      if (markdown) markdown.write(content);
-      else if (textNode) textNode.textContent = raw.text;
+      textNode.textContent = raw.text;
     },
     setContent(content: string) {
       raw.text = content || '';
-      if (markdown) markdown.set(raw.text);
-      else if (textNode) textNode.textContent = raw.text;
-    },
-    end() {
-      if (markdown) markdown.end();
-    },
-    rawText() {
-      return raw.text;
-    },
-  };
-}
-
-function createThinkingBlock(): MessageBlock {
-  const raw = { text: '' };
-  const content = el('div', { class: 'reasoning-content stack' });
-  const text = el('div', {});
-  content.appendChild(text);
-  const actions = Row(createCopyButton(() => raw.text, 'Copy'));
-  content.insertBefore(actions, text);
-  const details = el('details', {},
-    Summary('Reasoning'),
-    content,
-  );
-  const node = details;
-
-  return {
-    kind: 'thinking',
-    node,
-    setId(id: number) {
-      node.dataset.messageId = String(id);
-    },
-    append(chunk: string) {
-      if (!chunk) return;
-      raw.text += chunk;
-      text.textContent = raw.text;
-    },
-    setContent(value: string) {
-      raw.text = value || '';
-      text.textContent = raw.text;
+      textNode.textContent = raw.text;
     },
     end() {},
     rawText() {
@@ -170,36 +146,157 @@ function createThinkingBlock(): MessageBlock {
   };
 }
 
-function createToolBlock(name: string, parameters: string, initialResult: string | null | undefined): ToolBlock {
-  let finalResult = initialResult || '';
+function createMessagePart(): MessagePart {
+  const raw = { text: '' };
+  const node = el('div', { class: 'markdown' });
+  const markdown = createMarkdown(node);
+
+  return {
+    kind: 'message-part',
+    node,
+    setId(id: number) {
+      node.dataset.messageId = String(id);
+    },
+    append(content: string) {
+      if (!content) return;
+      raw.text += content;
+      markdown.write(content);
+    },
+    setContent(value: string) {
+      raw.text = value || '';
+      markdown.set(raw.text);
+    },
+    end() {
+      markdown.end();
+    },
+    rawText() {
+      return raw.text;
+    },
+  };
+}
+
+function createThinkingPart(): ThinkingPart {
+  const raw = { text: '' };
+  const content = el('div', { class: 'reasoning-content stack' });
+  const body = el('div', { class: 'markdown' });
+  const actions = Row(createCopyButton(() => raw.text, 'Copy'));
+  content.appendChild(actions);
+  content.appendChild(body);
+  const markdown = createMarkdown(body);
+  const details = el('details', {},
+    Summary('Reasoning'),
+    content,
+  );
+
+  return {
+    kind: 'thinking',
+    node: details,
+    setId(id: number) {
+      details.dataset.messageId = String(id);
+    },
+    append(chunk: string) {
+      if (!chunk) return;
+      raw.text += chunk;
+      markdown.write(chunk);
+    },
+    setContent(value: string) {
+      raw.text = value || '';
+      markdown.set(raw.text);
+    },
+    end() {
+      markdown.end();
+    },
+    rawText() {
+      return raw.text;
+    },
+  };
+}
+
+function createAssistantTurn(): AssistantTurn {
+  const raw = { text: '' };
+  const label = el('strong', { class: 'message-author' }, 'assistant:');
+  const head = Row(label);
+  head.appendChild(createCopyButton(() => raw.text, 'Copy'));
+  const body = el('div', { class: 'message-body message-body--assistant stack' });
+  const node = el('article', { class: 'message', dataset: { role: 'assistant' } }, head, body);
+  let content = false;
+  let freshPart = false;
+
+  return {
+    node,
+    addMessagePart() {
+      const part = createMessagePart();
+      body.appendChild(part.node);
+      freshPart = true;
+      return part;
+    },
+    addThinkingPart() {
+      const part = createThinkingPart();
+      body.appendChild(part.node);
+      return part;
+    },
+    addBlock(block) {
+      body.appendChild(block.node);
+      content = true;
+    },
+    appendText(text) {
+      if (!text) return;
+      if (freshPart) {
+        if (raw.text) raw.text += '\n\n';
+        freshPart = false;
+      }
+      raw.text += text;
+      if (text.trim()) content = true;
+    },
+    markContent() {
+      content = true;
+    },
+    hasContent() {
+      return content;
+    },
+  };
+}
+
+function createToolBlock(
+  name: string,
+  args: ToolArguments | null,
+  initialOutcome: ToolOutcome | null | undefined,
+): ToolBlock {
+  let finalOutcome = initialOutcome;
   const seenOutputs = new Set<string>();
   const actions = Row();
+  const pendingForm = Stack();
   const notes = Stack();
   const outputs = Stack();
   const body = Stack();
 
-  const copy = createCopyButton(() => outputCopyText(finalResult || parameters), 'Copy');
+  const copy = createCopyButton(() => {
+    const outcome = finalOutcome;
+    return outcome ? outcomeText(outcome) : argumentsText(args);
+  }, 'Copy');
   body.appendChild(Row(copy));
-  body.appendChild(Stack(el('h4', { class: 'hint' }, 'Input'), el('pre', {}, prettyJson(parameters))));
-  body.appendChild(actions);
+  body.appendChild(Stack(el('h4', { class: 'hint' }, 'Input'), el('pre', {}, argumentsText(args))));
   body.appendChild(outputs);
   body.appendChild(notes);
+  body.appendChild(actions);
+  body.appendChild(pendingForm);
 
   const details = el('details', { class: 'tool-call' },
     Summary(`Function call: ${name || 'unknown'}`),
     body,
   );
 
-  function addOutput(result: string | null | undefined, label: string): void {
-    if (result === null || result === undefined || result === '') return;
-    if (seenOutputs.has(result)) return;
-    seenOutputs.add(result);
+  function addOutput(outcome: ToolOutcome | null | undefined, label: string): void {
+    if (!outcome) return;
+    const text = outcomeText(outcome);
+    if (seenOutputs.has(text)) return;
+    seenOutputs.add(text);
     const section = Stack(el('h4', { class: 'hint' }, label));
-    renderOutput(section, result);
+    renderOutput(section, outcome);
     outputs.appendChild(section);
   }
 
-  addOutput(initialResult, 'Output');
+  addOutput(initialOutcome, 'Output');
 
   const block: ToolBlock = {
     kind: 'tool',
@@ -212,6 +309,7 @@ function createToolBlock(name: string, parameters: string, initialResult: string
     setPending(pending: boolean, handlers: ToolHandlers = {}) {
       block.pending = pending;
       clear(actions);
+      clear(pendingForm);
       if (!pending) return;
       details.open = true;
       const approve = Button('Approve', { variant: 'primary', small: true });
@@ -270,23 +368,25 @@ function createToolBlock(name: string, parameters: string, initialResult: string
 
       actions.appendChild(approve);
       actions.appendChild(reject);
-      actions.appendChild(error);
-      actions.appendChild(rejectForm);
+      pendingForm.appendChild(error);
+      pendingForm.appendChild(rejectForm);
     },
     setDecision(decision, comment) {
       block.pending = false;
       clear(actions);
+      clear(pendingForm);
       const approved = decision === 'approve';
       const text = approved ? '✓ Approved' : `✗ Rejected${comment ? `: ${comment}` : ''}`;
       const note = Notice({ tight: true, level: approved ? 'success' : 'error' }, text);
       notes.appendChild(note);
     },
-    setResult(result) {
-      if (result !== undefined && result !== null) finalResult = result;
-      addOutput(result, 'Result');
+    setResult(outcome) {
+      if (outcome) finalOutcome = outcome;
+      addOutput(outcome, 'Result');
     },
     hideActions() {
       clear(actions);
+      clear(pendingForm);
     },
     end() {},
     focusAction() {
@@ -311,7 +411,8 @@ export class Timeline {
   callbacks: TimelineCallbacks;
   blocksById: Map<number, ToolBlock>;
   lastTool: ToolBlock | null;
-  active: ActiveState | null;
+  assistantTurn: AssistantTurn | null;
+  activePart: ActivePart | null;
   lastSequence: number;
   blockingId: number | null;
 
@@ -320,7 +421,8 @@ export class Timeline {
     this.callbacks = callbacks;
     this.blocksById = new Map();
     this.lastTool = null;
-    this.active = null;
+    this.assistantTurn = null;
+    this.activePart = null;
     this.lastSequence = 0;
     this.blockingId = null;
   }
@@ -329,15 +431,33 @@ export class Timeline {
     clear(this.container);
     this.blocksById.clear();
     this.lastTool = null;
-    this.active = null;
+    this.assistantTurn = null;
+    this.activePart = null;
     this.lastSequence = 0;
     this.blockingId = null;
   }
 
+  closePart(): void {
+    const part = this.activePart;
+    if (!part) return;
+    if (part.kind !== 'tool' && part.rawText().trim() === '') {
+      part.node.remove();
+    } else {
+      part.end();
+    }
+    this.activePart = null;
+  }
+
+  endAssistantTurn(): void {
+    this.closePart();
+    const turn = this.assistantTurn;
+    if (!turn) return;
+    if (!turn.hasContent()) turn.node.remove();
+    this.assistantTurn = null;
+  }
+
   finalizeActive(): void {
-    if (!this.active) return;
-    this.active.block.end();
-    this.active = null;
+    this.endAssistantTurn();
   }
 
   register<T extends Block>(block: T): T {
@@ -345,9 +465,18 @@ export class Timeline {
     return block;
   }
 
+  ensureAssistantTurn(): AssistantTurn {
+    if (!this.assistantTurn) {
+      const turn = createAssistantTurn();
+      this.container.appendChild(turn.node);
+      this.assistantTurn = turn;
+    }
+    return this.assistantTurn;
+  }
+
   addUserMessage(text: string): MessageBlock {
     this.finalizeActive();
-    const block = createMessageBlock('user');
+    const block = createUserMessageBlock();
     block.append(text);
     block.end();
     this.register(block);
@@ -356,7 +485,8 @@ export class Timeline {
 
   removeBlock(block: Block | null | undefined): void {
     if (!block) return;
-    if (this.active?.block === block) this.active = null;
+    if (this.activePart?.node === block.node) this.activePart = null;
+    if (this.assistantTurn?.node === block.node) this.assistantTurn = null;
     block.node.remove();
   }
 
@@ -366,29 +496,41 @@ export class Timeline {
     this.lastSequence = Math.max(this.lastSequence, seq);
     let block: Block | null = null;
 
-    if (element.type === 'message') {
-      const message = createMessageBlock(element.author === 'user' ? 'user' : 'assistant');
+    if (element.type === 'prompt') {
+      this.endAssistantTurn();
+      const message = createUserMessageBlock();
       message.append(element.content || '');
       message.end();
       message.setId(record.id);
       this.register(message);
       block = message;
+    } else if (element.type === 'message') {
+      const turn = this.ensureAssistantTurn();
+      const part = turn.addMessagePart();
+      part.append(element.content || '');
+      part.end();
+      part.setId(record.id);
+      turn.appendText(element.content || '');
+      block = part;
     } else if (element.type === 'thinking') {
-      const thinking = createThinkingBlock();
+      const turn = this.ensureAssistantTurn();
+      const thinking = turn.addThinkingPart();
       thinking.setContent(element.content || '');
+      thinking.end();
       thinking.setId(record.id);
-      this.register(thinking);
+      if ((element.content || '').trim()) turn.markContent();
       block = thinking;
     } else if (element.type === 'tool_call') {
-      const tool = createToolBlock(element.name, element.parameters, element.result);
+      const turn = this.ensureAssistantTurn();
+      const tool = createToolBlock(element.name, element.arguments, element.outcome);
       tool.setId(record.id);
       this.blocksById.set(record.id, tool);
       this.lastTool = tool;
-      this.register(tool);
+      turn.addBlock(tool);
       block = tool;
     } else if (element.type === 'tool_call_result') {
       const target = this.blocksById.get(element.original_message_id);
-      if (target) target.setResult(element.result);
+      if (target) target.setResult(element.outcome);
       else this.register(createSystemNote('Tool result', ''));
     } else if (element.type === 'tool_call_decision') {
       const target = this.blocksById.get(element.original_message_id);
@@ -412,45 +554,55 @@ export class Timeline {
         this.callbacks.onGenerationError?.(event.message || 'Generation failed.');
         return;
       }
+      case 'prompt': {
+        this.endAssistantTurn();
+        const block = createUserMessageBlock();
+        block.append(event.content || '');
+        block.end();
+        this.register(block);
+        return;
+      }
       case 'message': {
-        const role: Role = event.role === 'user' ? 'user' : 'assistant';
-        if (!this.active || this.active.kind !== 'message' || this.active.role !== role) {
-          this.finalizeActive();
-          const block = this.register(createMessageBlock(role));
-          this.active = { kind: 'message', role, block };
+        const turn = this.ensureAssistantTurn();
+        if (!this.activePart || this.activePart.kind !== 'message-part') {
+          this.closePart();
+          this.activePart = turn.addMessagePart();
         }
-        this.active.block.append(event.content || '');
+        this.activePart.append(event.content || '');
+        turn.appendText(event.content || '');
         return;
       }
       case 'thinking': {
-        if (!this.active || this.active.kind !== 'thinking') {
-          this.finalizeActive();
-          const block = this.register(createThinkingBlock());
-          this.active = { kind: 'thinking', block };
+        const turn = this.ensureAssistantTurn();
+        if (!this.activePart || this.activePart.kind !== 'thinking') {
+          this.closePart();
+          this.activePart = turn.addThinkingPart();
         }
-        this.active.block.append(event.content || '');
+        this.activePart.append(event.content || '');
+        if ((event.content || '').trim()) turn.markContent();
         return;
       }
       case 'tool_call': {
-        this.finalizeActive();
-        const block = createToolBlock(event.name, event.parameters, event.result);
+        const turn = this.ensureAssistantTurn();
+        this.closePart();
+        const block = createToolBlock(event.name, event.arguments, event.outcome);
         this.lastTool = block;
-        this.register(block);
-        this.active = { kind: 'tool', block };
+        turn.addBlock(block);
+        this.activePart = block;
         return;
       }
       case 'finalized': {
         const id = event.id;
         const seq = event.sequence_id || 0;
         this.lastSequence = Math.max(this.lastSequence, seq);
-        if (this.active) {
-          this.active.block.setId(id);
-          if (this.active.kind === 'tool') {
-            this.blocksById.set(id, this.active.block);
+        if (this.activePart) {
+          this.activePart.setId(id);
+          if (this.activePart.kind === 'tool') {
+            this.blocksById.set(id, this.activePart);
             if (this.blockingId === id) this.markBlocking(id);
           }
+          this.closePart();
         }
-        this.finalizeActive();
         return;
       }
       case 'approval_request': {
@@ -473,7 +625,7 @@ export class Timeline {
       case 'tool_call_result': {
         const id = event.original_message_id;
         const block = this.blocksById.get(id) || this.lastTool;
-        block?.setResult(event.result);
+        block?.setResult(event.outcome);
         return;
       }
     }
@@ -506,12 +658,12 @@ export class Timeline {
     id: number | string,
     decision: 'approve' | 'reject',
     comment: string | null,
-    result?: string | null,
+    outcome?: ToolOutcome | null,
   ): void {
     const block = this.blocksById.get(Number(id));
     if (block) {
       block.setDecision(decision, comment);
-      if (result) block.setResult(result);
+      if (outcome) block.setResult(outcome);
     }
     if (this.blockingId === Number(id)) this.blockingId = null;
   }

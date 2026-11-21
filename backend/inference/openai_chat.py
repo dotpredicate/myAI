@@ -26,6 +26,7 @@ from backend.inference.engine import (
 
 from backend.domain import (
     Message,
+    Prompt,
     Thinking,
     ToolCall,
     ApprovalRequest,
@@ -34,7 +35,7 @@ from backend.domain import (
     InferenceProviderConfig,
 )
 from backend.log_config import get_logger
-from backend.tools import Tool
+from backend.tools import RegisteredTool
 
 logger = get_logger(__name__)
 
@@ -93,12 +94,18 @@ def _to_oai_messages(
 
     for message_id, element in context.messages:
         match element:
+            case Prompt():
+                # A prompt opens a new turn: thinking with nothing after it in
+                # the previous turn does not belong to this conversation.
+                pending_thinking = None
+                result.append({'role': 'user', 'content': element.content})
+
             case Thinking():
                 pending_thinking = element.content
 
             case Message():
-                msg: dict[str, object] = {'role': element.author, 'content': element.content}
-                if element.author == 'assistant' and pending_thinking is not None:
+                msg: dict[str, object] = {'role': 'assistant', 'content': element.content}
+                if pending_thinking is not None:
                     if include_reasoning_content:
                         msg['reasoning_content'] = pending_thinking
                     pending_thinking = None
@@ -113,7 +120,9 @@ def _to_oai_messages(
                         'type': 'function',
                         'function': {
                             'name': element.name,
-                            'arguments': element.parameters,
+                            # The protocol wants JSON text; the transcript
+                            # holds the parsed form.
+                            'arguments': element.arguments.model_dump_json() if element.arguments else '{}',
                         },
                     }]
                 }
@@ -127,7 +136,7 @@ def _to_oai_messages(
                     result.append({
                         'role': 'tool',
                         'tool_call_id': str(message_id),
-                        'content': str(element.result)
+                        'content': element.outcome.model_dump_json(),
                     })
 
             case ApprovalRequest():
@@ -138,7 +147,7 @@ def _to_oai_messages(
                 result.append({
                     'role': 'tool',
                     'tool_call_id': str(element.original_message_id),
-                    'content': str(element.result)
+                    'content': element.outcome.model_dump_json(),
                 })
 
             case ToolCallDecision():
@@ -161,7 +170,7 @@ def _to_oai_messages(
     # trailing thinking with no following element is silently dropped
     return result
 
-def _to_oai_tools(tools: list[Tool]) -> list[ChatCompletionToolUnionParam]:
+def _to_oai_tools(tools: list[RegisteredTool]) -> list[ChatCompletionToolUnionParam]:
     return [{"type": "function", "function": cast(FunctionDefinition, t["schema"])} for t in tools]
 
 class DeltaProcessor:

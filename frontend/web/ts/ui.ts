@@ -618,31 +618,6 @@ export function slugifyKey(name: string | number): string {
   return slug || 'repository';
 }
 
-export function prettyJson(text: string | null | undefined): string {
-  if (!text) return '';
-  const trimmed = text.trim();
-  if (!trimmed) return '';
-  try {
-    return JSON.stringify(JSON.parse(trimmed), null, 2);
-  } catch {
-    return text;
-  }
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-export function parseJsonObject(text: string | null | undefined): Record<string, unknown> | null {
-  if (!text?.trim()) return null;
-  try {
-    const parsed: unknown = JSON.parse(text);
-    return isPlainObject(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
 export function plural(count: number, singular: string, pluralForm?: string): string {
   return `${count} ${count === 1 ? singular : (pluralForm || `${singular}s`)}`;
 }

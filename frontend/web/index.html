@@ -9,9 +9,12 @@
   <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
-  <div class="app-shell">
+  <div class="app-shell" id="app-shell">
     <aside class="sidebar" id="sidebar">
-      <h1 class="brand">myAI</h1>
+      <div class="sidebar-head">
+        <h1 class="brand">myAI</h1>
+        <button class="icon-btn sidebar-toggle" id="sidebar-toggle" type="button" title="Collapse sidebar">&#9776;</button>
+      </div>
       <button class="btn btn-primary new-chat" id="new-chat" type="button">+ New conversation</button>
       <div class="conversation-panel">
         <h2>Conversations</h2>

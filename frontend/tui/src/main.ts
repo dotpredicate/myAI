@@ -15,17 +15,38 @@ import {
   type CreateConversationRequest,
   type ProviderModel,
   type ResolveWorkspaceResponse,
+  outcomeText,
   type StreamEvent,
   type ToolCallDecisionResponse,
+  type ToolOutcome,
   type WorkspaceConfig,
   type WorkspaceList,
 } from './wire.ts';
-import { Badge, Box, Heading, Hint, KeyHint, Line, Paragraph, Row, Spacer, Stack, Text } from './components.ts';
-import { applyStreamEvent, applyToolResult, findTool, transcriptFromMessages, truncate, type TranscriptItem } from './transcript.ts';
+import { Badge, Box, Heading, Hint, KeyHint, Line, LineBreak, Paragraph, Row, Spacer, Stack, Text } from './components.ts';
+import { applyStreamEvent, applyToolResult, findTool, transcriptFromMessages, truncate, type ToolItem, type TranscriptItem } from './transcript.ts';
 import { markdownNodes } from './markdown.ts';
 import { Screen, layout, paint, type Line as RenderedLine } from './render.ts';
 import { startInput, type InputHandle, type Key } from './input.ts';
+import {
+  backspaceComposer,
+  caretRowUpDown,
+  caretToLineEnd,
+  caretToLineStart,
+  clearComposer,
+  composerRows,
+  deleteComposer,
+  emptyComposer,
+  insertText,
+  MAX_ROWS,
+  moveCaret,
+  setComposerText,
+  type Composer,
+} from './composer.ts';
 import { handlePickerKey, openPicker, pickerFrame, type Picker } from './picker.ts';
+import { approvalForShortcut } from './approval.ts';
+import { diffNodes, targetNodes } from './diff.ts';
+import { proposalDiff } from '#core/diff';
+import { argumentsText } from '#core/api';
 import { modelChoices, type PickItem } from '#core/models';
 import { resolveServer } from './service.ts';
 import { type VNode } from './h.ts';
@@ -60,7 +81,7 @@ interface State {
   conversationId: number | null;
   title: string | null;
   items: TranscriptItem[];
-  buffer: string;
+  composer: Composer;
   busy: boolean;
   blockingId: number | null;
   lastSequence: number;
@@ -84,7 +105,7 @@ const state: State = {
   conversationId: null,
   title: null,
   items: [],
-  buffer: '',
+  composer: emptyComposer(),
   busy: false,
   blockingId: null,
   lastSequence: 0,
@@ -130,29 +151,62 @@ function rows(): number {
 
 /* ----------------------------------------------------------------- renders */
 
-function renderItems(items: TranscriptItem[]): VNode[] {
-  return items.map((item) => {
-    switch (item.kind) {
-      case 'user':
-        return Box({ title: 'you' }, Paragraph(Text(item.text)));
-      case 'assistant':
-        return Stack(...markdownNodes(item.text || ' '));
-      case 'thinking':
-        return Paragraph(Hint(item.text));
-      case 'tool':
-        return Box(
-          { title: `tool: ${item.name}` },
-          Paragraph(Hint(item.parameters)),
-          item.proposal === null ? null : Paragraph(Hint(truncate(item.proposal, 800))),
-          item.result === null ? null : Paragraph(Text(`result: ${truncate(item.result, 800)}`)),
-        );
-      case 'error':
-        return Paragraph(Text(item.text, { color: 'red' }));
-      case 'notice':
-      default:
-        return Paragraph(Hint(item.text));
-    }
-  });
+/** Text split into nodes at newlines: `Text` flattens control characters. */
+function lines(value: string): VNode[] {
+  const out: VNode[] = [];
+  for (const line of value.split('\n')) {
+    if (out.length > 0) out.push(LineBreak());
+    out.push(Text(line));
+  }
+  return out;
+}
+
+/** An outcome renders as a diff when it proposes one, as text otherwise. */
+function outcomeNodes(outcome: ToolOutcome | null): VNode[] {
+  if (outcome === null) return [];
+  const proposal = proposalDiff(outcome);
+  if (proposal !== null) return [...targetNodes(proposal.target || null), ...diffNodes(proposal.diff)];
+  return [Paragraph(Hint(truncate(outcomeText(outcome), 800)))];
+}
+
+function renderItem(item: TranscriptItem): VNode {
+  switch (item.kind) {
+    case 'user':
+      return Box({ title: 'you' }, Paragraph(...lines(item.text)));
+    case 'assistant':
+      return Stack(...markdownNodes(item.text || ' '));
+    case 'thinking':
+      return Stack(Paragraph(Hint('reasoning')), ...markdownNodes(item.text));
+    case 'tool':
+      return Box(
+        { title: `tool: ${item.name}` },
+        Paragraph(Hint(argumentsText(item.arguments))),
+        ...outcomeNodes(item.outcome),
+        ...outcomeNodes(item.result),
+      );
+    case 'error':
+      return Paragraph(Text(item.text, { color: 'red' }));
+    case 'notice':
+    default:
+      return Paragraph(Hint(item.text));
+  }
+}
+
+const laidOut = new WeakMap<TranscriptItem, { width: number; signature: string; lines: RenderedLine[] }>();
+
+function signatureOf(item: TranscriptItem): string {
+  return item.kind === 'tool'
+    ? `tool\0${item.name}\0${argumentsText(item.arguments)}\0${JSON.stringify(item.outcome)}\0${JSON.stringify(item.result)}`
+    : `${item.kind}\0${item.text}`;
+}
+
+function linesFor(item: TranscriptItem, width: number): RenderedLine[] {
+  const signature = signatureOf(item);
+  const cached = laidOut.get(item);
+  if (cached !== undefined && cached.width === width && cached.signature === signature) return cached.lines;
+  const rendered = layout(renderItem(item), width);
+  laidOut.set(item, { width, signature, lines: rendered });
+  return rendered;
 }
 
 function footer(hints: VNode[]): RenderedLine[] {
@@ -196,7 +250,7 @@ function listScreen(): string[] {
       Text('  '),
       KeyHint('r', 'refresh'),
       Text('  '),
-      KeyHint('q', 'quit'),
+      KeyHint('esc', 'quit'),
     ),
   );
   if (state.error) body.push(Paragraph(Text(state.error, { color: 'red' })));
@@ -236,10 +290,22 @@ function newScreen(): string[] {
   return paint(layout(Stack(...body), width), width, height);
 }
 
+/** What the decision is about: the proposed diff, or the raw call body. */
+function approvalBody(pending: ToolItem | null): VNode {
+  if (pending === null) return Paragraph(Hint('this tool call is not in the transcript'));
+  const proposal = proposalDiff(pending.outcome);
+  if (proposal === null) return Paragraph(Hint(argumentsText(pending.arguments)));
+  return Stack(...targetNodes(proposal.target || null), ...diffNodes(proposal.diff));
+}
+
 function chatScreen(): string[] {
   const width = columns();
   const height = rows();
-  const transcriptHeight = Math.max(3, height - 3);
+  const inputRows = composerRows(state.composer, width, {
+    maxRows: Math.max(1, Math.min(MAX_ROWS, Math.floor(height / 3))),
+    blocked: state.blockingId !== null,
+  });
+  const transcriptHeight = Math.max(3, height - 2 - inputRows.length);
 
   const header = layout(
     Row(
@@ -252,43 +318,36 @@ function chatScreen(): string[] {
     width,
   );
 
-  const items = renderItems(state.items);
-  const tool: VNode[] = items;
+  const transcript: RenderedLine[] = [...layout(Paragraph(Text(' ')), width)];
+  for (const item of state.items) transcript.push(...linesFor(item, width));
   if (state.blockingId !== null) {
     const pending = findTool(state.items, state.blockingId);
-    tool.push(
-      Box(
-        { title: 'approval required' },
-        Paragraph(Text(`tool: ${pending?.name ?? 'unknown'}`, { bold: true })),
-        pending === null ? Paragraph(Hint('this tool call is not in the transcript')) : Paragraph(Hint(pending.parameters)),
-        Paragraph(KeyHint('y', 'approve and continue'), Text('  '), KeyHint('n', 'reject and continue')),
+    transcript.push(
+      ...layout(
+        Box(
+          { title: 'approval required' },
+          Paragraph(Text(`tool: ${pending?.name ?? 'unknown'}`, { bold: true })),
+          approvalBody(pending),
+          Paragraph(KeyHint('y', 'approve and continue'), Text('  '), KeyHint('n', 'reject and continue')),
+        ),
+        width,
       ),
     );
   }
-  const lines = layout(Stack(Paragraph(Text(' ')), ...tool), width);
-  const maxScroll = Math.max(0, lines.length - transcriptHeight);
+  const maxScroll = Math.max(0, transcript.length - transcriptHeight);
   if (state.scroll > maxScroll) state.scroll = maxScroll;
-  const end = lines.length - state.scroll;
+  const end = transcript.length - state.scroll;
   const start = Math.max(0, end - transcriptHeight);
-  const window = lines.slice(start, end);
-
-  const inputRow = layout(
-    Row(
-      Text(state.blockingId === null ? '› ' : '! ', { bold: true, color: state.blockingId === null ? 'cyan' : 'yellow' }),
-      Text(state.buffer, {}),
-      Text(state.busy ? '▌' : ''),
-    ),
-    width,
-  );
+  const window = transcript.slice(start, end);
 
   const hints: VNode[] = state.blockingId !== null
     ? [KeyHint('y/n', 'decide')]
-    : [KeyHint('enter', 'send'), Text('  '), KeyHint('↑↓', 'scroll'), Text('  '), KeyHint('alt-m', 'model'), Text('  '), KeyHint('alt-p', 'provider'), Text('  '), KeyHint('ctrl-c', 'cancel'), Text('  '), KeyHint('esc', 'list')];
+    : [KeyHint('enter', 'send'), Text('  '), KeyHint('shift-enter', 'newline'), Text('  '), KeyHint('\u2191\u2193', 'move'), Text('  '), KeyHint('alt-m', 'model'), Text('  '), KeyHint('esc', 'list'), Text('  '), KeyHint('ctrl-c', 'cancel')];
 
   const out = [
     ...paint(header, width, 1),
     ...paint(window, width, transcriptHeight),
-    ...paint(inputRow, width, 1),
+    ...paint(inputRows, width),
     ...paint(footer(hints), width, 1),
   ];
   return out;
@@ -436,7 +495,7 @@ async function selectAgent(agentIndex: number): Promise<void> {
 /* ------------------------------------------------------------- transcript */
 
 function applyEvent(event: StreamEvent): void {
-  if (event.type === 'message' && event.role === 'assistant' && nextMessageStartsNew) {
+  if (event.type === 'message' && nextMessageStartsNew) {
     state.items.push({ kind: 'assistant', text: '' });
     nextMessageStartsNew = false;
   }
@@ -530,6 +589,7 @@ async function sendPrompt(prompt: string): Promise<void> {
   const model = state.models[state.modelIndex]?.id;
   if (!provider || !model) {
     state.error = 'wybierz provider i model (alt-p / alt-m)';
+    setComposerText(state.composer, prompt);
     render();
     return;
   }
@@ -539,7 +599,7 @@ async function sendPrompt(prompt: string): Promise<void> {
   state.busy = true;
   state.error = '';
   state.blockingId = null;
-  state.buffer = '';
+  clearComposer(state.composer);
   state.scroll = 0;
   state.items.push(optimistic);
   state.status = 'sending…';
@@ -561,7 +621,7 @@ async function sendPrompt(prompt: string): Promise<void> {
     const rejected = error instanceof ApiError && error.status >= 400 && error.status < 500;
     if (rejected) {
       if (state.items[state.items.length - 1] === optimistic) state.items.pop();
-      state.buffer = prompt;
+      setComposerText(state.composer, prompt);
     }
     if (error instanceof ApiError && error.status === 403) {
       state.blockingId = error.blockingMessageId;
@@ -586,7 +646,19 @@ async function sendPrompt(prompt: string): Promise<void> {
   }
 }
 
-async function decideAndContinue(decision: 'approve' | 'reject'): Promise<void> {
+/** Sends what the composer holds; a rejected prompt is put back for editing. */
+function submit(): void {
+  const prompt = state.composer.text;
+  if (!prompt.trim() || state.busy) return;
+  clearComposer(state.composer);
+  if (state.blockingId !== null) {
+    fire(decideAndContinue('reject', prompt.trim()));
+    return;
+  }
+  fire(sendPrompt(prompt));
+}
+
+async function decideAndContinue(decision: 'approve' | 'reject', comment = ''): Promise<void> {
   if (state.conversationId === null || state.blockingId === null || state.busy) return;
   const conversationId = state.conversationId;
   const messageId = state.blockingId;
@@ -598,7 +670,7 @@ async function decideAndContinue(decision: 'approve' | 'reject'): Promise<void> 
   try {
     const response = await api.post<ToolCallDecisionResponse>(
       url(`/api/conversations/${conversationId}/tool_calls/${messageId}/decide`),
-      { decision },
+      { decision, comment },
     );
     if (token !== streamToken) return;
     state.blockingId = null;
@@ -655,7 +727,7 @@ async function openConversation(id: number): Promise<void> {
       const providerIndex = state.providers.indexOf(details.provider_key);
       if (providerIndex >= 0) {
         state.providerIndex = providerIndex;
-        await loadModels(details.model_id ?? undefined);
+        void loadModels(details.model_id ?? undefined);
       }
     }
     if (details.agent_id) {
@@ -739,10 +811,10 @@ function onKey(key: Key): void {
 function onListKey(key: Key): void {
   switch (key.name) {
     case 'ctrl-c':
+    case 'esc':
       shutdown(0);
       return;
     case 'char':
-      if (key.char === 'q') shutdown(0);
       if (key.char === 'n') {
         state.view = 'new';
         state.error = '';
@@ -789,7 +861,7 @@ function onNewKey(key: Key): void {
       state.conversationId = null;
       state.title = null;
       state.items = [];
-      state.buffer = '';
+      clearComposer(state.composer);
       state.blockingId = null;
       state.view = 'chat';
       state.status = '';
@@ -811,43 +883,61 @@ function onNewKey(key: Key): void {
 function onChatKey(key: Key): void {
   if (key.name === 'ctrl-c') {
     if (state.busy) fire(cancelGeneration());
+    else if (state.composer.text !== '') clearComposer(state.composer);
     else {
       state.view = 'list';
       fire(loadConversations());
     }
+    render();
     return;
   }
-  if (state.blockingId !== null) {
-    if (key.name === 'char' && key.char === 'y') fire(decideAndContinue('approve'));
-    if (key.name === 'char' && key.char === 'n') fire(decideAndContinue('reject'));
-    if (key.name === 'esc') {
-      state.view = 'list';
-      fire(loadConversations());
+  if (state.blockingId !== null && key.name === 'char') {
+    const approval = approvalForShortcut(key.char, state.composer.text);
+    if (approval !== null) {
+      fire(decideAndContinue(approval.decision, approval.comment));
+      return;
     }
-    return;
   }
   switch (key.name) {
     case 'esc':
       state.view = 'list';
       fire(loadConversations());
       return;
-    case 'enter': {
-      const prompt = state.buffer;
-      state.buffer = '';
-      if (prompt.trim()) fire(sendPrompt(prompt));
+    case 'enter':
+      submit();
       return;
-    }
+    case 'newline':
+      insertText(state.composer, '\n');
+      break;
+    case 'paste':
+      insertText(state.composer, key.text);
+      break;
     case 'backspace':
-      state.buffer = Array.from(state.buffer).slice(0, -1).join('');
+      backspaceComposer(state.composer);
+      break;
+    case 'delete':
+      deleteComposer(state.composer);
+      break;
+    case 'left':
+      moveCaret(state.composer, -1);
+      break;
+    case 'right':
+      moveCaret(state.composer, 1);
+      break;
+    case 'home':
+      caretToLineStart(state.composer);
+      break;
+    case 'end':
+      caretToLineEnd(state.composer);
       break;
     case 'up':
-      state.scroll += 1;
+      if (!caretRowUpDown(state.composer, -1, columns())) state.scroll += 1;
       break;
     case 'down':
-      state.scroll = Math.max(0, state.scroll - 1);
+      if (!caretRowUpDown(state.composer, 1, columns())) state.scroll = Math.max(0, state.scroll - 1);
       break;
     case 'char':
-      state.buffer += key.char;
+      insertText(state.composer, key.char);
       break;
     case 'alt':
       if (key.char === 'm') openModelPicker();

@@ -73,8 +73,29 @@ class TestConversations(BaseTestCase):
 
         details = (await self.client.get(f'/api/conversations/{conversation_id}')).json()
         self.assertEqual([m['sequence_id'] for m in details['messages']], [1, 2])
+        self.assertEqual(
+            [m['element']['type'] for m in details['messages']],
+            ['prompt', 'message'],
+        )
         self.assertEqual(details['model_id'], 'model-1')
         self.assertEqual(details['workspace_id'], created['workspace_id'])
+
+    async def test_replay_names_the_speaker_by_element(self):
+        self.mock_provider.schedule_stream(Yield(finished=FinishedMessage(content='answer')))
+        conversation_id = (await self._create_conversation())['id']
+        self.assertEqual((await self._prompt(conversation_id, 'question')).status_code, 200)
+
+        res = await self.client.get(f'/api/conversations/{conversation_id}/stream?after_sequence_id=0')
+        events = await _read_ndjson_response(res)
+
+        self.assertEqual(
+            [(event['type'], event.get('content')) for event in events if 'content' in event],
+            [('prompt', 'question'), ('message', 'answer')],
+        )
+        self.assertEqual(
+            [event['sequence_id'] for event in events if event['type'] == 'finalized'],
+            [1, 2],
+        )
 
     async def test_prompt_requires_model(self):
         conversation_id = (await self._create_conversation())['id']
@@ -126,7 +147,7 @@ class TestConversations(BaseTestCase):
         )
         self.assertEqual(decided.status_code, 200, decided.text)
         self.assertTrue(decided.json()['executed'])
-        self.assertEqual(json.loads(decided.json()['result'])['status'], 'applied')
+        self.assertEqual(decided.json()['result'], {'type': 'success', 'tool': 'replace_file'})
         self.assertEqual(target.read_text(), 'new')
 
         continued = await self.client.post(f'/api/conversations/{conversation_id}/continue')
@@ -200,11 +221,13 @@ class TestConversations(BaseTestCase):
         events = await _read_ndjson_response(res)
         tool_events = [event for event in events if event['type'] == 'tool_call']
         self.assertEqual(len(tool_events), 1)
-        result = json.loads(tool_events[0]['result'])
-        self.assertEqual(result['agent'], 'child_agent')
-        self.assertEqual(result['response'], 'child answer')
+        outcome = tool_events[0]['outcome']
+        self.assertEqual(outcome['type'], 'success')
+        self.assertEqual(outcome['tool'], 'spawn_agent')
+        self.assertEqual(outcome['agent'], 'child_agent')
+        self.assertEqual(outcome['response'], 'child answer')
 
-        child_details = (await self.client.get(f"/api/conversations/{result['conversation_id']}")).json()
+        child_details = (await self.client.get(f"/api/conversations/{outcome['conversation_id']}")).json()
         self.assertEqual(child_details['model_id'], 'model-1')
         self.assertEqual(child_details['workspace_id'], (await self.client.get(f'/api/conversations/{conversation_id}')).json()['workspace_id'])
 

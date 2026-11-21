@@ -30,9 +30,11 @@ class TestHybridFlow(BaseTestCase):
         tool_calls = [m for m in conv["messages"] if m["element"]["type"] == "tool_call"]
         self.assertGreaterEqual(len(tool_calls), 1)
 
-        result = json.loads(tool_calls[-1]["element"]["result"])
-        self.assertEqual(result["returncode"], 0)
-        self.assertIn("hello-world", result["stdout"])
+        outcome = tool_calls[-1]["element"]["outcome"]
+        self.assertEqual(outcome["type"], "success")
+        self.assertEqual(outcome["tool"], "bash")
+        self.assertEqual(outcome["returncode"], 0)
+        self.assertIn("hello-world", outcome["stdout"])
 
     async def test_mock_model_parameter_passing(self):
         """Verify mock parameters are correctly passed to the real tool."""
@@ -50,8 +52,8 @@ class TestHybridFlow(BaseTestCase):
         conv = (await self.client.get(f"/api/conversations/{conv_id}")).json()
 
         tool_calls = [m for m in conv["messages"] if m["element"]["type"] == "tool_call"]
-        result = json.loads(tool_calls[-1]["element"]["result"])
-        self.assertEqual(result["stdout"].strip(), "arg1 arg2")
+        outcome = tool_calls[-1]["element"]["outcome"]
+        self.assertEqual(outcome["stdout"].strip(), "arg1 arg2")
 
     async def test_mock_model_triggers_replace_file(self):
         """Mock issues replace_file -> system generates a real proposal."""
@@ -83,9 +85,11 @@ class TestHybridFlow(BaseTestCase):
         tool_calls = [m for m in conv["messages"] if m["element"]["type"] == "tool_call"]
         self.assertGreaterEqual(len(tool_calls), 1)
 
-        result = json.loads(tool_calls[-1]["element"]["result"])
-        self.assertEqual(result["type"], "replace_proposal")
-        self.assertEqual(result["status"], "pending")
+        outcome = tool_calls[-1]["element"]["outcome"]
+        self.assertEqual(outcome["type"], "proposal")
+        self.assertEqual(outcome["format"], "replace")
+        self.assertEqual(outcome["target"], f"/repositories/{repo_name}/target.txt")
+        self.assertIn("new content", outcome["diff"])
 
         approval_requests = [m for m in conv["messages"] if m["element"]["type"] == "approval_request"]
         self.assertEqual(len(approval_requests), 1)

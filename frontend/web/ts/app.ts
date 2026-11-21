@@ -1,6 +1,6 @@
 import {
   el, clear, loadingState, errorState, notify, confirmAction,
-  initNotifications, parseRoute, onRoute, navigate, readString, writeValue,
+  initNotifications, parseRoute, onRoute, navigate, readString, readValue, writeValue,
   conversationLabel, messageOf, type MountOptions, type Route, type ScreenName,
 } from './ui.js';
 import { api, type ConversationSummary, type DeleteResponse } from './core/api.js';
@@ -30,6 +30,8 @@ function requireElement(id: string): HTMLElement {
 const main = requireElement('main');
 const conversationList = requireElement('conversation-list');
 const newChatButton = requireElement('new-chat');
+const shell = requireElement('app-shell');
+const sidebarToggle = requireElement('sidebar-toggle');
 
 const workspaces: Record<ScreenName, ScreenMount> = {
   chat: mountChat,
@@ -149,6 +151,20 @@ async function deleteConversation(conversation: ConversationSummary): Promise<vo
     notify(messageOf(error) || 'Could not delete the conversation.', { level: 'error' });
   }
 }
+
+const SIDEBAR_KEY = 'sidebar.collapsed';
+
+function setSidebarCollapsed(collapsed: boolean): void {
+  shell.dataset.sidebar = collapsed ? 'collapsed' : 'expanded';
+  sidebarToggle.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+  writeValue(SIDEBAR_KEY, collapsed);
+}
+
+sidebarToggle.addEventListener('click', () => {
+  setSidebarCollapsed(shell.dataset.sidebar !== 'collapsed');
+});
+
+setSidebarCollapsed(readValue<boolean>(SIDEBAR_KEY, false));
 
 newChatButton.addEventListener('click', () => {
   if (window.location.hash === '#/chat' && activeScreen?.newChat) {

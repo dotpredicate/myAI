@@ -51,8 +51,8 @@ class TestInference(BaseTestCase):
             Yield(finished=FinishedMessage(content="hello world")),
         )
         from backend.inference.engine import ChatContext
-        from backend.domain import Message
-        context = ChatContext(messages=[(1, Message(author="user", content="hi"))], scopes=[], tools=[], instructions="")
+        from backend.domain import Prompt
+        context = ChatContext(messages=[(1, Prompt(content="hi"))], scopes=[], tools=[], instructions="")
         async for delta, finished in provider.run_chat_completion_stream("test_model", {}, context):
             if finished is not None:
                 self.assertIsInstance(finished, FinishedMessage)

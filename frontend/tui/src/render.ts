@@ -187,6 +187,32 @@ function wrapSegments(segments: Segment[], max: number): Line[] {
   return lines;
 }
 
+/**
+ * Wraps at the column edge like `white-space: pre-wrap`: every character is
+ * kept, indentation included. `span` and `text` truncate instead, which is
+ * right for a label and wrong for a diff.
+ */
+function preLines(segments: Segment[], max: number): Line[] {
+  const limit = Math.max(2, max);
+  const lines: Line[] = [];
+  let line: Line = [];
+  for (const seg of segments) {
+    let rest = seg.text;
+    while (rest !== '') {
+      const take = truncateToWidth(rest, limit - lineWidth(line));
+      if (take === '') {
+        lines.push(line);
+        line = [];
+        continue;
+      }
+      line.push({ text: take, style: seg.style });
+      rest = rest.slice(take.length);
+    }
+  }
+  lines.push(line);
+  return lines;
+}
+
 function isSpace(code: number): boolean {
   return code === 0x20 || code === 0x09;
 }
@@ -303,6 +329,8 @@ function layoutNode(node: VNode, maxWidth: number): Line[] {
       return [[]];
     case 'p':
       return wrapSegments(inlineOf(node), maxWidth);
+    case 'pre':
+      return preLines(inlineOf(node), maxWidth);
     case 'span':
       return [truncateLine(inlineOf(node), maxWidth)];
     case 'text':
@@ -332,7 +360,9 @@ export function paintLine(line: Line, width: number): string {
     out += sgr(seg.style) + seg.text;
     used += textWidth(seg.text);
   }
-  if (used < width) out += ' '.repeat(width - used);
+  // Padding must not inherit the last style: a reversed caret at the end of a
+  // row would otherwise paint the rest of the row in the same colours.
+  if (used < width) out += sgr(plain) + ' '.repeat(width - used);
   return `${out}\x1b[0m`;
 }
 
@@ -367,13 +397,15 @@ export class Screen {
     if (this.active) return;
     this.active = true;
     // Full-width rows would otherwise trip autowrap on the last column.
-    this.out.write('\x1b[?1049h\x1b[?25l\x1b[?7l');
+    // Bracketed paste keeps a pasted prompt from arriving as key presses, and
+    // modifyOtherKeys lets shift+enter arrive as a sequence of its own.
+    this.out.write('\x1b[?1049h\x1b[?2004h\x1b[>4;2m\x1b[?25l\x1b[?7l');
   }
 
   leave(): void {
     if (!this.active) return;
     this.active = false;
-    this.out.write('\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l');
+    this.out.write('\x1b[0m\x1b[>4;0m\x1b[?2004l\x1b[?7h\x1b[?25h\x1b[?1049l');
   }
 
   draw(rows: string[]): void {

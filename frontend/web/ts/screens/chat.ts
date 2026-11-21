@@ -18,10 +18,11 @@ import type {
 import { Timeline, type ToolBlock } from './timeline.js';
 import { Row, Grid, Heading, InlineHint, Button, TextArea, Select, Option, Spacer } from '../components.js';
 
-export function mount(route: Route, _options: MountOptions = {}) {
+export function mount(route: Route, options: MountOptions = {}) {
   const root = el('section', { class: 'chat-screen' });
   const title = Heading(1, 'Conversation');
-  const top = el('header', { class: 'chat-top' }, title);
+  const liveStatus = InlineHint();
+  const top = el('header', { class: 'chat-top' }, Row(title, Spacer(), liveStatus));
   const history = el('div', { class: 'chat-history' });
 
   const workspaceSelect = Select({});
@@ -45,17 +46,17 @@ export function mount(route: Route, _options: MountOptions = {}) {
   const textarea = TextArea({ rows: 3, placeholder: 'Ask anything…' });
   const sendButton = Button('Send', { variant: 'primary' });
   const stopButton = Button('Stop', { variant: 'quiet' });
-  const liveStatus = InlineHint();
   const alert = el('div', { class: 'notice notice--error row', hidden: true });
-  const composer = el('div', { class: 'composer' },
-    alert,
-    selectRow,
+  const promptBox = el('div', { class: 'prompt-box' },
     textarea,
-    Row(liveStatus, Spacer(), stopButton, sendButton),
+    Row(Spacer(), stopButton, sendButton),
   );
+  const promptArea = el('div', { class: 'chat-prompt' }, alert, promptBox);
+  const composer = el('div', { class: 'composer' }, selectRow);
 
   root.appendChild(top);
   root.appendChild(history);
+  root.appendChild(promptArea);
   root.appendChild(composer);
 
   let destroyed = false;
@@ -71,6 +72,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
   let generating = false;
   let streamToken = 0;
   let controller: AbortController | null = null;
+  let followEnd = true;
 
   const timeline = new Timeline(history, {
     onBlockingChange: (id) => {
@@ -106,10 +108,12 @@ export function mount(route: Route, _options: MountOptions = {}) {
   function updateComposerState(): void {
     const blocking = timeline.blockingId !== null;
     const hasWorkspace = workspaceId !== null;
-    const canSend = hasWorkspace && !generating && !blocking && Boolean(providerKey && modelId) && textarea.value.trim().length > 0;
+    const canSend = hasWorkspace && !generating && Boolean(providerKey && modelId) && textarea.value.trim().length > 0;
+    const wasDisabled = textarea.disabled;
     sendButton.disabled = !canSend;
     stopButton.disabled = !generating;
-    textarea.disabled = generating || blocking;
+    textarea.disabled = generating;
+    if (wasDisabled && !textarea.disabled && !destroyed) textarea.focus();
     // A conversation is bound to its workspace when it is created.
     workspaceSelect.disabled = generating || blocking || conversationId !== null;
     agentSelect.disabled = generating || blocking;
@@ -227,14 +231,26 @@ export function mount(route: Route, _options: MountOptions = {}) {
     generating = false;
     controller = null;
     updateComposerState();
-    announce(timeline.blockingId !== null ? 'Waiting for approval.' : 'Response complete.');
+    announce(timeline.blockingId !== null ? 'Waiting for approval.' : '');
   }
 
   async function sendPrompt(): Promise<void> {
     const prompt = textarea.value.trim();
-    if (!prompt || generating || workspaceId === null) return;
+    if (!prompt || generating) return;
+    if (workspaceId === null) {
+      showError('Choose a workspace.');
+      return;
+    }
     if (!providerKey || !modelId) {
       showError('Choose a provider and model.');
+      return;
+    }
+    const blockingId = timeline.blockingId;
+    if (blockingId !== null) {
+      textarea.value = '';
+      updateComposerState();
+      announce('Declining the tool call\u2026');
+      void decide(blockingId, 'reject', prompt);
       return;
     }
     showError('');
@@ -243,6 +259,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     updateComposerState();
     announce('Sending…');
     timeline.addUserMessage(prompt);
+    followEnd = true;
     textarea.value = '';
 
     try {
@@ -257,6 +274,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
         details = created;
         setConversationInUrl(created.id);
         updateTitle();
+        options.onConversationsChanged?.();
       }
       controller = new AbortController();
       const stream = await openNdjson<StreamEvent>(`/api/conversations/${conversationId}/prompt`, {
@@ -308,6 +326,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
 
   async function loadConversation(): Promise<void> {
     if (!conversationId) return;
+    followEnd = true;
     clear(history);
     timeline.reset();
     try {
@@ -320,10 +339,13 @@ export function mount(route: Route, _options: MountOptions = {}) {
         agentKey = loaded.agent_id;
         agentSelect.value = agentKey;
       }
-      if (loaded.provider_key) {
+      if (loaded.provider_key && loaded.provider_key !== providerKey) {
         providerKey = loaded.provider_key;
         providerSelect.value = providerKey;
-        await loadModels(loaded.model_id ?? undefined);
+        void loadModels(loaded.model_id ?? undefined);
+      } else if (loaded.model_id) {
+        modelId = loaded.model_id;
+        modelPicker.setValue(modelId);
       }
       for (const record of loaded.messages) timeline.addStored(record);
       timeline.setBlocking(loaded.blocking_message_id);
@@ -366,9 +388,17 @@ export function mount(route: Route, _options: MountOptions = {}) {
     void loadModels();
   });
 
+  history.addEventListener('scroll', () => {
+    followEnd = history.scrollHeight - history.scrollTop - history.clientHeight < 80;
+  });
+  const follow = new MutationObserver(() => {
+    if (followEnd) history.scrollTop = history.scrollHeight;
+  });
+  follow.observe(history, { childList: true, subtree: true, characterData: true });
+
   textarea.addEventListener('input', updateComposerState);
   textarea.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void sendPrompt();
     }
@@ -396,6 +426,7 @@ export function mount(route: Route, _options: MountOptions = {}) {
     element: root,
     destroy(): void {
       destroyed = true;
+      follow.disconnect();
       controller?.abort();
     },
     focus(): void {

@@ -40,6 +40,7 @@ export type Tag =
   | 'row'
   | 'stack'
   | 'p'
+  | 'pre'
   | 'span'
   | 'text'
   | 'spacer'

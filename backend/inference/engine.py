@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Any, AsyncIterator, Optional, TypeAlias, Union
 
 from backend.domain import ConversationElement, ScopeSpec
-from backend.tools import Tool
+from backend.tools import RegisteredTool
 
 @dataclass(frozen=True)
 class StreamingMessage:
@@ -72,7 +72,7 @@ class EmbeddingProvider(ABC):
 class ChatContext:
     messages: list[tuple[int, ConversationElement]]
     scopes: list[ScopeSpec]
-    tools: list[Tool]
+    tools: list[RegisteredTool]
     instructions: Optional[str]
 
 

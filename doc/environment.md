@@ -19,6 +19,9 @@ Shell commands run as `bash` inside bubblewrap with a clean environment:
 The host filesystem (including home directories), the network, GPUs and audio
 devices are not available.
 
+A command's processes die with it: nothing started in the background survives
+into the next command.
+
 ## Tools
 
 - `bash` - run a shell command in the sandbox.

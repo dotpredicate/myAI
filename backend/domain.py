@@ -1,5 +1,5 @@
-from typing import Any, Literal, Optional, Union, List
-from pydantic import BaseModel, ConfigDict, TypeAdapter, field_validator
+from typing import Annotated, Any, Literal, Optional, Union, List
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, field_validator
 
 
 def normalize_scope_name(name: str) -> str:
@@ -169,20 +169,178 @@ class InferenceProviderUpdate(_InferenceProviderRules, BaseModel):
 
 LLAMA_CPP_PROVIDER_KEY = 'llama.cpp'
 
+class Prompt(BaseModel):
+    """The user's turn: what everything after it answers."""
+
+    type: Literal['prompt'] = 'prompt'
+    content: str
+
 class Message(BaseModel):
+    """What the assistant said."""
+
     type: Literal['message'] = 'message'
-    author: Literal['user'] | Literal['assistant']
     content: str
 
 class Thinking(BaseModel):
     type: Literal['thinking'] = 'thinking'
     content: str
 
+class BashInput(BaseModel):
+    """What the model passes to `bash`."""
+
+    command: str = Field(description='Command to execute')
+
+
+class SearchInput(BaseModel):
+    """What the model passes to `search`."""
+
+    query: str = Field(
+        description=(
+            'Query or keywords to search for. Exact identifiers are matched '
+            'semantically, not literally.'
+        ),
+    )
+    top_k: int = Field(5, ge=1, le=20, description='Number of documents to return')
+
+
+class SpawnAgentInput(BaseModel):
+    """What the model passes to `spawn_agent`."""
+
+    agent_symbol: str = Field(description='Internal name of the agent to spawn.')
+    prompt: str = Field(description='Self-contained task for the spawned agent.')
+
+
+class ReplaceFileInput(BaseModel):
+    """What the model passes to `replace_file`."""
+
+    target: str = Field(
+        description=(
+            "Absolute path to target file in repositories folder "
+            "(e.g., '/repositories/foo/bar.txt')"
+        ),
+    )
+    source: str = Field(
+        description=(
+            "Absolute path to source file in workspace folder "
+            "(e.g., '/workspace/baz/qux.txt')"
+        ),
+    )
+
+
+class ApplyPatchInput(BaseModel):
+    """What the model passes to `apply_patch`."""
+
+    target: str = Field(
+        description=(
+            "Absolute path to target file in repositories folder "
+            "(e.g., '/repositories/foo/bar.txt')"
+        ),
+    )
+    diff_path: str = Field(
+        description=(
+            "Absolute path to diff file in workspace folder "
+            "(e.g., '/workspace/patch.diff')"
+        ),
+    )
+
+
+ToolArguments = Union[
+    BashInput,
+    SearchInput,
+    SpawnAgentInput,
+    ReplaceFileInput,
+    ApplyPatchInput,
+]
+
+
+class ToolError(BaseModel):
+    """The only way a tool fails: a message the model can act on."""
+
+    type: Literal['error'] = 'error'
+    message: str
+
+
+class ToolProposal(BaseModel):
+    """A change a tool will make once the user approves it."""
+
+    type: Literal['proposal'] = 'proposal'
+    format: Literal['replace', 'patch']
+    target: str
+    source: str
+    diff: str
+
+
+class BashSuccess(BaseModel):
+    type: Literal['success'] = 'success'
+    tool: Literal['bash'] = 'bash'
+    # None when the command was killed or timed out instead of exiting.
+    returncode: Optional[int]
+    stdout: str
+    stderr: str
+
+
+class SearchHit(BaseModel):
+    document_id: int
+    file_path: str
+    chunk_index: int
+    cosine_distance: float
+    text: str
+
+
+class SearchSuccess(BaseModel):
+    type: Literal['success'] = 'success'
+    tool: Literal['search'] = 'search'
+    results: List[SearchHit]
+
+
+class SpawnAgentSuccess(BaseModel):
+    type: Literal['success'] = 'success'
+    tool: Literal['spawn_agent'] = 'spawn_agent'
+    conversation_id: int
+    agent: str
+    response: str
+    blocked: bool
+    blocking_message_id: Optional[int]
+
+
+class ReplaceFileSuccess(BaseModel):
+    """A change that was applied; there is nothing else to report."""
+
+    type: Literal['success'] = 'success'
+    tool: Literal['replace_file'] = 'replace_file'
+
+
+class ApplyPatchSuccess(BaseModel):
+    """A change that was applied; there is nothing else to report."""
+
+    type: Literal['success'] = 'success'
+    tool: Literal['apply_patch'] = 'apply_patch'
+
+
+ToolSuccess = Annotated[
+    Union[
+        BashSuccess,
+        SearchSuccess,
+        SpawnAgentSuccess,
+        ReplaceFileSuccess,
+        ApplyPatchSuccess,
+    ],
+    Field(discriminator='tool'),
+]
+ToolOutcome = Annotated[
+    Union[ToolSuccess, ToolError, ToolProposal],
+    Field(discriminator='type'),
+]
+
+
 class ToolCall(BaseModel):
     type: Literal['tool_call'] = 'tool_call'
     name: str
-    parameters: str
-    result: str
+    # None when the model sent arguments the tool did not accept; the reason
+    # is the outcome next to them.
+    arguments: Optional[ToolArguments]
+    outcome: ToolOutcome
+
 
 class ApprovalRequest(BaseModel):
     type: Literal['approval_request'] = 'approval_request'
@@ -191,7 +349,7 @@ class ApprovalRequest(BaseModel):
 class ToolCallResult(BaseModel):
     type: Literal['tool_call_result'] = 'tool_call_result'
     original_message_id: int
-    result: str
+    outcome: ToolOutcome
 
 class ToolCallDecision(BaseModel):
     type: Literal['tool_call_decision'] = 'tool_call_decision'
@@ -200,6 +358,7 @@ class ToolCallDecision(BaseModel):
     comment: Optional[str] = None
 
 ConversationElement = Union[
+    Prompt,
     Message, 
     Thinking, 
     ToolCall,

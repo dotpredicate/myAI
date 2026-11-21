@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 from backend import paths
@@ -30,6 +31,14 @@ class TestSystem(BaseTestCase):
         result = await run_sandboxed_command("printf 'line1\\nline2\\n'", scopes=[], workspace_id=1, conversation_id=1)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "line1\nline2\n")
+
+    async def test_background_child_does_not_outlive_the_command(self):
+        started = time.monotonic()
+        result = await run_sandboxed_command(
+            "sleep 300 & echo started", scopes=[], workspace_id=1, conversation_id=1
+        )
+        self.assertEqual(result.stdout.strip(), "started")
+        self.assertLess(time.monotonic() - started, 10)
 
     async def test_run_sandboxed_command_with_scopes(self):
         repo = await self._helper_create_repo("test_repo", self._repo_dir.name)
