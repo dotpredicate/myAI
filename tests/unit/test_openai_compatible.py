@@ -1,8 +1,25 @@
+import json
 import unittest
 from types import SimpleNamespace
 from typing import Any, cast
 
-from backend.domain import InferenceProviderConfig, Message, Prompt, ScopeSpec, Thinking
+from backend.domain import (
+    ApprovalRequest,
+    BashInput,
+    BashSuccess,
+    InferenceProviderConfig,
+    Message,
+    Prompt,
+    ScopeSpec,
+    SearchHit,
+    SearchSuccess,
+    SpawnAgentSuccess,
+    Thinking,
+    ToolCall,
+    ToolCallDecision,
+    ToolError,
+    ToolProposal,
+)
 from backend.inference.engine import ChatContext, FinishedMessage, FinishedThinking, FinishedToolCall, StreamingMessage
 from backend.inference.openai_chat import DeltaProcessor, OpenAICompatibleProvider, _build_system_prompt, _to_oai_messages
 
@@ -404,6 +421,94 @@ class TestMessageConversion(unittest.TestCase):
 
         self.assertNotIn("reasoning_content", converted[2])
         self.assertEqual([message["role"] for message in converted], ["system", "user", "user"])
+
+    def test_tool_arguments_are_json_text(self):
+        context = _context([
+            (7, ToolCall(
+                name="bash",
+                arguments=BashInput(command="ls"),
+                outcome=BashSuccess(returncode=0, stdout="ok", stderr=""),
+            )),
+        ])
+
+        converted = _to_oai_messages(context)
+        call = cast(dict[str, Any], converted[1])["tool_calls"][0]
+
+        self.assertIsInstance(call["function"]["arguments"], str)
+        self.assertEqual(json.loads(call["function"]["arguments"]), {"command": "ls"})
+
+    # The transcript keeps the typed outcome; the model should read it as text
+    # instead of one JSON envelope per call.
+    def test_bash_result_is_rendered_as_text(self):
+        context = _context([
+            (7, ToolCall(
+                name="bash",
+                arguments=BashInput(command="false"),
+                outcome=BashSuccess(returncode=1, stdout="before\n", stderr="boom\n"),
+            )),
+        ])
+
+        content = cast(dict[str, Any], _to_oai_messages(context)[2])["content"]
+
+        self.assertEqual(content, "exit code: 1\nstdout:\nbefore\nstderr:\nboom")
+
+    def test_search_results_are_rendered_as_text(self):
+        context = _context([
+            (7, ToolCall(
+                name="search",
+                arguments=None,
+                outcome=SearchSuccess(results=[
+                    SearchHit(document_id=1, file_path="backend/tools.py", chunk_index=3, cosine_distance=0.21, text="def run_tool_call(...)"),
+                ]),
+            )),
+        ])
+
+        content = cast(dict[str, Any], _to_oai_messages(context)[2])["content"]
+
+        self.assertEqual(content, "1. backend/tools.py (chunk 3, distance 0.21)\ndef run_tool_call(...)")
+
+    def test_error_and_rejection_are_text(self):
+        error_context = _context([
+            (7, ToolCall(
+                name="bash",
+                arguments=None,
+                outcome=ToolError(message="Invalid arguments for bash: command: Field required"),
+            )),
+        ])
+        rejection_context = _context([
+            (7, ToolCall(
+                name="apply_patch",
+                arguments=None,
+                outcome=ToolProposal(format="patch", target="/repositories/a/x.py", source="/workspace/d.diff", diff=""),
+            )),
+            (8, ApprovalRequest(original_message_id=7)),
+            (9, ToolCallDecision(original_message_id=7, decision="reject", comment="too risky")),
+        ])
+
+        error_content = cast(dict[str, Any], _to_oai_messages(error_context)[2])["content"]
+        rejection_content = cast(dict[str, Any], _to_oai_messages(rejection_context)[2])["content"]
+
+        self.assertEqual(error_content, "Error: Invalid arguments for bash: command: Field required")
+        self.assertEqual(rejection_content, "User rejected this tool call with comment: too risky")
+
+    def test_spawn_agent_returns_the_child_answer_as_text(self):
+        context = _context([
+            (7, ToolCall(
+                name="spawn_agent",
+                arguments=None,
+                outcome=SpawnAgentSuccess(
+                    conversation_id=42,
+                    agent="reviewer",
+                    response="Looks fine.\n",
+                    blocked=False,
+                    blocking_message_id=None,
+                ),
+            )),
+        ])
+
+        content = cast(dict[str, Any], _to_oai_messages(context)[2])["content"]
+
+        self.assertEqual(content, "Looks fine.")
 
 
 class TestSystemPrompt(unittest.TestCase):

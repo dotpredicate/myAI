@@ -25,13 +25,22 @@ from backend.inference.engine import (
 )
 
 from backend.domain import (
+    ApplyPatchSuccess,
+    BashSuccess,
     Message,
     Prompt,
+    ReplaceFileSuccess,
+    SearchSuccess,
+    SpawnAgentSuccess,
     Thinking,
+    ToolArguments,
     ToolCall,
     ApprovalRequest,
     ToolCallResult,
     ToolCallDecision,
+    ToolError,
+    ToolOutcome,
+    ToolProposal,
     InferenceProviderConfig,
 )
 from backend.log_config import get_logger
@@ -76,6 +85,45 @@ def _build_system_prompt(context: ChatContext, today: Optional[datetime.date] = 
         sections.append(f"Agent instructions:\n{context.instructions.strip()}")
 
     return "\n\n".join(sections)
+
+
+def _tool_message(call_id: object, content: str) -> ChatCompletionMessageParam:
+    return {'role': 'tool', 'tool_call_id': str(call_id), 'content': content}
+
+
+def _render_arguments(arguments: Optional[ToolArguments]) -> str:
+    return arguments.model_dump_json() if arguments else '{}'
+
+
+def _render_outcome(outcome: ToolOutcome) -> str:
+    match outcome:
+        case BashSuccess(returncode=returncode, stdout=stdout, stderr=stderr):
+            status = 'killed or timed out' if returncode is None else str(returncode)
+            lines = [f'exit code: {status}']
+            for label, text in (('stdout', stdout), ('stderr', stderr)):
+                if text.strip():
+                    lines += [f'{label}:', text.rstrip('\n')]
+            return '\n'.join(lines)
+        case SearchSuccess(results=results):
+            if not results:
+                return 'No documents matched.'
+            return '\n\n'.join(
+                f'{rank}. {hit.file_path} (chunk {hit.chunk_index}, distance {hit.cosine_distance:.2f})'
+                f'\n{hit.text}'
+                for rank, hit in enumerate(results, start=1)
+            )
+        case SpawnAgentSuccess(response=response, blocked=blocked):
+            if blocked:
+                return 'The spawned agent is waiting for user approval and has no answer yet.'
+            return response.strip() or 'The spawned agent returned no message.'
+        case ReplaceFileSuccess():
+            return 'File replaced.'
+        case ApplyPatchSuccess():
+            return 'Patch applied.'
+        case ToolError(message=message):
+            return f'Error: {message}'
+        case ToolProposal(diff=diff):
+            return diff
 
 
 def _to_oai_messages(
@@ -128,9 +176,7 @@ def _to_oai_messages(
                         'type': 'function',
                         'function': {
                             'name': element.name,
-                            # The protocol wants JSON text; the transcript
-                            # holds the parsed form.
-                            'arguments': element.arguments.model_dump_json() if element.arguments else '{}',
+                            'arguments': _render_arguments(element.arguments),
                         },
                     }]
                 }
@@ -141,22 +187,14 @@ def _to_oai_messages(
                     pending_thinking = None
                 result.append(cast(ChatCompletionMessageParam, tc))
                 if message_id not in blocked_ids:
-                    result.append({
-                        'role': 'tool',
-                        'tool_call_id': str(message_id),
-                        'content': element.outcome.model_dump_json(),
-                    })
+                    result.append(_tool_message(message_id, _render_outcome(element.outcome)))
 
             case ApprovalRequest():
                 pass
 
             case ToolCallResult():
                 pending_thinking = None  # drop trailing thinking, defensive
-                result.append({
-                    'role': 'tool',
-                    'tool_call_id': str(element.original_message_id),
-                    'content': element.outcome.model_dump_json(),
-                })
+                result.append(_tool_message(element.original_message_id, _render_outcome(element.outcome)))
 
             case ToolCallDecision():
                 if element.decision == 'reject':
@@ -166,11 +204,7 @@ def _to_oai_messages(
                         content = f"User rejected this tool call with comment: {comment_text}".strip()
                     else:
                         content = "User rejected this tool call"
-                    result.append({
-                        'role': 'tool',
-                        'tool_call_id': str(element.original_message_id),
-                        'content': content
-                    })
+                    result.append(_tool_message(element.original_message_id, content))
                 else:
                     # approve decisions: explicitly ignored, drop pending thinking if any
                     pending_thinking = None
