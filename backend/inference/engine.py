@@ -74,6 +74,7 @@ class ChatContext:
     scopes: list[ScopeSpec]
     tools: list[RegisteredTool]
     instructions: Optional[str]
+    workspace_name: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -295,6 +295,33 @@ class TestTools(BaseTestCase):
         self.assertEqual(outcome["source"], diff_vpath)
         self.assertIn("+Hello, Bob!", outcome["diff"])
 
+    async def test_privileged_patch_leaves_no_orig_file(self):
+        repo_name = "test_diff_no_orig"
+        await self.client.post("/api/repositories", json={
+            "display_name": "Test Diff No Orig",
+            "internal_name": repo_name,
+            "path": self._repo_dir.name,
+        })
+        target = Path(self._repo_dir.name) / "note.txt"
+        target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+        # The trailing context does not match, so the hunk can only apply with
+        # fuzz - which is when `patch` leaves `note.txt.orig` behind.
+        (self.workspace_dir / "patch.diff").write_text(
+            "--- note.txt\n+++ note.txt\n@@ -1,3 +1,3 @@\n alpha\n-beta\n+BETA\n nope\n",
+            encoding="utf-8",
+        )
+
+        outcome = await self.call(
+            "apply_patch",
+            {"target": f"/repositories/{repo_name}/note.txt", "diff_path": "/workspace/patch.diff"},
+            scopes=[ScopeSpec(internal_name=repo_name)],
+            privileged=True,
+        )
+
+        self.assertEqual(outcome["type"], "success")
+        self.assertEqual(target.read_text(encoding="utf-8"), "alpha\nBETA\ngamma\n")
+        self.assertFalse((Path(self._repo_dir.name) / "note.txt.orig").exists())
+
     async def test_run_propose_diff_target_not_found(self):
         repo_name = "test_diff_notfound"
         await self.client.post("/api/repositories", json={

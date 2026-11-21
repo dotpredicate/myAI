@@ -80,6 +80,13 @@ async def get_workspace(workspace_id: int) -> Optional[WorkspaceConfig]:
         return await _workspace_from_row(cur, row)
 
 
+async def get_workspace_name(workspace_id: int) -> Optional[str]:
+    async with database.mk_conn() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT name FROM workspaces WHERE id = %s", (workspace_id,))
+        row = await cur.fetchone()
+        return row[0] if row and row[0] is not None else None
+
+
 async def _find_repository(cur, canonical_path: str):
     await cur.execute(
         "SELECT id, display_name, internal_name, repo_type, path FROM repositories WHERE path = %s",

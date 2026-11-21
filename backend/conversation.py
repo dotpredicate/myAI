@@ -41,6 +41,7 @@ from backend.log_config import get_logger
 from backend.database import AsyncConnection, mk_conn
 from backend.agents import get_agent_by_name
 from backend.scopes import resolve_workspace_scopes
+from backend.workspaces import get_workspace_name
 
 logger = get_logger(__name__)
 
@@ -535,6 +536,7 @@ async def prompt_conversation(
         raise ValueError('conversation has no workspace')
     agent_id = config['agent_id']
     agent = await get_agent_by_name(agent_id) if agent_id else None
+    workspace_name = await get_workspace_name(workspace_id)
     scopes = await resolve_workspace_scopes(workspace_id)
     functions = tools_for_agent(agent)
     messages = await get_messages_for_continuation(conv_id)
@@ -559,6 +561,7 @@ async def prompt_conversation(
             scopes=scopes,
             tools=functions,
             instructions=agent.instructions if agent else None,
+            workspace_name=workspace_name,
         )
         chat_gen_inner = provider.run_chat_completion_stream(model_id, inference_config, chat_context)
         run_next_loop = False

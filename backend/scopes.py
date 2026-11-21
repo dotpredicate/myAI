@@ -15,7 +15,7 @@ async def resolve_workspace_scopes(workspace_id: Optional[int]) -> list[ScopeSpe
     async with mk_conn() as conn, conn.cursor() as cur:
         await cur.execute(
             """
-            SELECT r.internal_name
+            SELECT r.internal_name, r.index_enabled
             FROM workspace_sources ws
             JOIN repositories r ON r.id = ws.repository_id
             WHERE ws.workspace_id = %s
@@ -23,4 +23,7 @@ async def resolve_workspace_scopes(workspace_id: Optional[int]) -> list[ScopeSpe
             """,
             (workspace_id,),
         )
-        return [ScopeSpec(internal_name=row[0]) for row in await cur.fetchall()]
+        return [
+            ScopeSpec(internal_name=row[0], index_enabled=bool(row[1]))
+            for row in await cur.fetchall()
+        ]

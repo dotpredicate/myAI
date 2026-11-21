@@ -2,9 +2,9 @@ import unittest
 from types import SimpleNamespace
 from typing import Any, cast
 
-from backend.domain import InferenceProviderConfig, Message, Prompt, Thinking
+from backend.domain import InferenceProviderConfig, Message, Prompt, ScopeSpec, Thinking
 from backend.inference.engine import ChatContext, FinishedMessage, FinishedThinking, FinishedToolCall, StreamingMessage
-from backend.inference.openai_chat import DeltaProcessor, OpenAICompatibleProvider, _to_oai_messages
+from backend.inference.openai_chat import DeltaProcessor, OpenAICompatibleProvider, _build_system_prompt, _to_oai_messages
 
 
 def _chunk(**delta: Any) -> Any:
@@ -404,3 +404,65 @@ class TestMessageConversion(unittest.TestCase):
 
         self.assertNotIn("reasoning_content", converted[2])
         self.assertEqual([message["role"] for message in converted], ["system", "user", "user"])
+
+
+class TestSystemPrompt(unittest.TestCase):
+    def test_names_the_workspace(self):
+        context = ChatContext(
+            messages=[],
+            scopes=[],
+            tools=[],
+            instructions=None,
+            workspace_name="myAI",
+        )
+
+        prompt = _build_system_prompt(context)
+
+        self.assertIn('You work in the workspace "myAI"', prompt)
+
+    def test_lists_the_sources_of_the_workspace(self):
+        context = ChatContext(
+            messages=[],
+            scopes=[
+                ScopeSpec(internal_name="alpha", index_enabled=True),
+                ScopeSpec(internal_name="beta"),
+            ],
+            tools=[],
+            instructions=None,
+            workspace_name="myAI",
+        )
+
+        prompt = _build_system_prompt(context)
+
+        self.assertIn(
+            "Available repositories:\n"
+            "- /repositories/alpha (indexed)\n"
+            "- /repositories/beta (not indexed)",
+            prompt,
+        )
+
+    def test_says_when_the_workspace_has_no_sources(self):
+        context = ChatContext(
+            messages=[],
+            scopes=[],
+            tools=[],
+            instructions=None,
+            workspace_name="Scratch",
+        )
+
+        prompt = _build_system_prompt(context)
+
+        self.assertIn("Available repositories:\n- none; this workspace has no sources", prompt)
+
+    def test_keeps_agent_instructions(self):
+        context = ChatContext(
+            messages=[],
+            scopes=[],
+            tools=[],
+            instructions="Be brief.",
+            workspace_name="myAI",
+        )
+
+        prompt = _build_system_prompt(context)
+
+        self.assertIn("Agent instructions:\nBe brief.", prompt)

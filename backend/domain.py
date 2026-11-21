@@ -9,6 +9,7 @@ def normalize_scope_name(name: str) -> str:
 
 class ScopeSpec(BaseModel):
     internal_name: str
+    index_enabled: bool = False
 
 
 class RepositoryConfig(BaseModel):

@@ -58,12 +58,19 @@ def _build_system_prompt(context: ChatContext, today: Optional[datetime.date] = 
     current_date = today or datetime.date.today()
     sections = [f"Current date: {current_date.isoformat()}", ENVIRONMENT_PROMPT]
 
-    if context.scopes:
-        repositories = "\n".join(
-            f"- /repositories/{scope.internal_name}"
-            for scope in context.scopes
+    if context.workspace_name:
+        sections.append(
+            f'## Workspace\n- You work in the workspace "{context.workspace_name}".'
         )
-        sections.append(f"Available repositories:\n{repositories}")
+
+    if context.scopes:
+        repositories: list[str] = []
+        for scope in context.scopes:
+            status = "indexed" if scope.index_enabled else "not indexed"
+            repositories.append(f"- /repositories/{scope.internal_name} ({status})")
+        sections.append("Available repositories:\n" + "\n".join(repositories))
+    else:
+        sections.append("Available repositories:\n- none; this workspace has no sources")
 
     if context.instructions and context.instructions.strip():
         sections.append(f"Agent instructions:\n{context.instructions.strip()}")
@@ -78,7 +85,8 @@ def _to_oai_messages(
     result: list[ChatCompletionMessageParam] = []
     system_content = _build_system_prompt(context)
     logger.debug(
-        "Built system prompt with %d repository scopes and agent instructions=%s",
+        "Built system prompt for workspace=%r with %d repository scopes and agent instructions=%s",
+        context.workspace_name,
         len(context.scopes),
         bool(context.instructions and context.instructions.strip()),
     )

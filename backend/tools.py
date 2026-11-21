@@ -216,7 +216,8 @@ async def run_propose_diff(input: ApplyPatchInput, context: ToolContext) -> Tool
     try:
         result = await asyncio.to_thread(
             subprocess.run,
-            ['patch', '-p0', str(change.target_realpath)],
+            # Without this, `patch` drops `<file>.orig` into the repository
+            ['patch', '-p0', '--no-backup-if-mismatch', str(change.target_realpath)],
             input=diff_content,
             text=True,
             capture_output=True,
